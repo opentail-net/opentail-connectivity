@@ -1,7 +1,7 @@
 # Design: object storage (S3, Azure Blob, Google Cloud Storage)
 
-**Status:** proposal. Nothing is implemented; the code blocks are sketches that have not been compiled. Vendor details are written
-from general knowledge; the ones the design depends on are listed under [vendor facts to verify](#vendor-facts-to-verify).
+**Status:** slice 5 (`ObjectStorageConnector`) is built. The other code blocks are sketches that have not been compiled. Vendor
+details are written from general knowledge; the ones the design depends on are listed under [vendor facts to verify](#vendor-facts-to-verify).
 Depends on [shared-groundwork.md](shared-groundwork.md) (stable IDs, file filters) and
 [sync-and-deletions.md](sync-and-deletions.md) (change stream, checkpoints).
 
