@@ -163,6 +163,43 @@ public sealed class ItemVersionStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task FileItemVersionStore_merges_disjoint_changes_from_instances_loaded_early()
+    {
+        var path = Path.Combine(_dir, "concurrent.json");
+        var storeA = new FileItemVersionStore(path);
+        var storeB = new FileItemVersionStore(path);
+        Assert.Null(await storeA.GetAsync("a"));
+        Assert.Null(await storeB.GetAsync("b"));
+
+        await storeA.SetAsync("a", "version-a");
+        await storeB.SetAsync("b", "version-b");
+        await storeA.FlushAsync();
+        await storeB.FlushAsync();
+
+        var storeC = new FileItemVersionStore(path);
+        Assert.Equal("version-a", await storeC.GetAsync("a"));
+        Assert.Equal("version-b", await storeC.GetAsync("b"));
+    }
+
+    [Fact]
+    public async Task FileItemVersionStore_later_remove_wins_for_same_key()
+    {
+        var path = Path.Combine(_dir, "same-key.json");
+        var storeA = new FileItemVersionStore(path);
+        var storeB = new FileItemVersionStore(path);
+        Assert.Null(await storeA.GetAsync("k"));
+        Assert.Null(await storeB.GetAsync("k"));
+
+        await storeA.SetAsync("k", "version-k");
+        await storeA.FlushAsync();
+        await storeB.RemoveAsync("k");
+        await storeB.FlushAsync();
+
+        var storeC = new FileItemVersionStore(path);
+        Assert.Null(await storeC.GetAsync("k"));
+    }
+
+    [Fact]
     public async Task Rss_sets_the_version_from_guid_and_updated()
     {
         var xml = """

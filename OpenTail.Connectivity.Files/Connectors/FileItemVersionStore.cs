@@ -12,6 +12,7 @@ public sealed class FileItemVersionStore : IItemVersionStore
     private readonly string _path;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Dictionary<string, string>? _cache;
+    private readonly Dictionary<string, string?> _delta = new(StringComparer.Ordinal);
     private bool _dirty;
 
     public FileItemVersionStore(string path)
@@ -26,6 +27,8 @@ public sealed class FileItemVersionStore : IItemVersionStore
         try
         {
             var dict = await EnsureLoadedAsync(ct).ConfigureAwait(false);
+            if (_delta.TryGetValue(documentId, out var changed))
+                return changed;
             return dict.GetValueOrDefault(documentId);
         }
         finally
@@ -39,8 +42,8 @@ public sealed class FileItemVersionStore : IItemVersionStore
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var dict = await EnsureLoadedAsync(ct).ConfigureAwait(false);
-            dict[documentId] = version;
+            await EnsureLoadedAsync(ct).ConfigureAwait(false);
+            _delta[documentId] = version;
             _dirty = true;
         }
         finally
@@ -54,9 +57,9 @@ public sealed class FileItemVersionStore : IItemVersionStore
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var dict = await EnsureLoadedAsync(ct).ConfigureAwait(false);
-            if (dict.Remove(documentId))
-                _dirty = true;
+            await EnsureLoadedAsync(ct).ConfigureAwait(false);
+            _delta[documentId] = null;
+            _dirty = true;
         }
         finally
         {
@@ -71,11 +74,20 @@ public sealed class FileItemVersionStore : IItemVersionStore
         {
             if (!_dirty && _cache is not null) return;
             await using var fileLock = await AcquireFileLockAsync(ct).ConfigureAwait(false);
-            var dict = await EnsureLoadedAsync(ct).ConfigureAwait(false);
+            var dict = await ReadFileAsync(ct).ConfigureAwait(false);
+            foreach (var (documentId, version) in _delta)
+            {
+                if (version is null)
+                    dict.Remove(documentId);
+                else
+                    dict[documentId] = version;
+            }
             var dir = Path.GetDirectoryName(Path.GetFullPath(_path));
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
             await AtomicFile.WriteAllTextAsync(_path, JsonSerializer.Serialize(dict, Json), ct).ConfigureAwait(false);
+            _cache = dict;
+            _delta.Clear();
             _dirty = false;
         }
         finally
@@ -87,22 +99,25 @@ public sealed class FileItemVersionStore : IItemVersionStore
     private async Task<Dictionary<string, string>> EnsureLoadedAsync(CancellationToken ct)
     {
         if (_cache is not null) return _cache;
+        _cache = await ReadFileAsync(ct).ConfigureAwait(false);
+        return _cache;
+    }
+
+    private async Task<Dictionary<string, string>> ReadFileAsync(CancellationToken ct)
+    {
         if (!File.Exists(_path))
-        {
-            _cache = new Dictionary<string, string>(StringComparer.Ordinal);
-            return _cache;
-        }
+            return new Dictionary<string, string>(StringComparer.Ordinal);
         try
         {
             await using var stream = File.OpenRead(_path);
             var deserialized = await JsonSerializer.DeserializeAsync<Dictionary<string, string>>(stream, cancellationToken: ct).ConfigureAwait(false);
-            _cache = deserialized is not null ? new Dictionary<string, string>(deserialized, StringComparer.Ordinal) : new Dictionary<string, string>(StringComparer.Ordinal);
-            return _cache;
+            return deserialized is not null
+                ? new Dictionary<string, string>(deserialized, StringComparer.Ordinal)
+                : new Dictionary<string, string>(StringComparer.Ordinal);
         }
         catch (JsonException)
         {
-            _cache = new Dictionary<string, string>(StringComparer.Ordinal);
-            return _cache;
+            return new Dictionary<string, string>(StringComparer.Ordinal);
         }
     }
 
