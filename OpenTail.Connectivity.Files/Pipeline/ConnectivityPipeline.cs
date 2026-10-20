@@ -76,6 +76,10 @@ public sealed class ConnectivityPipeline
         var lastCommit = DateTimeOffset.UtcNow;
         var holdCommits = false;    // a fetch failed: committing past it would skip the item
         var unflushed = true;       // exporters have not been flushed since the last export (or at all)
+        var stoppedByCap = false;
+        List<string>? collectedRefs = sync.CollectSourceRefs ? [] : null;
+        var refsTruncated = false;
+        var refsTruncatedWarningAdded = false;
 
         async Task FlushAsync()
         {
@@ -99,9 +103,29 @@ public sealed class ConnectivityPipeline
             switch (change)
             {
                 case SourceChange.Upsert upsert:
-                    if (run.CapReached) goto stop;
+                    if (run.CapReached)
+                    {
+                        stoppedByCap = true;
+                        goto stop;
+                    }
                     run.Discovered++;
                     sinceCommit++;
+                    if (collectedRefs is not null && run.FullRun)
+                    {
+                        if (collectedRefs.Count < sync.MaxReportedRefs)
+                        {
+                            collectedRefs.Add(upsert.Item.Id);
+                        }
+                        else
+                        {
+                            refsTruncated = true;
+                            if (!refsTruncatedWarningAdded)
+                            {
+                                run.Issues.Add(new ValidationIssue(ValidationSeverity.Warning, "SOURCE_REFS_TRUNCATED", "The list of seen source refs was truncated and must not be used for deletions.", scope));
+                                refsTruncatedWarningAdded = true;
+                            }
+                        }
+                    }
                     var outcome = await ProcessAsync(upsert.Item, run, exporterFailuresStop: true, ct);
                     unflushed |= outcome == Outcome.Exported;
                     if (outcome == Outcome.FetchFailed)
@@ -112,7 +136,11 @@ public sealed class ConnectivityPipeline
                     break;
 
                 case SourceChange.Delete d:
-                    if (run.CapReached) goto stop;
+                    if (run.CapReached)
+                    {
+                        stoppedByCap = true;
+                        goto stop;
+                    }
                     sinceCommit++;
                     var deletion = new DocumentDeletion(
                         Id: DocumentId(_sourceType, run.TenantContext, d.SourceRef),
@@ -149,6 +177,8 @@ public sealed class ConnectivityPipeline
 
                 case SourceChange.Reset reset:
                     run.FullRun = true;
+                    collectedRefs?.Clear();
+                    refsTruncated = false;
                     run.Issues.Add(new ValidationIssue(ValidationSeverity.Warning, "SYNC_RESET", "Full run: " + reset.Reason, scope));
                     break;
             }
@@ -158,6 +188,12 @@ public sealed class ConnectivityPipeline
         // The end of the stream, or the item cap: every item before the latest checkpoint has been handled, so it can be committed.
         await CommitAsync();
         if (unflushed) await FlushAsync(); // documents after the last checkpoint, or held back by a failed fetch
+
+        if (sync.CollectSourceRefs && run.FullRun && !stoppedByCap)
+        {
+            run.SeenSourceRefs = collectedRefs;
+            run.SourceRefsTruncated = refsTruncated;
+        }
 
         return run.Report();
     }
@@ -281,6 +317,8 @@ public sealed class ConnectivityPipeline
         public List<string> Errors { get; } = [];
         public List<ValidationIssue> Issues { get; } = [];
         public HashSet<string> SeenRefs { get; } = new(StringComparer.Ordinal);
+        public List<string>? SeenSourceRefs { get; set; }
+        public bool SourceRefsTruncated { get; set; }
         public string? SyncScope { get; set; }
         public bool FullRun { get; set; }
         public bool SyncCommitted { get; set; }
@@ -323,7 +361,9 @@ public sealed class ConnectivityPipeline
             SyncScope: SyncScope,
             FullRun: FullRun,
             SyncCommitted: SyncCommitted,
-            ItemsDeleted: Deleted);
+            ItemsDeleted: Deleted,
+            SeenSourceRefs: SeenSourceRefs,
+            SourceRefsTruncated: SourceRefsTruncated);
     }
 
     private static NormalisedDocument Normalise(SourceItem item, TextExtractionResult extraction, PipelineOptions options, string sourceType)

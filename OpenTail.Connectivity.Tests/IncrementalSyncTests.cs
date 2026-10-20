@@ -114,9 +114,9 @@ public sealed class IncrementalSyncTests : IDisposable
 
     private FileSyncCursorStore Store() => new(_stateFile);
 
-    private Task<IngestionReport> Run(Scripted source, string? failExportOn = null, int every = 1, int? cap = null, IConnectivityExporter? exporter = null, string? failDeleteOn = null) =>
+    private Task<IngestionReport> Run(Scripted source, string? failExportOn = null, int every = 1, int? cap = null, IConnectivityExporter? exporter = null, string? failDeleteOn = null, SyncOptions? sync = null) =>
         new ConnectivityPipeline(source, new Extractor(), [exporter ?? new Exporter(_log, failExportOn, failDeleteOn)],
-            new PipelineOptions(MaxItemsProcessed: cap, SyncStore: new LoggingStore(Store(), _log), Sync: new SyncOptions(CheckpointEveryItems: every)))
+            new PipelineOptions(MaxItemsProcessed: cap, SyncStore: new LoggingStore(Store(), _log), Sync: sync ?? new SyncOptions(CheckpointEveryItems: every)))
         .RunAsync();
 
     [Fact]
@@ -290,5 +290,65 @@ public sealed class IncrementalSyncTests : IDisposable
         var report = await Run(source);
 
         Assert.Equal(2, report.ItemsDeleted);
+    }
+
+    [Fact]
+    public async Task Full_run_with_collect_source_refs_lists_all_seen_refs()
+    {
+        var source = new Scripted(["U:a", "U:b", "C:1"]);
+        var report = await Run(source, sync: new SyncOptions(CheckpointEveryItems: 1, CollectSourceRefs: true));
+
+        Assert.Equal(["a", "b"], report.SeenSourceRefs);
+        Assert.False(report.SourceRefsTruncated);
+    }
+
+    [Fact]
+    public async Task Run_resumed_from_stored_cursor_leaves_seen_source_refs_null()
+    {
+        await Store().SaveAsync("test:acme:things", "1", 0);
+        var source = new Scripted(["U:a", "C:2"]);
+        var report = await Run(source, sync: new SyncOptions(CheckpointEveryItems: 1, CollectSourceRefs: true));
+
+        Assert.Null(report.SeenSourceRefs);
+    }
+
+    [Fact]
+    public async Task Run_stopped_by_cap_leaves_seen_source_refs_null()
+    {
+        var source = new Scripted(["U:a", "U:b", "C:1"]);
+        var report = await Run(source, cap: 1, sync: new SyncOptions(CheckpointEveryItems: 1, CollectSourceRefs: true));
+
+        Assert.Null(report.SeenSourceRefs);
+    }
+
+    [Fact]
+    public async Task Reset_mid_run_collects_refs_from_reset_on()
+    {
+        await Store().SaveAsync("test:acme:things", "old", 0);
+        var source = new Scripted(["U:ignored", "R", "U:a", "U:b", "C:1"]);
+        var report = await Run(source, sync: new SyncOptions(CheckpointEveryItems: 1, CollectSourceRefs: true));
+
+        Assert.True(report.FullRun);
+        Assert.Equal(["a", "b"], report.SeenSourceRefs);
+    }
+
+    [Fact]
+    public async Task Rejected_item_is_in_the_seen_refs_list()
+    {
+        var source = new Scripted(["U:a", "U:bad", "C:1"]);
+        var report = await Run(source, sync: new SyncOptions(CheckpointEveryItems: 1, CollectSourceRefs: true));
+
+        Assert.Equal(["a", "bad"], report.SeenSourceRefs);
+    }
+
+    [Fact]
+    public async Task Max_reported_refs_cap_truncates_with_flag_and_warning()
+    {
+        var source = new Scripted(["U:a", "U:b", "C:1"]);
+        var report = await Run(source, sync: new SyncOptions(CheckpointEveryItems: 1, CollectSourceRefs: true, MaxReportedRefs: 1));
+
+        Assert.Equal(["a"], report.SeenSourceRefs);
+        Assert.True(report.SourceRefsTruncated);
+        Assert.Contains(report.ValidationIssues, i => i.Code == "SOURCE_REFS_TRUNCATED" && i.Severity == ValidationSeverity.Warning);
     }
 }

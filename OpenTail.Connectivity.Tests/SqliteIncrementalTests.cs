@@ -154,4 +154,40 @@ public sealed class SqliteIncrementalTests : IDisposable
         Assert.StartsWith("sqlite:", connector.SyncScope);
         Assert.EndsWith("/tickets", connector.SyncScope);
     }
+
+    [Fact]
+    public async Task Full_run_with_collect_source_refs_lists_all_seen_ids()
+    {
+        var db = Path.Combine(Path.GetTempPath(), "otail-refs-" + Guid.NewGuid().ToString("N") + ".db");
+        var state = Path.Combine(Path.GetTempPath(), "otail-refs-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            using (var c = new SqliteConnection($"Data Source={db}"))
+            {
+                c.Open();
+                using var cmd = c.CreateCommand();
+                cmd.CommandText = """
+                    CREATE TABLE items (id TEXT PRIMARY KEY, subject TEXT, body TEXT, updated TEXT);
+                    INSERT INTO items VALUES ('r1', 'Row 1', 'Content for row one long enough to validate ok', '2026-01-01T00:00:00Z');
+                    INSERT INTO items VALUES ('r2', 'Row 2', 'Content for row two long enough to validate ok', '2026-01-02T00:00:00Z');
+                    """;
+                cmd.ExecuteNonQuery();
+            }
+
+            var config = new SqlConnectorConfig($"Data Source={db}", "items", "id", "subject", ["body"], ModifiedField: "updated");
+            var collect = new Collect();
+            var connector = new SqliteSourceConnector(config, "acme", 2);
+            var report = await new ConnectivityPipeline(connector, new SqlRowTextExtractor(config), [collect],
+                new PipelineOptions(SyncStore: new FileSyncCursorStore(state), Sync: new SyncOptions(CheckpointEveryItems: 1, CollectSourceRefs: true)), "sql").RunAsync();
+
+            Assert.Equal(["r1", "r2"], report.SeenSourceRefs);
+            Assert.False(report.SourceRefsTruncated);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            try { File.Delete(db); } catch (IOException) { }
+            try { File.Delete(state); } catch (IOException) { }
+        }
+    }
 }

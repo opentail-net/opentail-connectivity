@@ -71,4 +71,8 @@ public sealed class SyncConflictException(string scope, long expected, long actu
 /// <summary>How often an incremental run commits.</summary>
 /// <param name="CheckpointEveryItems">Commit at the first checkpoint after this many changes since the last commit.</param>
 /// <param name="CheckpointEvery">Or after this long since the last commit, whichever comes first. Default 5 minutes.</param>
-public sealed record SyncOptions(int CheckpointEveryItems = 500, TimeSpan? CheckpointEvery = null);
+public sealed record SyncOptions(
+    int CheckpointEveryItems = 500,
+    TimeSpan? CheckpointEvery = null,
+    bool CollectSourceRefs = false,
+    int MaxReportedRefs = 100_000);
