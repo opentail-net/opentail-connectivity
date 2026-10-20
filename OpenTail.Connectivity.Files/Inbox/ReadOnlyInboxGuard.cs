@@ -2,7 +2,7 @@ namespace OpenTail.Connectivity.Files.Inbox;
 
 public static class ReadOnlyInboxGuard
 {
-    private static readonly HashSet<string> ForbiddenVerbs = new(StringComparer.OrdinalIgnoreCase)
+    public static readonly HashSet<string> ForbiddenVerbs = new(StringComparer.OrdinalIgnoreCase)
     {
         "Send", "Reply", "Forward", "Delete", "Archive", "Move", "Mark",
         "SetFlag", "Unread", "Read", "Label", "Draft", "Create", "Update",
