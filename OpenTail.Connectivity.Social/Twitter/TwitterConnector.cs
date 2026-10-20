@@ -82,6 +82,7 @@ public sealed class TwitterConnector : ISourceConnector, IDisposable
 
             foreach (var tweet in response.Data)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (_opts.Since.HasValue && tweet.CreatedAt < _opts.Since.Value) continue;
                 if (tweet.AuthorId is not null && users.TryGetValue(tweet.AuthorId, out var user))
                 {

@@ -116,6 +116,7 @@ public sealed class YouTubeConnector : ISourceConnector, IDisposable
 
             foreach (var item in response.Items)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var videoId = item.Id?.VideoId;
                 if (videoId is null) continue;
                 var snippet = item.Snippet ?? new YtSnippet();
@@ -186,6 +187,7 @@ public sealed class YouTubeConnector : ISourceConnector, IDisposable
 
             foreach (var thread in response.Items)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var cs = thread.Snippet?.TopLevelComment?.Snippet;
                 if (cs is null) continue;
                 if (_opts.Since.HasValue && cs.PublishedAt < _opts.Since.Value) continue;

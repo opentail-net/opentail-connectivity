@@ -120,6 +120,7 @@ public sealed class MetaConnector : ISourceConnector, IDisposable
 
             foreach (var post in response.Data)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (_opts.Since.HasValue && post.CreatedTime < _opts.Since.Value) continue;
                 if (string.IsNullOrWhiteSpace(post.Message)) continue;
 
@@ -178,6 +179,7 @@ public sealed class MetaConnector : ISourceConnector, IDisposable
 
             foreach (var media in response.Data)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (_opts.Since.HasValue && media.Timestamp < _opts.Since.Value) continue;
 
                 var body = media.Caption ?? $"[{media.MediaType ?? "media"}]";

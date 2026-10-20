@@ -81,6 +81,7 @@ public sealed class RedditConnector : ISourceConnector
 
             foreach (var child in listing.Data.Children)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var post = child.Data;
                 if (post.Stickied) continue;
                 if (_opts.Since.HasValue && post.CreatedAt < _opts.Since.Value) continue;
