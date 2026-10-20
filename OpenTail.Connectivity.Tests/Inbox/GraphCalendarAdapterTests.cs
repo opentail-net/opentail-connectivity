@@ -144,7 +144,7 @@ public sealed class GraphCalendarAdapterTests
     }
 
     [Fact]
-    public async Task Reads_ask_for_utc_and_writes_send_utc_wall_clock_without_an_offset()
+    public async Task Reads_ask_for_utc_and_writes_send_the_events_own_wall_clock_and_zone()
     {
         var handler = new StubGraph(_ => """{"value":[],"id":"e1"}""");
         var adapter = Create(handler);
@@ -156,11 +156,30 @@ public sealed class GraphCalendarAdapterTests
 
         Assert.Contains(handler.Prefers, p => p.Contains("outlook.timezone=\"UTC\"", StringComparison.Ordinal));
         using var timedBody = JsonDocument.Parse(handler.Bodies[0]);
-        Assert.Equal("2026-10-20T07:00:00.0000000", timedBody.RootElement.GetProperty("start").GetProperty("dateTime").GetString());
-        Assert.Equal("UTC", timedBody.RootElement.GetProperty("start").GetProperty("timeZone").GetString());
+        Assert.Equal("2026-10-20T09:00:00.0000000", timedBody.RootElement.GetProperty("start").GetProperty("dateTime").GetString());
+        Assert.Equal("W. Europe Standard Time", timedBody.RootElement.GetProperty("start").GetProperty("timeZone").GetString());
         using var allDayBody = JsonDocument.Parse(handler.Bodies[1]);
         Assert.Equal("2026-10-20T00:00:00.0000000", allDayBody.RootElement.GetProperty("start").GetProperty("dateTime").GetString());
-        Assert.Equal("Europe/Berlin", allDayBody.RootElement.GetProperty("start").GetProperty("timeZone").GetString());
+        Assert.Equal("W. Europe Standard Time", allDayBody.RootElement.GetProperty("start").GetProperty("timeZone").GetString());
+    }
+
+    [Fact]
+    public async Task Writes_fall_back_to_utc_for_an_unknown_zone_and_send_a_body_only_when_there_is_one()
+    {
+        var handler = new StubGraph(_ => """{"id":"e1"}""");
+        var adapter = Create(handler);
+        var unknown = Sample("abc") with { Start = DateTimeOffset.Parse("2026-10-20T09:00:00+02:00"), End = DateTimeOffset.Parse("2026-10-20T10:00:00+02:00"), TimeZone = "Not/AZone" };
+
+        await adapter.UpdateEventAsync(unknown);
+        await adapter.UpdateEventAsync(unknown with { Body = "<p>Agenda</p>" });
+
+        using var noBody = JsonDocument.Parse(handler.Bodies[0]);
+        Assert.Equal("2026-10-20T07:00:00.0000000", noBody.RootElement.GetProperty("start").GetProperty("dateTime").GetString());
+        Assert.Equal("UTC", noBody.RootElement.GetProperty("start").GetProperty("timeZone").GetString());
+        Assert.False(noBody.RootElement.TryGetProperty("body", out _));
+        Assert.False(noBody.RootElement.TryGetProperty("location", out _));
+        using var withBody = JsonDocument.Parse(handler.Bodies[1]);
+        Assert.Equal("html", withBody.RootElement.GetProperty("body").GetProperty("contentType").GetString());
     }
 
     private static CalendarEvent Sample(string calendarId)

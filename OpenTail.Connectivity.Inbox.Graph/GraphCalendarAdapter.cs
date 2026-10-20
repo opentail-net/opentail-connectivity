@@ -212,22 +212,24 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
         return _client;
     }
 
-    // Graph reads dateTime as a wall clock in timeZone, so no offset goes with it. Timed events go as UTC; all-day events must be
-    // midnight in their own zone, so they go in it when it is known.
+    // Graph reads dateTime as a wall clock in timeZone, so no offset goes with it. Events go in their own zone, so a recurring
+    // series keeps its local time across daylight-saving changes (UTC would move it an hour), and all-day events stay midnight.
+    // Graph takes Windows zone ids; an IANA id is converted. Only an unknown zone falls back to UTC.
     private static DateTimeTimeZone ToGraphTime(DateTimeOffset value, CalendarEvent e)
-        => e.IsAllDay && CalendarTime.ToWallClock(value, e.TimeZone) is { } local
-            ? new DateTimeTimeZone { DateTime = local, TimeZone = e.TimeZone }
+        => CalendarTime.ToWallClock(value, e.TimeZone) is { } local
+            ? new DateTimeTimeZone { DateTime = local, TimeZone = GraphZoneId(e.TimeZone) }
             : new DateTimeTimeZone { DateTime = CalendarTime.ToUtcWallClock(value), TimeZone = "UTC" };
 
+    private static string GraphZoneId(string zone)
+        => TimeZoneInfo.TryConvertIanaIdToWindowsId(zone.Trim(), out var windows) ? windows : zone.Trim();
+
     private static Event ToGraphEvent(CalendarEvent e)
-        => new()
+    {
+        var ev = new Event
         {
             Subject = e.Subject,
-            Body = new ItemBody { ContentType = BodyType.Html, Content = e.Body },
             Start = ToGraphTime(e.Start, e),
             End = ToGraphTime(e.End, e),
-            Location = string.IsNullOrWhiteSpace(e.Location)
-                ? null : new Location { DisplayName = e.Location },
             IsAllDay = e.IsAllDay,
             Attendees = e.Attendees
                 .Select(a => new Attendee
@@ -242,4 +244,14 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
                 })
                 .ToList()
         };
+
+        // The SDK sends any property that was assigned, even as null, and a PATCH then clears it. So body and location are set only
+        // when the model has them: an empty body would wipe the event's text, Teams join details included. HTML, because events
+        // read through Graph come back as HTML, so a round trip keeps the join block.
+        if (e.Body is not null)
+            ev.Body = new ItemBody { ContentType = BodyType.Html, Content = e.Body };
+        if (!string.IsNullOrWhiteSpace(e.Location))
+            ev.Location = new Location { DisplayName = e.Location };
+        return ev;
+    }
 }
