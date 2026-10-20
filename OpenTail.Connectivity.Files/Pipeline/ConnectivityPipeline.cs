@@ -213,8 +213,13 @@ public sealed class ConnectivityPipeline
                     if (retriedThisRun.Contains(upsert.Item.Id))
                     {
                         run.Skipped++; // the retry pass already fetched its current content this run
-                        if (run.FullRun && run.ExpandedChildren.TryGetValue(upsert.Item.Id, out var children))
-                            foreach (var child in children) sourceRefs?.Add(child);
+                        if (run.FullRun && sourceRefs is not null && run.ExpandedChildren.TryGetValue(upsert.Item.Id, out var children))
+                        {
+                            if (children is not null)
+                                ArchiveRefs(upsert.Item.Id, children, sourceRefs);
+                            else
+                                await ArchiveFailedAsync(upsert.Item, DocumentId(_sourceType, upsert.Item.TenantContext, upsert.Item.Id), run, sourceRefs, ct);
+                        }
                         break;
                     }
 
@@ -335,17 +340,23 @@ public sealed class ConnectivityPipeline
         var docId = DocumentId(_sourceType, item.TenantContext, item.Id);
         var expander = _options.Expander is { } e && e.CanExpand(item) ? e : null;
 
+        var ingestedWhole = false; // a version but no child list: an archive exported as one document before expansion was set
         if (_options.VersionStore is { } versionStore && itemVersion is not null)
         {
             var stored = await versionStore.GetAsync(docId, ct).ConfigureAwait(false);
-            if (stored is not null && string.Equals(stored, itemVersion, StringComparison.Ordinal))
+            var manifest = expander is null ? null : ReadManifestOrNull(await versionStore.GetAsync(ManifestKey(docId), ct).ConfigureAwait(false));
+            ingestedWhole = expander is not null && stored is not null && manifest is null;
+            // An archive is unchanged only with a child list to stand for it; without one it has never been expanded.
+            if (stored is not null && string.Equals(stored, itemVersion, StringComparison.Ordinal) && (expander is null || manifest is not null))
             {
                 run.Skipped++;
                 run.Unchanged++;
                 // Unchanged archives' entries still exist, so a deletion comparison must see them.
-                if (expander is not null && sourceRefs is not null
-                    && await versionStore.GetAsync(ManifestKey(docId), ct).ConfigureAwait(false) is { } manifest)
-                    foreach (var child in ReadManifest(manifest)) sourceRefs.Add(child);
+                if (manifest is not null)
+                {
+                    run.ExpandedChildren[item.Id] = manifest;
+                    if (sourceRefs is not null) ArchiveRefs(item.Id, manifest, sourceRefs);
+                }
                 return Outcome.Skipped;
             }
         }
@@ -364,12 +375,36 @@ public sealed class ConnectivityPipeline
         {
             run.Failed++;
             run.Errors.Add($"{item.DisplayName}: {ex.Message}");
+            if (expander is not null) await ArchiveFailedAsync(item, docId, run, sourceRefs, ct);
             return Outcome.FetchFailed;
         }
 
         return expander is null
             ? await ExportAsync(item, bytes, itemVersion, run, exporterFailuresStop, ct)
-            : await ExpandAsync(expander, item, bytes, docId, itemVersion, run, exporterFailuresStop, sourceRefs, ct);
+            : await ExpandAsync(expander, item, bytes, docId, itemVersion, ingestedWhole, run, exporterFailuresStop, sourceRefs, ct);
+    }
+
+    /// <summary>
+    /// An archive is not a document: its children stand in its place in the seen refs, so an index entry for the archive itself
+    /// (from before expansion) is found deleted by comparison.
+    /// </summary>
+    private static void ArchiveRefs(string archiveRef, IEnumerable<string> children, SourceRefCollector sourceRefs)
+    {
+        sourceRefs.Remove(archiveRef);
+        foreach (var child in children) sourceRefs.Add(child);
+    }
+
+    /// <summary>
+    /// An archive that could not be fetched or expanded this run. Its last child list stands in for the children, or, without one,
+    /// the run's refs are marked incomplete: absent children must never look deleted.
+    /// </summary>
+    private async Task ArchiveFailedAsync(SourceItem item, string docId, Run run, SourceRefCollector? sourceRefs, CancellationToken ct)
+    {
+        var manifest = _options.VersionStore is { } store ? ReadManifestOrNull(await store.GetAsync(ManifestKey(docId), ct)) : null;
+        run.ExpandedChildren[item.Id] = null;
+        if (sourceRefs is null) return;
+        if (manifest is null) sourceRefs.MarkIncomplete(item.Id);
+        else foreach (var child in manifest) sourceRefs.Add(child); // the archive's own ref stays: it may still be an old document
     }
 
     /// <summary>
@@ -377,7 +412,7 @@ public sealed class ConnectivityPipeline
     /// when no child failed (as for any item), its child list always, and children gone since the last list are deleted.
     /// </summary>
     private async Task<Outcome> ExpandAsync(IItemExpander expander, SourceItem item, byte[] bytes, string docId, string? itemVersion,
-        Run run, bool exporterFailuresStop, SourceRefCollector? sourceRefs, CancellationToken ct)
+        bool ingestedWhole, Run run, bool exporterFailuresStop, SourceRefCollector? sourceRefs, CancellationToken ct)
     {
         ItemExpansion expansion;
         try
@@ -392,6 +427,7 @@ public sealed class ConnectivityPipeline
         {
             run.Failed++;
             run.Errors.Add($"{item.DisplayName}: {ex.Message}");
+            await ArchiveFailedAsync(item, docId, run, sourceRefs, ct);
             return Outcome.Rejected;
         }
 
@@ -404,19 +440,23 @@ public sealed class ConnectivityPipeline
 
         var childIds = expansion.Items.Select(i => i.Item.Id).ToList();
         run.ExpandedChildren[item.Id] = childIds;
-        if (_options.VersionStore is { } manifests && await manifests.GetAsync(ManifestKey(docId), ct) is { } previous)
+        if (sourceRefs is not null) ArchiveRefs(item.Id, childIds, sourceRefs);
+        if (_options.VersionStore is { } manifests)
         {
             var current = new HashSet<string>(childIds, StringComparer.Ordinal);
-            foreach (var gone in ReadManifest(previous).Where(id => !current.Contains(id)))
+            var gone = ReadManifest(await manifests.GetAsync(ManifestKey(docId), ct) ?? "[]").Where(id => !current.Contains(id)).ToList();
+            // Exported as one document before expansion was set: that document goes, its children replace it.
+            if (ingestedWhole) gone.Add(item.Id);
+            foreach (var sourceRef in gone)
             {
                 try
                 {
-                    await DeleteDocumentAsync(gone, item.TenantContext, DeletionReason.Deleted, run, ct);
+                    await DeleteDocumentAsync(sourceRef, item.TenantContext, DeletionReason.Deleted, run, ct);
                 }
                 catch (Exception ex) when (!exporterFailuresStop && ex is not OperationCanceledException)
                 {
                     run.Failed++;
-                    run.Errors.Add($"{gone}: {ex.Message}");
+                    run.Errors.Add($"{sourceRef}: {ex.Message}");
                     return Outcome.ExporterFailed;
                 }
             }
@@ -426,7 +466,6 @@ public sealed class ConnectivityPipeline
         foreach (var child in expansion.Items)
         {
             run.Discovered++;
-            sourceRefs?.Add(child.Item.Id);
             var outcome = await ExportAsync(child.Item, child.Content, itemVersion: null, run, exporterFailuresStop, ct);
             if (outcome == Outcome.ExporterFailed) return outcome;
             anyRejected |= outcome == Outcome.Rejected;
@@ -549,15 +588,19 @@ public sealed class ConnectivityPipeline
     /// <summary>Where an archive's child ids are kept in the version store: beside its version, never a document id (those are hex).</summary>
     private static string ManifestKey(string documentId) => documentId + "!entries";
 
-    private static List<string> ReadManifest(string json)
+    private static List<string> ReadManifest(string json) => ReadManifestOrNull(json) ?? [];
+
+    /// <summary>Null when there is no list or it is damaged: then nothing can be inferred from it.</summary>
+    private static List<string>? ReadManifestOrNull(string? json)
     {
+        if (json is null) return null;
         try
         {
-            return JsonSerializer.Deserialize<List<string>>(json) ?? [];
+            return JsonSerializer.Deserialize<List<string>>(json);
         }
         catch (JsonException)
         {
-            return []; // a damaged list loses only the deletion of entries that went away
+            return null;
         }
     }
 
@@ -582,6 +625,21 @@ public sealed class ConnectivityPipeline
             issues.Add(new ValidationIssue(ValidationSeverity.Warning, "SOURCE_REFS_TRUNCATED",
                 "The list of seen source refs was truncated and must not be used for deletions.", subject));
             warningAdded = true;
+        }
+
+        /// <summary>Takes back a ref just added; it is normally the last one.</summary>
+        public void Remove(string sourceRef)
+        {
+            var at = Refs.LastIndexOf(sourceRef);
+            if (at >= 0) Refs.RemoveAt(at);
+        }
+
+        /// <summary>Some items' refs are unknown this run, so absence proves nothing: reported like a truncated list.</summary>
+        public void MarkIncomplete(string because)
+        {
+            Truncated = true;
+            issues.Add(new ValidationIssue(ValidationSeverity.Warning, "SOURCE_REFS_INCOMPLETE",
+                "An archive could not be read and its entries are not known, so the list of seen source refs must not be used for deletions.", because));
         }
 
         public void Reset()
@@ -616,7 +674,8 @@ public sealed class ConnectivityPipeline
         public int Unchanged { get; set; }
         public int RetriesPending { get; set; }
         public List<(string DocId, string Version)> PendingVersions { get; } = [];
-        public Dictionary<string, List<string>> ExpandedChildren { get; } = new(StringComparer.Ordinal);
+        /// <summary>Archives handled this run: their children, or null when fetching or expanding failed.</summary>
+        public Dictionary<string, List<string>?> ExpandedChildren { get; } = new(StringComparer.Ordinal);
         public string? SyncScope { get; set; }
         public bool FullRun { get; set; }
         public bool SyncCommitted { get; set; }

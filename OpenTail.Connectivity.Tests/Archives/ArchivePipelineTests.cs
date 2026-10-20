@@ -18,6 +18,7 @@ public sealed class ArchivePipelineTests : IDisposable
         public Dictionary<string, (byte[] Content, string Version)> Items { get; } = new();
         public List<string> Deleted { get; } = [];
         public List<string> Fetched { get; } = [];
+        public HashSet<string> FailFetch { get; } = [];
         public bool ReportsDeletions { get; init; }
         public string SyncScope => "test:acme:archives";
 
@@ -38,6 +39,7 @@ public sealed class ArchivePipelineTests : IDisposable
         public Task<byte[]> FetchAsync(SourceItem item, CancellationToken cancellationToken = default)
         {
             Fetched.Add(item.Id);
+            if (FailFetch.Contains(item.DisplayName)) throw new HttpRequestException("timeout");
             return Task.FromResult(Items[item.DisplayName].Content);
         }
     }
@@ -209,5 +211,91 @@ public sealed class ArchivePipelineTests : IDisposable
         await Pipeline(source, exporter, new PipelineOptions()).RunAsync();
 
         Assert.Equal("s3://bucket/a.zip", Assert.Single(exporter.Exported).SourceRef);
+    }
+
+    [Fact]
+    public async Task An_archive_ingested_whole_before_is_expanded_once_an_expander_is_set()
+    {
+        var source = new Source();
+        source.Items["a.zip"] = (Zip(("one.txt", Text("one"))), "v1");
+        var versions = new Versions();
+        await Pipeline(source, new Exporter(), new PipelineOptions(VersionStore: versions)).RunAsync();
+
+        // Same version: without a child list the archive has never been expanded, so it must not be skipped.
+        var exporter = new Exporter();
+        var report = await Pipeline(source, exporter, new PipelineOptions(Expander: new ArchiveExpander(), VersionStore: versions,
+            Sync: new SyncOptions(CollectSourceRefs: true))).RunAsync();
+
+        Assert.Equal("s3://bucket/a.zip!/one.txt", Assert.Single(exporter.Exported).SourceRef);
+        Assert.Equal(["s3://bucket/a.zip"], exporter.Deleted); // the old whole-archive document
+        Assert.Equal(["s3://bucket/a.zip!/one.txt"], report.SeenSourceRefs!);
+        Assert.False(report.SourceRefsTruncated);
+    }
+
+    [Fact]
+    public async Task An_expanded_archive_is_not_itself_a_seen_ref()
+    {
+        var source = new Source();
+        source.Items["a.zip"] = (Zip(("one.txt", Text("one"))), "v1");
+        source.Items["plain.txt"] = (Encoding.UTF8.GetBytes(Text("plain")), "v1");
+
+        var report = await Pipeline(source, new Exporter(), new PipelineOptions(Expander: new ArchiveExpander(),
+            Sync: new SyncOptions(CollectSourceRefs: true))).RunAsync();
+
+        Assert.Equal(["s3://bucket/a.zip!/one.txt", "s3://bucket/plain.txt"], report.SeenSourceRefs!.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_failed_archive_keeps_its_last_known_children_seen()
+    {
+        var source = new Source();
+        source.Items["a.zip"] = (Zip(("one.txt", Text("one")), ("two.txt", Text("two"))), "v1");
+        var versions = new Versions();
+        var options = new PipelineOptions(Expander: new ArchiveExpander(), VersionStore: versions, Sync: new SyncOptions(CollectSourceRefs: true));
+        await Pipeline(source, new Exporter(), options).RunAsync();
+
+        source.Items["a.zip"] = (Encoding.UTF8.GetBytes("now corrupt"), "v2");
+        var corrupt = await Pipeline(source, new Exporter(), options).RunAsync();
+        source.Items["a.zip"] = (source.Items["a.zip"].Content, "v3");
+        source.FailFetch.Add("a.zip");
+        var unreachable = await Pipeline(source, new Exporter(), options).RunAsync();
+
+        foreach (var report in new[] { corrupt, unreachable })
+        {
+            Assert.Equal(1, report.ItemsFailed);
+            Assert.Contains("s3://bucket/a.zip!/one.txt", report.SeenSourceRefs!);
+            Assert.Contains("s3://bucket/a.zip!/two.txt", report.SeenSourceRefs!);
+            Assert.False(report.SourceRefsTruncated);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_failed_archive_without_a_child_list_marks_the_refs_incomplete(bool failFetch)
+    {
+        var source = new Source();
+        source.Items["a.zip"] = (Encoding.UTF8.GetBytes("not a zip"), "v1");
+        if (failFetch) source.FailFetch.Add("a.zip");
+
+        var report = await Pipeline(source, new Exporter(), new PipelineOptions(Expander: new ArchiveExpander(), VersionStore: new Versions(),
+            Sync: new SyncOptions(CollectSourceRefs: true))).RunAsync();
+
+        Assert.True(report.SourceRefsTruncated); // absent children must not look deleted
+        Assert.Contains(report.ValidationIssues, i => i.Code == "SOURCE_REFS_INCOMPLETE" && i.SourceRef == "s3://bucket/a.zip");
+    }
+
+    [Fact]
+    public async Task A_failed_archive_in_a_full_incremental_run_marks_the_refs_incomplete()
+    {
+        var source = new Source();
+        source.Items["a.zip"] = (Encoding.UTF8.GetBytes("x"), "v1");
+        source.FailFetch.Add("a.zip");
+
+        var report = await Pipeline(source, new Exporter(), new PipelineOptions(Expander: new ArchiveExpander(), VersionStore: new Versions(),
+            SyncStore: new FileSyncCursorStore(_cursorFile), Sync: new SyncOptions(CollectSourceRefs: true))).RunAsync();
+
+        Assert.True(report.FullRun);
+        Assert.True(report.SourceRefsTruncated);
     }
 }

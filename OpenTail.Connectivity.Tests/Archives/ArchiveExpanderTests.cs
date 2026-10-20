@@ -276,4 +276,17 @@ public sealed class ArchiveExpanderTests
     [InlineData("notes.txt.gz", false)]
     [InlineData("notes.txt", false)]
     public void CanExpand_goes_by_name(string name, bool expected) => Assert.Equal(expected, new ArchiveExpander().CanExpand(Item(name)));
+
+    [Fact]
+    public void Nested_archives_share_one_entry_limit()
+    {
+        var inner = Zip(Enumerable.Range(0, 8).Select(i => ($"f{i}.txt", "x")).ToArray());
+        var outer = Zip(Enumerable.Range(0, 3).Select(i => ($"in{i}.zip", inner)).ToArray());
+        var options = new ArchiveOptions(MaxEntries: 10, MaxDepth: 2, MaxTotalEntries: 20);
+
+        // Every archive is under 10 entries, but together they hold 27.
+        var ex = Assert.Throws<InvalidDataException>(() => new ArchiveExpander(options).Expand(Item("outer.zip"), outer));
+        Assert.Contains("20 entries together", ex.Message);
+        Assert.Equal(24, new ArchiveExpander(options with { MaxTotalEntries = 30 }).Expand(Item("outer.zip"), outer).Items.Count);
+    }
 }

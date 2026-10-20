@@ -269,7 +269,7 @@ Built as `IItemExpander` (`OpenTail.Connectivity.Files/Contracts`) and `ArchiveE
 - **Contract.** The pipeline fetches an item the expander claims once, exports each child as its own item and never the
   archive itself. Child id `<parent id>!/<entry path>`; nested levels add `!/`. Children carry the parent's metadata (its
   permissions) without `source.version`, plus `source.archive.parent` and `source.archive.path`, and the parent's modified time.
-- **Limits.** Entry count (checked before reading for zip), bytes per entry, total bytes per fetched item, compression ratio
+- **Limits.** Entry count per archive (checked before reading for zip) and across nested archives, bytes per entry, total bytes per fetched item, compression ratio
   (per zip entry and per `.tar.gz`, once output passes 1 MB) and depth (default 1: inner archives are refused). Bytes are
   counted as read, never taken from headers. Entry count, total bytes and ratio refuse the whole item; the rest refuse one entry.
 - **Paths.** `\` becomes `/`, empty and `.` segments go; absolute paths, drive letters, `..`, control characters and `!/` are
@@ -277,7 +277,10 @@ Built as `IItemExpander` (`OpenTail.Connectivity.Files/Contracts`) and `ArchiveE
 - **Reporting.** A refused entry is an `ARCHIVE_ENTRY_REFUSED` warning; a refused archive fails with its reason.
 - **Versions and deletions.** With a version store, the archive's child list is kept under `<doc id>!entries` beside its
   version. A changed archive deletes children no longer in it; a deleted archive deletes all of them; an unchanged (skipped)
-  archive still adds its children to `SeenSourceRefs`. The archive's version is recorded only when no child failed. A
+  archive still adds its children to `SeenSourceRefs`, and is skipped only if its child list exists (an archive ingested whole
+  before expansion was set is expanded, and its old document deleted). An expanded archive's own id is not a seen ref. If an
+  archive cannot be fetched or expanded, its last child list stands in; without one, the refs are marked incomplete
+  (`SOURCE_REFS_INCOMPLETE`, `SourceRefsTruncated`), so absence never reads as deletion. The archive's version is recorded only when no child failed. A
   connector that reports deletions needs a version store when an expander is set (the pipeline refuses to start otherwise).
 - **Not done.** Other formats (7z, rar). Default filters still leave `.zip`/`.tar` out; add them to `ExtraExtensions`. A
   changed archive that is now unreadable keeps its old children until a full-run comparison removes them.

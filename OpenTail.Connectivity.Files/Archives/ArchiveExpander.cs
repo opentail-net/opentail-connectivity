@@ -13,13 +13,15 @@ namespace OpenTail.Connectivity.Files.Archives;
 /// </param>
 /// <param name="MaxDepth">1 expands the item's own entries and refuses archives inside it; 2 also expands those, and so on.</param>
 /// <param name="EntryFilter">When set, entries whose extension it does not support are refused instead of extracted.</param>
+/// <param name="MaxTotalEntries">Entries across every archive in one fetched item, nested ones included. More and the item is refused.</param>
 public sealed record ArchiveOptions(
     int MaxEntries = 1_000,
     long MaxEntryBytes = 50L * 1024 * 1024,
     long MaxTotalBytes = 200L * 1024 * 1024,
     int MaxCompressionRatio = 100,
     int MaxDepth = 1,
-    FileFilter? EntryFilter = null);
+    FileFilter? EntryFilter = null,
+    int MaxTotalEntries = 10_000);
 
 /// <summary>
 /// Expands <c>.zip</c>, <c>.tar</c>, <c>.tar.gz</c> and <c>.tgz</c> items into one child per file entry, with the id
@@ -76,6 +78,7 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
         public List<RefusedEntry> Refused { get; } = [];
         public HashSet<string> Ids { get; } = new(StringComparer.Ordinal);
         public long TotalBytes { get; set; }
+        public int TotalEntries { get; set; }
     }
 
     /// <summary>A limit that refuses the whole item, nested or not: never caught below the top.</summary>
@@ -97,7 +100,7 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
                     break;
                 case Kind.TarGz:
                     // A connector may have decompressed it already (object storage does for .gz).
-                    var tar = content is [0x1F, 0x8B, ..] ? Gunzip(name, content) : content;
+                    var tar = content is [0x1F, 0x8B, ..] ? Gunzip(run, name, content) : content;
                     ExpandTar(run, containerId, new MemoryStream(tar, writable: false), depth);
                     break;
             }
@@ -113,6 +116,7 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
         using var zip = new ZipArchive(new MemoryStream(content, writable: false), ZipArchiveMode.Read);
         if (zip.Entries.Count > _options.MaxEntries)
             throw new LimitException($"The archive has {zip.Entries.Count} entries; the limit is {_options.MaxEntries}.");
+        CountEntries(run, zip.Entries.Count);
 
         foreach (var entry in zip.Entries)
         {
@@ -138,6 +142,7 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
             run.Ct.ThrowIfCancellationRequested();
             if (++count > _options.MaxEntries)
                 throw new LimitException($"The archive has more than {_options.MaxEntries} entries, the limit.");
+            CountEntries(run, 1);
 
             switch (entry.EntryType)
             {
@@ -155,6 +160,14 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
                     break;
             }
         }
+    }
+
+    /// <summary>Nested archives each stay under the per-archive count, so the item as a whole has its own.</summary>
+    private void CountEntries(Expansion run, int entries)
+    {
+        run.TotalEntries += entries;
+        if (run.TotalEntries > _options.MaxTotalEntries)
+            throw new LimitException($"The item's archives hold more than {_options.MaxTotalEntries} entries together, the limit.");
     }
 
     private void AddEntry(Expansion run, string containerId, string rawName, int depth, Func<Stream> open, bool disposeStream, long? compressed)
@@ -250,7 +263,7 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
         return output.ToArray();
     }
 
-    private byte[] Gunzip(string name, byte[] content)
+    private byte[] Gunzip(Expansion run, string name, byte[] content)
     {
         using var gzip = new GZipStream(new MemoryStream(content, writable: false), CompressionMode.Decompress);
         using var output = new MemoryStream();
@@ -258,6 +271,7 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
         int n;
         while ((n = gzip.Read(buffer)) > 0)
         {
+            run.Ct.ThrowIfCancellationRequested();
             output.Write(buffer, 0, n);
             if (output.Length > _options.MaxTotalBytes)
                 throw new LimitException($"'{Printable(name)}' decompresses to more than {_options.MaxTotalBytes.ToString(CultureInfo.InvariantCulture)} bytes; the archive is refused.");
