@@ -1,8 +1,6 @@
 # Design: incremental sync and deletions
 
-**Status:** proposal. Nothing here is implemented, and the code blocks are sketches that have not been compiled. It replaces the
-cursor-store and commit sketch in section 4 of [shared-groundwork.md](shared-groundwork.md) and the "Deletions" paragraph in its
-section 1, and gives the Graph, Google Drive, SQL and object storage designs one mechanism to share.
+**Status:** the smaller sync core is built. `IIncrementalSourceConnector`, checkpoints, flush-before-commit, `ISyncCursorStore`, `FileSyncCursorStore`, and the SQLite connector as first user are implemented. Deletions, retries and full-run comparison are planned in `docs/ingestion-hardening.md`.
 
 **Where it fits:** the sync behind tiers 2 and 3 of [document search](../roadmap.md#document-search-in-three-tiers). Build it in
 steps: the smaller core (checkpoints, saving only after the exporters flush, the version check) with the first tier 2 or 3
@@ -11,13 +9,13 @@ connector, and deletions and retries with the first connector that has a change 
 ## The problem today
 
 - **Delivery is at most once.** `FolderSyncStateStore` records every scanned file, including ones that failed, so a failure is
-  not retried until the file changes. The inbox adapters save their cursor when enumeration ends, before the caller has processed
-  anything.
+  not retried until the file changes. ~~The inbox adapters save their cursor when enumeration ends, before the caller has processed
+  anything.~~ **Fixed:** `InboxSyncCommit.Manual` exists (plan section 10).
 - **There is no notion of success.** Sync state is saved by the connector (inbox) or by the caller (`SaveStateAsync`) without
   knowing whether the run worked.
 - **A connector has no way to report a deletion.** `ISourceConnector` yields `SourceItem`s only. The Graph and Drive designs need
   to pass on deletions their change feeds report, and had invented a report field for it.
-- **Long first runs cannot resume.** A crash or a `MaxItemsProcessed` cap at item 90,000 of 100,000 means starting again.
+- ~~**Long first runs cannot resume.**~~ **Fixed:** A crash or a `MaxItemsProcessed` cap at item 90,000 of 100,000 can now resume from the last checkpoint (folder failure issue fixed in plan section 10).
 
 ## Goals
 

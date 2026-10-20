@@ -1,7 +1,7 @@
 # Design: testing and verification
 
 **Status:** proposal. Describes how new connectors could be tested and labelled honestly, given that many cannot be tried against
-real services in CI.
+real services in CI. Conformance and labels are planned as WP7 and WP8 in `docs/ingestion-hardening.md`.
 
 ## Where tests stand
 
