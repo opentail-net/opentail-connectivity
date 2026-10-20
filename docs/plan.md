@@ -257,8 +257,10 @@ connector, so the contract is tested by real use before it grows. Section 7's co
   (owner: build it now), with `UserOneDrive` and the delegated-token check from slice 2. Stubbed tests only: needs a real tenant
   before it is Verified.*
 - [ ] **[C]** Graph files, later slices: OneDrive targets, folder scoping, permissions and metadata-only mode, Teams channel files.
-- [ ] **[C]** Google Drive, slice 1: shared drives with a service account, listing then changes, exports
-  ([Google Drive](design/google-drive.md#suggested-slices)).
+- [x] **[C]** Google Drive, slice 1: shared drives with a service account, listing then changes, exports
+  ([Google Drive](design/google-drive.md#suggested-slices)). *Built 2026-10-20 as `OpenTail.Connectivity.Drive.Google` (owner:
+  build it now), with My Drive and the token scope check from slice 2. Stubbed tests only: needs a real Workspace before it is
+  Verified.*
 - [ ] **[C]** Google Drive, later slices: My Drive, folder scoping, permissions and metadata-only mode.
 
 **Summary cards** (tier 2 with summaries), if section 5 says names and paths are not enough:
@@ -324,7 +326,8 @@ Each design lists what it depends on. Tick when checked against current vendor d
 
 - [~] Graph files ([list](design/microsoft-graph-files.md#vendor-facts-to-verify)). *Delta facts checked 2026-10-20 (two
   corrections); `Sites.Selected` and folder-delete behaviour still need a real tenant.*
-- [ ] Google Drive ([list](design/google-drive.md#vendor-facts-to-verify)).
+- [~] Google Drive ([list](design/google-drive.md#vendor-facts-to-verify)). *Changes and export facts checked 2026-10-20;
+  rejected-token reporting undocumented; trashing, corpora and inline permissions still need a real Workspace.*
 - [ ] Object storage ([list](design/object-storage.md#vendor-facts-to-verify)).
 - [ ] Wikis: Confluence search and sign-in; Notion's title-only search ([roadmap: wikis](roadmap.md#wikis)).
   *Partly checked 2026-10-18 against Atlassian's published OpenAPI documents (Confluence v1 `swagger.v3.json`, v2

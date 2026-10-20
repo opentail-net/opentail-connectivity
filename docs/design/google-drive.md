@@ -1,7 +1,11 @@
 # Design: Google Drive
 
-**Status:** proposal. Nothing is implemented; the code blocks are sketches that have not been compiled. Vendor API details are
-written from general knowledge of Google's documentation; the ones the design depends on are listed under
+**Status:** slice 1 built (2026-10-20) as `OpenTail.Connectivity.Drive.Google`, plus `MyDrive` targets and the token scope check
+from slice 2. Tested against a stubbed Google API only; **not yet run against a real Workspace**. How it differs from the sketch
+below: it calls the Drive REST API over `HttpClient` with the existing `Google.Apis.Auth` token source, so `Google.Apis.Drive.v3`
+is **not** a new dependency after all; there are no `CapturePermissions`, `DownloadContent` or `IncludeSharedWithMe` options yet;
+`FromUserRefreshToken` is not in yet (any `GoogleCredential` works, and its scope is checked); and retries use the pipeline's retry
+list, not `FindAsync`. Vendor facts were checked against Google's reference on 2026-10-20; results under
 [vendor facts to verify](#vendor-facts-to-verify). Depends on [shared-groundwork.md](shared-groundwork.md) (stable IDs, item
 metadata, file filters) and [sync-and-deletions.md](sync-and-deletions.md) (change stream, checkpoints, deletions).
 
@@ -199,17 +203,23 @@ live access check before showing results.
 
 ## Vendor facts to verify
 
-- `changes.getStartPageToken` and `changes.list` take `driveId` for a shared drive, and need `supportsAllDrives` /
-  `includeItemsFromAllDrives`.
-- `files.list` with `corpora=drive` and `driveId` lists a shared drive; which `corpora` lists My Drive without shared-with-me
-  files.
-- Trashing a file produces a change with `file.trashed=true`; deleting it produces `removed=true`.
-- Export size limit and supported export formats, especially Sheets to `.xlsx`.
-- How a rejected page token is reported.
-- Whether file `permissions` are returned inline for shared-drive files.
+Checked on 2026-10-20 against Google's [changes.list](https://developers.google.com/workspace/drive/api/reference/rest/v3/changes/list),
+[Change](https://developers.google.com/workspace/drive/api/reference/rest/v3/changes),
+[files.export](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export) and
+[export formats](https://developers.google.com/workspace/drive/api/guides/ref-export-formats) pages:
+- **Confirmed:** `changes.list` takes `driveId`, `supportsAllDrives`, `includeItemsFromAllDrives`, `includeRemoved`; `pageSize`
+  defaults to 100, at most 1000; `newStartPageToken` comes only on the last page; "The page token doesn't expire."
+- **Confirmed:** `removed` means the file left the change list, through deletion or loss of access. Both map to `Delete (Deleted)`.
+- **Confirmed:** Docs and Slides export to `text/plain`; Sheets to `.xlsx`; CSV and TSV hold the first sheet only. Exports are
+  "limited to 10 MB".
+- **Not documented:** how a rejected page token is reported. The connector resets on 404, 410, or a 400 that names the page token.
+- **Not checked yet:** trashing giving `file.trashed=true` in the feed (the connector handles both that and `removed`); which
+  `corpora` excludes shared-with-me files (v1 lists My Drive with `'me' in owners` and treats `ownedByMe=false` as out of scope);
+  inline `permissions` on shared-drive files (slice 4).
 
 ## Open questions
 
-- Is the service account added to shared drives the right primary approach, with delegation as the broad option?
-- Are the default export formats right, and should Sheets be `.xlsx` rather than CSV?
-- Is `IncludeSharedWithMe` needed at all, given that it reaches files the organisation may not own?
+Built with these provisional answers (owner asked for the connector on 2026-10-20; easy to change before 1.0):
+- A service account added to shared drives is the recommended approach; delegation is documented as the broad option.
+- Docs and Slides to text, Sheets to `.xlsx` (CSV would hold the first sheet only); `ExportFormats` overrides them.
+- `IncludeSharedWithMe` is left out: My Drive means files the user owns.

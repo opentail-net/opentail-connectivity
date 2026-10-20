@@ -17,6 +17,7 @@ They are used by the OpenTail Host's modules and by OpenTail itself.
 | `OpenTail.Connectivity.Sql` | SQLite databases, with an allow-list of fields. | Verified |
 | `OpenTail.Connectivity.Social` | Social platforms (X, Reddit, YouTube, Meta), with sentiment scoring and marketing metadata. | Tested |
 | `OpenTail.Connectivity.Inbox.Imap` | IMAP inbox reader (MailKit), plus an SMTP sender. | Tested |
+| `OpenTail.Connectivity.Drive.Google` | Google Drive shared drives and My Drive through the changes feed: incremental, with deletions and checkpoints; Docs, Sheets and Slides exported. | Tested |
 | `OpenTail.Connectivity.Drive.Graph` | SharePoint libraries and OneDrive through Graph delta: incremental, with deletions and checkpoints. | Tested |
 | `OpenTail.Connectivity.Inbox.Graph` | Outlook inbox, sender and calendar (Microsoft Graph). | Tested |
 | `OpenTail.Connectivity.Inbox.Gmail` | Gmail inbox, sender and calendar (Gmail API). | Tested |
