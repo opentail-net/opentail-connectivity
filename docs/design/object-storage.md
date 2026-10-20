@@ -1,7 +1,8 @@
 # Design: object storage (S3, Azure Blob, Google Cloud Storage)
 
-**Status:** slice 5 (`ObjectStorageConnector`) is built. The other code blocks are sketches that have not been compiled. Vendor
-details are written from general knowledge; the ones the design depends on are listed under [vendor facts to verify](#vendor-facts-to-verify).
+**Status:** `ObjectStorageConnector` and the S3, Azure Blob, GCS, SFTP and Dropbox adapters are built and have stubbed-service or
+unit-test coverage. They have not all been exercised against live cloud services. Vendor details that matter are listed under
+[vendor facts to verify](#vendor-facts-to-verify).
 Depends on [shared-groundwork.md](shared-groundwork.md) (stable IDs, file filters) and
 [sync-and-deletions.md](sync-and-deletions.md) (change stream, checkpoints).
 
@@ -147,7 +148,7 @@ Rules:
 | Key ending in `/` with size 0 (a "folder" placeholder) | Skipped. |
 | Fails the filter, or over `MaxFileSizeBytes` | Not yielded. |
 | Needs a restore (S3 Glacier Flexible Retrieval and Deep Archive, Azure Archive tier) | Skipped with a reason in the report. A restore is never triggered. |
-| Readable but costly to read (GCS Coldline and Archive, S3 Glacier Instant Retrieval) | Skipped with a reason unless `ReadColdStorage`. |
+| Readable but costly to read (GCS Nearline, Coldline and Archive; S3 Glacier Instant Retrieval) | Skipped with a reason unless `ReadColdStorage`. |
 | A single gzipped file (`.gz`, or `Content-Encoding: gzip`) | Decompressed before extraction, and named without the `.gz` so the inner extension picks the extractor. Decompression stops at `MaxFileSizeBytes`, so a small file cannot expand into gigabytes. |
 | Archives (`.zip`, `.tar`, `.tar.gz`) | Not expanded; rejected as unsupported. |
 | Columnar and binary data (`.parquet`, `.avro`, `.orc`) | Rejected as unsupported, with a reason. Not converted. |

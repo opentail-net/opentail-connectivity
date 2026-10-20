@@ -15,6 +15,7 @@ arrives as `extraction.email.subject` (see [architecture](architecture.md#the-pi
 | Email | `EmlFileConnector`, `MboxConnector` | `EmlTextExtractor` | one per message |
 | Sql | `SqliteSourceConnector` | `SqlRowTextExtractor` | one per row (`sql-row`) |
 | Social | `TwitterConnector`, `RedditConnector`, `YouTubeConnector`, `MetaConnector` | `TwitterTextExtractor`, `RedditTextExtractor`, `YouTubeTextExtractor`, `MetaTextExtractor` | one per post or video |
+| Storage | `ObjectStorageConnector` with an `IObjectStoreClient` adapter | your chosen `ITextExtractor` | one per object |
 | Inbox.* and Calendar.Ics | adapters | none | see [Inbox and calendars](#inbox-and-calendars) |
 
 ## Files
@@ -123,6 +124,27 @@ with a table, a `ModifiedField` and a sync store in the pipeline options, it rea
 last committed modified value itself, so rows sharing it are read again rather than missed. Rows with a NULL modified value are
 not read incrementally, and a row written later with an older modified value than one already read is missed, so use a column the
 database sets on every write. Deleted rows are not reported.
+
+## Object storage
+
+Use the shared `ObjectStorageConnector` with any `IObjectStoreClient` adapter. The Google Cloud Storage adapter is in
+`OpenTail.Connectivity.Storage.Gcs`; it takes a caller-built `StorageClient`, leaving credentials and HTTP transport under the
+caller's control:
+
+```csharp
+var storageClient = new StorageClientBuilder
+{
+    Credential = googleCredential,
+    HttpClientFactory = httpClientFactory,
+}.Build();
+var objects = new GcsObjectStoreClient(storageClient, "reports-bucket");
+var source = new ObjectStorageConnector(objects, tenantContext,
+    new ObjectStorageOptions(Prefix: "monthly/"));
+```
+
+The adapter reports the GCS object generation as the version token. Standard objects have no retrieval surcharge; Nearline,
+Coldline and Archive set `CostsExtraToRead`. These tiers remain directly readable and do not require a restore operation. This
+package has stubbed-service unit tests; it has not been verified against a live GCS bucket.
 
 ## Social
 
