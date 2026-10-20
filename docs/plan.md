@@ -794,7 +794,7 @@ All findings confirmed (two narrower than reported), five more found; plan in
 
 ## 26. Ingestion hardening (informed by Rag.NET), 2026-10-20
 
-Built 2026-10-20 (WP4 by the main model, the rest by the coding model), **reopened by the review in section 27**. Plan: [ingestion-hardening.md](ingestion-hardening.md). ChatGPT's Rag.NET advice was
+Built 2026-10-20 (WP4 by the main model, the rest by the coding model), reopened by the review in section 27 and closed again there. Plan: [ingestion-hardening.md](ingestion-hardening.md). ChatGPT's Rag.NET advice was
 checked against the code: deletions, retries, conformance tests and labels are real gaps (designed in `sync-and-deletions.md`
 and `testing-and-verification.md`, never built); inbox cursors and folder retries were already fixed; sitemap and RSS exist;
 job queues belong to the Host's triggers (section 21).
@@ -812,17 +812,17 @@ job queues belong to the Host's triggers (section 21).
 
 ## 27. External review of the ingestion work, 2026-10-20
 
-All nine findings confirmed; plan in [review-2026-10-20-ingestion.md](review-2026-10-20-ingestion.md). Nothing fixed yet.
+All nine findings confirmed; plan in [review-2026-10-20-ingestion.md](review-2026-10-20-ingestion.md). All fixed 2026-10-20 (I2, C1, C2 by the main model; C1 also stops a PATCH clearing the location).
 
-- [ ] **[C]** I1: `SeenSourceRefs` for ordinary (non-incremental) connectors.
-- [ ] **[C]** I2: an item failed after the last checkpoint is tried twice in the next run (main model).
-- [ ] **[C]** I3: RSS version is a hash of the item, not `guid|pubDate`.
-- [ ] **[C]** I4: `FileItemVersionStore` re-reads and merges under the lock.
-- [ ] **[C]** I5: escape plain cursors that start with `otail-`.
-- [ ] **[C]** I6: RSS duplicate test and conformance check 3 assert what they claim.
-- [ ] **[C]** C1: Graph update sends a body only when there is one.
-- [ ] **[C]** C2: Graph writes timed events in their own zone (main model).
-- [ ] **[C]** C3: Gmail `GetEventAsync` uses the calendar's zone for all-day events.
+- [x] **[C]** I1: `SeenSourceRefs` for ordinary (non-incremental) connectors.
+- [x] **[C]** I2: an item failed after the last checkpoint is tried twice in the next run (main model).
+- [x] **[C]** I3: RSS version is a hash of the item, not `guid|pubDate`.
+- [x] **[C]** I4: `FileItemVersionStore` re-reads and merges under the lock.
+- [x] **[C]** I5: escape plain cursors that start with `otail-`.
+- [x] **[C]** I6: RSS duplicate test and conformance check 3 assert what they claim.
+- [x] **[C]** C1: Graph update sends a body only when there is one.
+- [x] **[C]** C2: Graph writes timed events in their own zone (main model).
+- [x] **[C]** C3: Gmail `GetEventAsync` uses the calendar's zone for all-day events.
 
 ## Background, no action planned
 
