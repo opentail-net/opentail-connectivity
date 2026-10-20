@@ -56,6 +56,35 @@ public sealed class IncrementalSyncTests : IDisposable
         }
     }
 
+    private sealed class PrefixCursorSource : IIncrementalSourceConnector
+    {
+        public const string Cursor = "otail-retry-v1:{}";
+        public const string Scope = "test:prefix-cursor";
+        public List<string?> CursorsAskedFor { get; } = [];
+        public string SyncScope => Scope;
+
+        public async IAsyncEnumerable<SourceChange> GetChangesAsync(
+            string? cursor,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            CursorsAskedFor.Add(cursor);
+            await Task.Yield();
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return new SourceChange.Checkpoint(Cursor);
+        }
+
+        public async IAsyncEnumerable<SourceItem> DiscoverAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.CompletedTask.ConfigureAwait(false);
+            yield break;
+        }
+
+        public Task<byte[]> FetchAsync(SourceItem item, CancellationToken cancellationToken = default)
+            => Task.FromResult(Array.Empty<byte>());
+    }
+
     private sealed class Exporter(List<string> log, string? failOn = null, string? failDeleteOn = null) : IConnectivityExporter, IDeletionExporter
     {
         public List<DocumentDeletion> Deletions { get; } = [];
@@ -346,6 +375,27 @@ public sealed class IncrementalSyncTests : IDisposable
         Assert.Equal(1, report.ItemsProcessed);
         Assert.Null(report.SyncScope);
         Assert.Equal([null], source.CursorsAskedFor);
+    }
+
+    [Fact]
+    public async Task Connector_cursor_with_retry_prefix_round_trips_through_the_pipeline()
+    {
+        var source = new PrefixCursorSource();
+        var pipelineOptions = new PipelineOptions(SyncStore: Store());
+
+        await new ConnectivityPipeline(source, new Extractor(), [new Exporter(_log)], pipelineOptions).RunAsync();
+        await new ConnectivityPipeline(source, new Extractor(), [new Exporter(_log)], pipelineOptions).RunAsync();
+
+        Assert.Equal([null, PrefixCursorSource.Cursor], source.CursorsAskedFor);
+    }
+
+    [Fact]
+    public async Task Ordinary_connector_cursor_is_stored_unchanged()
+    {
+        var store = Store();
+        await store.SaveAsync(PrefixCursorSource.Scope, "42", 0);
+
+        Assert.Equal("42", (await store.LoadAsync(PrefixCursorSource.Scope))!.Cursor);
     }
 
     [Fact]

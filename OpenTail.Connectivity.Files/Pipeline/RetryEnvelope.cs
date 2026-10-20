@@ -14,16 +14,19 @@ internal sealed class RetryEntry
 
 /// <summary>
 /// The stored cursor, wrapped with the retry list when there is one, so both are saved in the same write and can never disagree.
-/// With no retries the connector's cursor is stored exactly as before, so existing cursors and stores are unaffected.
+/// Without retries, cursors outside the reserved prefix are stored as before; reserved-prefix cursors use an escape prefix.
 /// </summary>
 internal static class RetryEnvelope
 {
     private const string Prefix = "otail-retry-v1:";
+    private const string PlainPrefix = "otail-plain-v1:";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     public static (string? Cursor, List<RetryEntry> Retries) Read(string? stored)
     {
+        if (stored is not null && stored.StartsWith(PlainPrefix, StringComparison.Ordinal))
+            return (stored[PlainPrefix.Length..], []);
         if (stored is null || !stored.StartsWith(Prefix, StringComparison.Ordinal))
             return (stored, []);
 
@@ -33,7 +36,9 @@ internal static class RetryEnvelope
     }
 
     public static string? Write(string? cursor, IReadOnlyCollection<RetryEntry> retries)
-        => retries.Count == 0 ? cursor : Prefix + JsonSerializer.Serialize(new Body(cursor, [.. retries]), Json);
+        => retries.Count == 0
+            ? cursor?.StartsWith("otail-", StringComparison.Ordinal) == true ? PlainPrefix + cursor : cursor
+            : Prefix + JsonSerializer.Serialize(new Body(cursor, [.. retries]), Json);
 
     private sealed record Body(string? Cursor, List<RetryEntry>? Retries);
 }
