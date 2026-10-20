@@ -94,6 +94,49 @@ public sealed class GraphCalendarAdapterTests
         Assert.Contains("seriesMasterId", query, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task GetEvents_follows_calendar_view_pages()
+    {
+        var handler = new StubGraph(uri => uri.Query.Contains("page=2", StringComparison.OrdinalIgnoreCase)
+            ? """{"value":[{"id":"e3"}]}"""
+            : """{"value":[{"id":"e1"},{"id":"e2"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/users/me%40example.com/calendar/calendarView?page=2"}""");
+        var adapter = Create(handler);
+
+        var events = await adapter.GetEventsAsync(new CalendarFetchOptions(MaxEvents: 10)).ToListAsync();
+
+        Assert.Equal(["e1", "e2", "e3"], events.Select(ev => ev.EventId));
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task GetEvents_stops_paging_when_MaxEvents_is_reached()
+    {
+        var handler = new StubGraph(uri => uri.Query.Contains("page=2", StringComparison.OrdinalIgnoreCase)
+            ? """{"value":[{"id":"e3"}]}"""
+            : """{"value":[{"id":"e1"},{"id":"e2"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/users/me%40example.com/calendar/calendarView?page=2"}""");
+        var adapter = Create(handler);
+
+        var events = await adapter.GetEventsAsync(new CalendarFetchOptions(MaxEvents: 2)).ToListAsync();
+
+        Assert.Equal(["e1", "e2"], events.Select(ev => ev.EventId));
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task GetEvents_follows_pages_for_an_explicit_calendar()
+    {
+        var handler = new StubGraph(uri => uri.Query.Contains("page=2", StringComparison.OrdinalIgnoreCase)
+            ? """{"value":[{"id":"e2"}]}"""
+            : """{"value":[{"id":"e1"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/users/me%40example.com/calendars/abc/calendarView?page=2"}""");
+        var adapter = Create(handler);
+
+        var events = await adapter.GetEventsAsync(new CalendarFetchOptions(CalendarId: "abc", MaxEvents: 10)).ToListAsync();
+
+        Assert.Equal(["e1", "e2"], events.Select(ev => ev.EventId));
+        Assert.All(events, ev => Assert.Equal("abc", ev.CalendarId));
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
     private static GraphCalendarAdapter Create(StubGraph handler)
     {
         var client = new GraphServiceClient(new HttpClient(handler), new AnonymousAuthenticationProvider());

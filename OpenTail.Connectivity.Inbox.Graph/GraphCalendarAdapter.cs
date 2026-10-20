@@ -36,26 +36,19 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
         CalendarFetchOptions options,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
+        if (options.MaxEvents <= 0)
+            yield break;
+
         var calendarId = IsDefault(options.CalendarId) ? string.Empty : options.CalendarId!;
         var start = (options.Start ?? DateTimeOffset.UtcNow).ToString("o");
         var end = (options.End ?? DateTimeOffset.UtcNow.AddDays(30)).ToString("o");
 
         var user = GetClient().Users[_settings.UserEmail];
-        var response = IsDefault(options.CalendarId)
-            ? await user.Calendar.CalendarView.GetAsync(req =>
-            {
-                req.QueryParameters.StartDateTime = start;
-                req.QueryParameters.EndDateTime = end;
-                req.QueryParameters.Top = options.MaxEvents;
-                req.QueryParameters.Select =
-                [
-                    "id", "subject", "start", "end", "location", "body",
-                    "isAllDay", "isOnlineMeeting", "onlineMeetingUrl",
-                    "showAs", "sensitivity", "responseStatus", "recurrence",
-                    "organizer", "attendees", "categories", "type", "seriesMasterId"
-                ];
-            }, ct)
-            : await user.Calendars[calendarId].CalendarView.GetAsync(req =>
+        var yielded = 0;
+        if (IsDefault(options.CalendarId))
+        {
+            var calendarView = user.Calendar.CalendarView;
+            var response = await calendarView.GetAsync(req =>
             {
                 req.QueryParameters.StartDateTime = start;
                 req.QueryParameters.EndDateTime = end;
@@ -69,10 +62,53 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
                 ];
             }, ct);
 
-        foreach (var ev in response?.Value ?? [])
-            if (ev is not null)
-                // The default-calendar route has no calendar ID segment.
-                yield return GraphCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail);
+            while (response is not null)
+            {
+                foreach (var ev in response.Value ?? [])
+                    if (ev is not null)
+                    {
+                        yield return GraphCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail);
+                        if (++yielded >= options.MaxEvents)
+                            yield break;
+                    }
+
+                if (string.IsNullOrEmpty(response.OdataNextLink))
+                    yield break;
+                response = await calendarView.WithUrl(response.OdataNextLink).GetAsync(cancellationToken: ct);
+            }
+        }
+        else
+        {
+            var calendarView = user.Calendars[calendarId].CalendarView;
+            var response = await calendarView.GetAsync(req =>
+            {
+                req.QueryParameters.StartDateTime = start;
+                req.QueryParameters.EndDateTime = end;
+                req.QueryParameters.Top = options.MaxEvents;
+                req.QueryParameters.Select =
+                [
+                    "id", "subject", "start", "end", "location", "body",
+                    "isAllDay", "isOnlineMeeting", "onlineMeetingUrl",
+                    "showAs", "sensitivity", "responseStatus", "recurrence",
+                    "organizer", "attendees", "categories", "type", "seriesMasterId"
+                ];
+            }, ct);
+
+            while (response is not null)
+            {
+                foreach (var ev in response.Value ?? [])
+                    if (ev is not null)
+                    {
+                        yield return GraphCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail);
+                        if (++yielded >= options.MaxEvents)
+                            yield break;
+                    }
+
+                if (string.IsNullOrEmpty(response.OdataNextLink))
+                    yield break;
+                response = await calendarView.WithUrl(response.OdataNextLink).GetAsync(cancellationToken: ct);
+            }
+        }
     }
 
     public async Task<CalendarEvent?> GetEventAsync(
