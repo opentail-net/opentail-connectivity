@@ -4,6 +4,7 @@ using OpenTail.Connectivity.Files;
 using OpenTail.Connectivity.Files.Contracts;
 using OpenTail.Connectivity.Files.Models;
 using OpenTail.Connectivity.Files.Pipeline;
+using OpenTail.Connectivity.Storage;
 using OpenTail.Connectivity.Storage.Dropbox;
 
 namespace OpenTail.Connectivity.Tests.Storage;
@@ -80,6 +81,40 @@ public sealed class DropboxConnectorTests
 
         Assert.Equal("dropbox:///root/ignored.bin", change.SourceRef);
         Assert.Equal(DeletionReason.OutOfScope, change.Reason);
+    }
+
+    [Fact]
+    public async Task Generic_object_storage_resume_replays_a_sorted_dropbox_page_safely()
+    {
+        var entries = new[]
+        {
+            "{\".tag\":\"file\",\"path_display\":\"/root/c.txt\",\"size\":1,\"server_modified\":\"2026-10-03T10:00:00Z\",\"content_hash\":\"c\"}",
+            "{\".tag\":\"file\",\"path_display\":\"/root/b.txt\",\"size\":3,\"server_modified\":\"2026-10-02T10:00:00Z\",\"content_hash\":\"b\"}",
+            "{\".tag\":\"file\",\"path_display\":\"/root/a.txt\",\"size\":2,\"server_modified\":\"2026-10-01T10:00:00Z\",\"content_hash\":\"a\"}",
+        };
+        var call = 0;
+        var handler = new ApiHandler(_ =>
+        {
+            var reordered = call++ switch
+            {
+                0 => entries,
+                1 => entries.Reverse().ToArray(),
+                _ => [entries[1], entries[2], entries[0]],
+            };
+            return Json(HttpStatusCode.OK, $"{{\"entries\":[{string.Join(',', reordered)}],\"cursor\":\"cursor\",\"has_more\":false}}");
+        });
+        using var http = new HttpClient(handler);
+        using var client = new DropboxObjectStoreClient(_ => Task.FromResult("token"), "/root", http);
+        var connector = new ObjectStorageConnector(client, "tenant", new ObjectStorageOptions(MaxBytesPerRun: 4));
+
+        var interrupted = await connector.GetChangesAsync(null).ToListAsync();
+        var midPageCursor = Assert.Single(interrupted.OfType<SourceChange.Checkpoint>()).Cursor;
+        var firstReplay = await connector.GetChangesAsync(midPageCursor).ToListAsync();
+        var secondReplay = await connector.GetChangesAsync(midPageCursor).ToListAsync();
+
+        Assert.Equal(["a.txt", "b.txt"], interrupted.OfType<SourceChange.Upsert>().Select(c => c.Item.DisplayName));
+        Assert.Equal(["c.txt"], firstReplay.OfType<SourceChange.Upsert>().Select(c => c.Item.DisplayName));
+        Assert.Equal(["c.txt"], secondReplay.OfType<SourceChange.Upsert>().Select(c => c.Item.DisplayName));
     }
 
     [Fact]

@@ -52,6 +52,7 @@ public sealed class DropboxObjectStoreClient : IObjectStoreClient, IDisposable
             .Where(entry => entry.Tag == "file" && entry.Info is not null)
             .Select(entry => entry.Info!)
             .Where(info => info.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(info => info.Key, StringComparer.Ordinal)
             .ToList();
         return new ObjectListingPage(objects, page.HasMore ? page.Cursor : null);
     }
