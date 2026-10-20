@@ -35,6 +35,28 @@ public sealed class InMemoryObjectStoreClient(string container = "memory") : IOb
 
     public bool Remove(string key) => objects.Remove(key);
 
+    internal ObjectInfo PutFromWriter(string key, byte[] bytes, string? contentType, bool overwrite)
+    {
+        lock (objects)
+        {
+            if (!overwrite && objects.ContainsKey(key))
+                throw new ObjectExistsException(key);
+            var info = new ObjectInfo(
+                key,
+                bytes.LongLength,
+                DateTimeOffset.UtcNow,
+                $"\"{Convert.ToHexString(SHA256.HashData(bytes))[..16]}\"");
+            objects[key] = (info, bytes, contentType, null);
+            return info;
+        }
+    }
+
+    internal bool RemoveFromWriter(string key)
+    {
+        lock (objects)
+            return objects.Remove(key);
+    }
+
     public Task<ObjectListingPage> ListAsync(string prefix, string? resumeToken, int pageSize, CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
