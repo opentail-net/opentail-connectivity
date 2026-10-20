@@ -64,38 +64,61 @@ which is not exported (fail closed). `PatternRedactor` is the built-in one: opt-
 `[REDACTED:<rule>]` in the title, body and metadata values, with `redaction.count` in the metadata. It is a safety net, not a
 compliance control: it misses names, addresses and free-text identifiers.
 
-## Incremental runs
+## Incremental runs and deletions
 
-A source that implements `IIncrementalSourceConnector` streams changes since a cursor: `Upsert` items, `Checkpoint` cursors and
-`Reset` when its stored cursor was rejected. Give the pipeline an `ISyncCursorStore` (`FileSyncCursorStore(path)`: one JSON file,
-many scopes) in `PipelineOptions.SyncStore` and it runs incrementally:
+A source that implements `IIncrementalSourceConnector` streams changes since a cursor: `Upsert` items, `Delete` events,
+`Checkpoint` cursors and `Reset` when its stored cursor was rejected. Give the pipeline an `ISyncCursorStore`
+(`FileSyncCursorStore(path)`: one JSON file, many scopes) in `PipelineOptions.SyncStore` and it runs incrementally:
 
 - It loads the cursor for the connector's `SyncScope` and passes it to `GetChangesAsync` (null: a full run).
 - At a checkpoint, once `SyncOptions.CheckpointEveryItems` (500) changes or `CheckpointEvery` (5 minutes) have passed, it
   **flushes every exporter and only then saves the cursor**. At the end of the stream, or at `MaxItemsProcessed`, it commits the
   last checkpoint reached.
 - Each save carries the version it loaded; if another run saved meanwhile, `SyncConflictException` and nothing is saved.
-- A failed fetch (network, throttling) holds the cursor where it was for the rest of the run, so the next run repeats from there
-  and the item is not skipped. A rejected item (extraction or validation failed) does not: the same bytes would fail again.
+- A failed fetch (network, throttling) adds the item to a **retry list** stored with the cursor (up to `MaxRetryEntries`, default
+  10,000). Each run first retries listed items before reading new changes. After `MaxItemAttempts` (default 3), a permanently
+  failing item is dropped with an error and the cursor moves on. A rejected item (extraction or validation failed) is not retried:
+  the same bytes would fail again.
 - An exporter or stream exception stops the run; nothing after the last commit is saved. A crash between flush and save repeats
   some items next run, which stable ids make harmless.
-- The report's `SyncScope`, `FullRun` and `SyncCommitted` say what happened.
+- The report's `SyncScope`, `FullRun`, `SyncCommitted`, `ItemsRetried` and `ItemsAbandoned` say what happened.
 
-Without a store the pipeline uses `DiscoverAsync`, as for any source. Deletions and a retry list are designed
-([sync and deletions](design/sync-and-deletions.md)) but not built: they come with the first connector that has a change feed.
+### Deletions
+
+Connectors with a change feed (`ReportsDeletions = true`) yield `SourceChange.Delete(sourceRef, reason)` when an item is removed
+or leaves scope. Each deletion is passed to exporters implementing `IDeletionExporter` as a `DocumentDeletion` with the same
+stable `Id` the upsert had. Deletions are processed in order with upserts and committed at checkpoints.
+
+Connectors without a change feed (SQL, object storage) cannot see deletions incrementally. With `SyncOptions.CollectSourceRefs`,
+a **full run** that completes fills `IngestionReport.SeenSourceRefs` with every source ref discovered, whatever its outcome.
+Consumers compare this list with what they hold to find deletions by absence. `SourceRefsTruncated` warns when the list hit
+`MaxReportedRefs` (default 100,000).
+
+The pipeline never infers a deletion from absence itself; it only reports what the connector says or lists what it saw.
+
+### Version-based skipping
+
+When a source provides a version token (ETag, content hash, last-modified), the pipeline can skip fetching unchanged items. Set
+`PipelineOptions.VersionStore` to an `IItemVersionStore` (`FileItemVersionStore(path)`). The pipeline stores each exported
+document's `source.version` metadata and skips re-fetching when the token matches. This works across both incremental and full
+runs. Connectors set `source.version` in `SourceItem.Metadata`; RSS feeds use `guid|updated`, web crawlers use HTTP `ETag`.
+
+Without a version store, every item is fetched and extracted as before.
 
 ## Packages
 
 | Package | Source | Notes |
 |---|---|---|
-| `Files` | Folders and files | Include/exclude patterns, size and depth limits, noisy-directory skipping, incremental sync state. Also holds the contracts, models, exporters and the shared inbox and calendar abstractions. |
-| `Web` | URLs | Same-domain crawling. |
+| `Files` | Folders and files | Include/exclude patterns, size and depth limits, noisy-directory skipping, incremental sync state with deletion detection. Also holds the contracts, models, exporters, and the shared inbox and calendar abstractions. |
+| `Web` | URLs | Same-domain crawling with sitemap support, version-based skipping via HTTP ETag. |
 | `Csv` | CSV rows | `CsvConnectorConfig` names the id, body, title, modified and metadata columns; only listed columns reach the document. |
 | `Email` | `.eml`, `.mbox` | Built on MimeKit. |
-| `Sql` | SQLite databases | Allow-list of fields. Despite the package name, only SQLite is implemented. |
+| `Sql` | SQLite databases | Allow-list of fields. Incremental connector with full-run source ref collection. Despite the package name, only SQLite is implemented. |
 | `Social` | X, Reddit, YouTube, Meta | Sentiment scoring and marketing metadata. |
 | `Inbox.Imap`, `Inbox.Graph`, `Inbox.Gmail` | Mailboxes | Implement `IInboxAdapter` plus attachment and thread fetchers; Graph and Gmail also provide calendar adapters. |
+| `Drive.Google`, `Drive.Graph` | Google Drive, OneDrive/SharePoint | Incremental connectors with change feeds: deletions, checkpoints, version skipping. |
 | `Calendar.Ics` | ICS feed URLs | Implements `ICalendarAdapter` read-only. It downloads an ICS file over HTTP (cached for 30 seconds by default); it does not speak the CalDAV protocol. |
+| `Storage`, `Storage.S3`, `Storage.AzureBlob` | Object storage | Read-only adapters over S3 and Azure Blob Storage. Generic `ObjectStorageConnector` provides incremental sync with watermarks. |
 
 ## Read by default, with opt-in writes
 

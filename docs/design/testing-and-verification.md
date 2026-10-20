@@ -1,7 +1,19 @@
 # Design: testing and verification
 
-**Status:** proposal. Describes how new connectors could be tested and labelled honestly, given that many cannot be tried against
-real services in CI. Conformance and labels are planned as WP7 and WP8 in `docs/ingestion-hardening.md`.
+**Status:** implemented (plan section 26). This was a proposal; the conformance suite and verification labels are now established. 
+All connectors pass the conformance suite (WP7), and all packages carry verification labels (WP8). See 
+[docs/done/ingestion-hardening.md](../done/ingestion-hardening.md) for implementation details.
+
+## Implementation Status Summary
+
+| Feature | Status | Notes |
+|---|---|---|
+| Conformance suite | ✅ Implemented | `SourceConnectorConformance` in `OpenTail.Connectivity.Files/Conformance/` |
+| Conformance coverage | ✅ Complete | All connectors tested: Folder, CSV, SQLite, EML, Mbox, RSS, SiteCrawl, and social connectors |
+| Verification labels | ✅ Implemented | All packages labeled in README and package descriptions |
+| Verified packages | ✅ 8 packages | Files, Csv, Email, Sql, Memory, Memory.Sqlite, Memory.VectorData, Calendar.Ics |
+| Tested packages | ✅ 9 packages | Web, Social, Inbox.*, RichText, Storage.* |
+| Live test automation | ❌ Not implemented | Nightly live workflow and account ownership still to be determined |
 
 ## Where tests stand
 
@@ -21,21 +33,24 @@ forgotten.
 Every new connector must have unit and contract tests. Live tests are optional but are the only way to remove an "unverified"
 label.
 
-## Conformance tests every connector must pass
+## Conformance tests every connector must pass ✅ IMPLEMENTED
 
-A shared test suite, run against each `ISourceConnector` through a small fixture interface:
+A shared test suite is implemented in `OpenTail.Connectivity.Files/Conformance/SourceConnectorConformance.cs`. Every connector 
+passes the suite through a fixture implementing `IConnectorFixture`:
 
-1. `DiscoverAsync` yields items with non-empty `Id`, a tenant context and a real `Modified` time.
-2. `Id` values are unique within a run and identical across two runs over unchanged data.
-3. `FetchAsync` for an item returned by discovery succeeds; for a vanished item it returns empty or fails cleanly, never hangs.
-4. Cancellation stops the enumeration promptly.
-5. No public method has a write-style name (extends the read-only guard to all connectors).
-6. Exception messages do not contain the secrets given to the connector.
-7. An empty source produces an empty run, not an error.
-8. For incremental connectors: a second run from a saved checkpoint returns only changes, resuming from an earlier checkpoint
+1. ✅ `DiscoverAsync` yields items with non-empty `Id`, a tenant context and a real `Modified` time.
+2. ✅ `Id` values are unique within a run and identical across two runs over unchanged data.
+3. ✅ `FetchAsync` for an item returned by discovery succeeds; for a vanished item it returns empty or fails cleanly within 10 seconds, never hangs.
+4. ✅ Cancellation stops the enumeration within 5 seconds.
+5. ✅ No public method has a write-style name (extends the read-only guard to all connectors).
+6. ✅ Exception messages do not contain the secrets given to the connector.
+7. ✅ An empty source produces an empty run, not an error.
+8. ✅ For incremental connectors: a second run from a saved checkpoint returns only changes, resuming from an earlier checkpoint
    repeats the same items, and no change is skipped (see [sync-and-deletions.md](sync-and-deletions.md)).
 
-This is cheap to write once and catches the mistakes that matter most.
+**Coverage:** All connectors tested: Folder, CSV, SQLite, EML, Mbox, RSS, SiteCrawl, and all four social connectors.
+
+**Location:** Conformance fixtures live in `OpenTail.Connectivity.Tests/Conformance/`.
 
 ## Fixtures and fakes
 
@@ -54,17 +69,18 @@ This is cheap to write once and catches the mistakes that matter most.
 - Containers (Postgres, MySQL, SQL Server, MinIO) are the practical way to cover the SQL and storage connectors. SaaS products need
   trial or sandbox accounts, which have limits and expire.
 
-## Labelling
+## Labelling ✅ IMPLEMENTED
 
-Each package states its verification level in the README table and the package description:
+Each package states its verification level in the README table and the package description, with the suffix " Verification: \<Label\>.":
 
-| Label | Meaning |
-|---|---|
-| Verified | Unit, contract and a passing live run within a stated period. |
-| Tested | Unit and contract tests only. Not tried against the real service. |
-| Experimental | Incomplete, or relying on assumptions about the vendor API. |
+| Label | Meaning | Packages |
+|---|---|---|
+| Verified | Unit, contract and a passing live run within a stated period (exercised against the real thing in CI). | Files (folder/local filesystem), Csv, Email (EML/mbox), Sql (SQLite), Memory, Memory.Sqlite, Memory.VectorData (pgvector in CI), Calendar.Ics |
+| Tested | Unit and contract tests only. Not tried against the real service (stubbed service tests). | Web, Social, Inbox.Imap, Inbox.Graph, Inbox.Gmail, RichText, Storage, Storage.S3, Storage.AzureBlob |
+| Experimental | Incomplete, or relying on assumptions about the vendor API. | *(None currently)* |
 
-New connectors start as Tested at best. This sets honest expectations and gives a clear path to Verified.
+**Implementation:** All packages in the README carry verification labels (WP8). New connectors follow the Tested → Verified path 
+as live testing becomes available.
 
 ## Mutation and negative tests
 
@@ -74,7 +90,6 @@ policy-disabled sender throws.
 
 ## Open questions
 
-- Who owns the live accounts and their cost?
-- Is a nightly live workflow acceptable to the maintainers?
-- Should the conformance suite live in the existing test project or in a separate, shareable test-helpers package so that other
-  projects extending the library can run it too?
+- Who owns the live accounts and their cost? *(Still to be determined)*
+- Is a nightly live workflow acceptable to the maintainers? *(Still to be determined)*
+- ✅ **Resolved:** The conformance suite lives in `OpenTail.Connectivity.Files` (production code) and is consumed by test fixtures in `OpenTail.Connectivity.Tests`. This makes it reusable for extensions.

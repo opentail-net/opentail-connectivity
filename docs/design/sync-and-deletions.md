@@ -2,9 +2,11 @@
 
 **Status:** built (2026-10-20). The sync core (`IIncrementalSourceConnector`, checkpoints, flush-before-commit, `ISyncCursorStore`,
 `FileSyncCursorStore`), deletions (`SourceChange.Delete`, `IDeletionExporter`, `JsonlDeletionExporter`), the retry list and
-full-run comparison (`SeenSourceRefs`, for ordinary connectors too) are implemented; see `docs/ingestion-hardening.md` and plan
-sections 26-27. Retries were built without `FindAsync`: the failed item is stored with the cursor and retried with `FetchAsync`.
-The first change-feed connector is `OpenTail.Connectivity.Drive.Graph` (Graph delta). The sections below are the original design.
+full-run comparison (`SeenSourceRefs`) are all implemented. See `docs/done/ingestion-hardening.md` for implementation work
+packages. The first change-feed connector is `OpenTail.Connectivity.Drive.Graph` (Graph delta). 
+
+**Implementation note:** Retries use `FetchAsync` directly rather than the `FindAsync` method shown in the contract below, so
+`FindAsync` is not part of the actual interface. The sections below are the original design for reference.
 
 **Where it fits:** the sync behind tiers 2 and 3 of [document search](../roadmap.md#document-search-in-three-tiers). Build it in
 steps: the smaller core (checkpoints, saving only after the exporters flush, the version check) with the first tier 2 or 3
@@ -66,9 +68,10 @@ public interface IIncrementalSourceConnector : ISourceConnector
     /// Changes since the cursor; a null cursor means from the beginning (a full run).
     IAsyncEnumerable<SourceChange> GetChangesAsync(string? cursor, CancellationToken ct = default);
 
-    /// Looks one item up again, for retries. Returns null only when the source confirms it no longer exists;
-    /// throws on any other failure.
-    Task<SourceItem?> FindAsync(string sourceRef, CancellationToken ct = default);
+    // NOTE: FindAsync shown below was not implemented. Retries use FetchAsync from ISourceConnector instead.
+    // /// Looks one item up again, for retries. Returns null only when the source confirms it no longer exists;
+    // /// throws on any other failure.
+    // Task<SourceItem?> FindAsync(string sourceRef, CancellationToken ct = default);
 }
 
 public abstract record SourceChange

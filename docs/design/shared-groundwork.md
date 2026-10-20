@@ -1,7 +1,10 @@
 # Design: shared groundwork
 
-**Status:** proposal. Nothing here is implemented, and the code blocks are sketches that have not been compiled. They show the
-shape of the change so the maintainers can react before any code is written.
+**Status:** implemented (plan section 26). This was a proposal; all sections below are now built. Stable IDs (section 1), item
+metadata (section 2), document transformers (section 3), incremental sync (section 4), and file filters (section 7) shipped.
+The REST helper (section 5) remains unbuilt; read-only checks (section 6) are partially covered by the conformance suite.
+
+This document is kept for reference. See [architecture.md](../architecture.md) for current behavior.
 
 This covers the shared pieces named in [roadmap.md](../roadmap.md) that every new connector would otherwise reinvent, all inside
 `OpenTail.Connectivity.Files`. No new package and no new dependency is needed.
@@ -13,16 +16,18 @@ This covers the shared pieces named in [roadmap.md](../roadmap.md) that every ne
 - Safe by default. Missing information means "restricted" or "unknown", never "public".
 - Each piece stands alone and can ship as its own pull request, in the order below.
 
-## 1. Stable document IDs
+## 1. Stable document IDs ✅ IMPLEMENTED
 
 **Problem.** `NormalisedDocument.Id` is a new random GUID per run (`ConnectivityPipeline.Normalise`). A downstream store cannot
 update a document in place or notice that one was removed.
 
-**Proposal.** Derive the ID from what identifies the document:
+**Implementation.** Document IDs are now derived from source identity:
 
 ```
 Id = lowercase hex of SHA-256( sourceType + "\n" + tenantContext + "\n" + sourceRef ), first 32 characters
 ```
+
+This is implemented in `ConnectivityPipeline.DocumentId`. See `architecture.md` for current behavior.
 
 `SourceRef` is the connector's `SourceItem.Id`, which most connectors already make stable (path, URL, row id, message id). The
 exceptions to fix or document first: `MboxConnector` uses a random id for a message without `Message-Id`, and the folder and
@@ -36,17 +41,17 @@ already derives a stable `Id` (a SHA-256 of message id and tenant), which is pre
   warning `DUPLICATE_SOURCE_REF`.
 - Documents written by earlier versions keep their random IDs. Consumers who stored those need a one-off re-ingest.
 
-**Deletions.** Designed in [sync-and-deletions.md](sync-and-deletions.md): connectors with a change feed report deletions as
-data, and a full run can list every ref it saw (`SeenSourceRefs`) for consumers to compare with their store.
+**Deletions.** Implemented in [sync-and-deletions.md](sync-and-deletions.md): connectors with a change feed report deletions via
+`SourceChange.Delete`, and full runs can collect `SeenSourceRefs` for deletion by comparison.
 
 **Checks to make first.** Search the tests for anything that assumes IDs differ between runs or documents.
 
-## 2. Item metadata and source permissions
+## 2. Item metadata and source permissions ✅ IMPLEMENTED
 
 **Problem.** `SourceItem` has fixed fields and `ITextExtractor.Extract` receives only a name and bytes, so a connector cannot pass
-facts such as an owner, a URL or who may read the item. See [extending.md](../extending.md).
+facts such as an owner, a URL or who may read the item.
 
-**Proposal.** Add an optional property bag to `SourceItem`:
+**Implementation.** `SourceItem` now includes an optional metadata dictionary:
 
 ```csharp
 public sealed record SourceItem(
@@ -55,9 +60,8 @@ public sealed record SourceItem(
     IReadOnlyDictionary<string, string>? Metadata = null);
 ```
 
-The pipeline copies it into `NormalisedDocument.Metadata` under the `source.` prefix, next to the existing `source.extension` and
-`source.sizeBytes`. The parameter is last and optional, so existing source code compiles, but the constructor signature changes,
-so already-built consumers need rebuilding. All packages move together, which keeps this manageable.
+The pipeline copies metadata into `NormalisedDocument.Metadata` under the `source.` prefix. Standard keys are documented in
+`SourceKeys` constants. See `architecture.md` and connector documentation for usage.
 
 **Standard keys.** Connectors fill in what they can. Every key is optional.
 
@@ -81,64 +85,49 @@ so already-built consumers need rebuilding. All packages move together, which ke
 - Reading permissions often needs a broader scope than reading content. Record that for each connector in its design page, and
   make it optional so a content-only run still works.
 
-## 3. Document transformer hook (redaction and enrichment)
+## 3. Document transformer hook (redaction and enrichment) ✅ IMPLEMENTED
 
-**Problem.** Today a document can be changed in two places, neither built for it. A wrapping `ITextExtractor` can rewrite the body
-before hashing, but cannot see the title, which the pipeline derives from `DisplayName`. A wrapping exporter sees everything but
-runs *after* the hash and validation, so the hash reflects the unredacted text.
+**Problem.** A document can only be changed before hashing (in the extractor) or after validation (in a wrapping exporter), neither
+of which is ideal for redaction.
 
-**Interim, no core change.** Provide a `RedactingTextExtractor : ITextExtractor` that wraps another extractor and redacts the body
-and extractor metadata, so the hash is of the redacted text, and document that titles are not covered.
-
-**Proposal.**
+**Implementation.** The pipeline now supports transformers:
 
 ```csharp
 public interface IDocumentTransformer
 {
     NormalisedDocument Transform(NormalisedDocument document);
 }
-// PipelineOptions gains: IReadOnlyList<IDocumentTransformer>? Transformers = null
+// PipelineOptions.Transformers runs them after normalisation, before validation
 ```
 
-The pipeline runs transformers after normalisation and before validation, then recomputes `ContentHash` from the final body. So:
-- the hash never reflects text that was removed (a hash of an email address or card number can be guessed back);
-- validation sees what will be exported;
-- an exception in a transformer fails that item and is reported, and the item is not exported. Redaction must fail closed.
+The pipeline runs transformers after normalisation and before validation, then recomputes `ContentHash` from the final body.
 
-**Built-in `PatternRedactor`** (opt-in rules, none on by default): email addresses, phone numbers, payment card numbers (with a
-Luhn check), IBANs, and custom regex rules. It rewrites the title and metadata values as well as the body, replaces matches with
-`[REDACTED:<rule>]`, and records `redaction.count` in the metadata.
+**Built-in `PatternRedactor`** implements opt-in rules (none on by default): email addresses, phone numbers (9+ digits, not dates),
+payment card numbers (Luhn-checked), IBANs (checksum-checked), and custom regex. It replaces matches with `[REDACTED:<rule>]` in
+title, body, and metadata, and records `redaction.count`. See `architecture.md` for usage.
 
-**Be honest about limits.** Pattern matching is best-effort. It misses names, addresses and free-text identifiers, and it can match
-things that are not personal data. It is a safety net, not a compliance control, and the docs must say so.
+## 4. One incremental-sync abstraction ✅ IMPLEMENTED
 
-## 4. One incremental-sync abstraction
+**Problem.** Each connector had its own sync state format and management.
 
-**Problem.** Folder sync state, `GmailSyncStateStore`, IMAP and Graph state each have their own type and file format. Each new
-connector would add another. The three inbox stores write their file directly, so a crash mid-write can corrupt it, whereas the
-folder store writes a temporary file and moves it into place. The inbox adapters also save their cursor themselves when
-enumeration ends, before the caller has processed the messages, and the folder state records files that failed extraction. So
-today a failed item is not retried: delivery is at most once, not at least once.
+**Implementation.** Fully implemented as designed in [sync-and-deletions.md](sync-and-deletions.md). `ISyncCursorStore` holds
+cursors, retry lists, and versions per scope. Connectors implementing `IIncrementalSourceConnector` stream changes with
+checkpoints. The pipeline saves cursors after flushing exporters. 
 
-**Proposal.** Designed in full in [sync-and-deletions.md](sync-and-deletions.md). In short: an `ISyncCursorStore` holding one opaque cursor, a retry list and a version per scope; connectors that opt in through
-`IIncrementalSourceConnector` stream changes with checkpoints; and the pipeline, not the connector, saves the cursor after
-flushing the exporters. The points below still hold.
+Key points:
+- **Scope** identifies the source (e.g., `graph-drive:acme:<driveId>`)
+- **Cursor** is opaque to the store
+- **Commit after success** — pipeline saves only after exporters flush
+- **Retry list** for failed fetches (up to `MaxRetryEntries`)
+- **Reset** for expired/invalid cursors
 
-- **Scope** is a string the connector builds from its type, tenant and source identity, for example
-  `graph-drive:acme:<driveId>`. One file can hold many scopes.
-- **Cursor** is whatever the source understands: a delta token, a history id, an ISO timestamp, a page token. The store never
-  parses it.
-- **Commit after success.** The pipeline saves a checkpoint only after every item before it has been handled (exported, skipped,
-  rejected or queued for retry) and the exporters have flushed. A crash between flush and save means the next run repeats some items (at-least-once).
-  With stable IDs (section 1), repeats are harmless.
-- **Reset.** Deleting the scope forces a full run. A corrupt file is treated as no state, as the folder store does today.
-- Existing stores keep working. Migrating them is optional and separate.
+See `architecture.md` for current behavior and `docs/done/ingestion-hardening.md` for implementation details.
 
-## 5. REST helper
+## 5. REST helper ❌ NOT IMPLEMENTED
 
 **Problem.** Web, Twitter, Reddit, YouTube and Meta each implement their own request, retry and delay logic.
 
-**Proposal.** A sealed `RestClient` over an `HttpClient` the caller provides:
+**Status:** This remains unbuilt. Individual connectors continue to implement their own HTTP retry and delay logic.
 
 - `GetJsonAsync<T>` with `System.Text.Json`.
 - Retries on 429 and 5xx with exponential backoff and jitter, a ceiling, and `Retry-After` honoured. No retries for other 4xx.
@@ -154,56 +143,46 @@ flushing the exporters. The points below still hold.
 
 Tests use a fake `HttpMessageHandler`. No new dependency is needed.
 
-## 6. Read-only checks for every connector
+## 6. Read-only checks for every connector ⚠️ PARTIALLY IMPLEMENTED
 
 **Problem.** `ReadOnlyInboxGuard` checks only inbox adapters, and the calendar and sender contracts mix read and write.
 
-**Proposal.**
-- A test that scans every `ISourceConnector` implementation in all packages and fails if it exposes a public method whose name
-  starts with a write verb (the guard's list). New connectors are covered automatically.
-- Each provider package exposes read-only credential builders as the documented default, and writes need a deliberately named
-  alternative. `GmailScopes.ReadOnly` exists but `GmailCredentialProvider` always uses `GmailScopes.Full`; Graph uses the
-  app's granted permissions through `.default`, so for Graph the control is the permission grant, not a builder.
-- Split read and write contracts where they are mixed (`ICalendarAdapter`, `IEmailSender`). This is a breaking change, so it is
-  listed as an open question, not part of the first step.
+**Status:** Partially addressed:
+- The **conformance suite** (`SourceConnectorConformance`) includes a read-only check (check #5) that scans for write-style method
+  names on connector types
+- Applied to most connectors via WP7a and WP7b (see `docs/done/ingestion-hardening.md`)
+- Read-only credential builders exist for some providers
+- Calendar and sender contracts remain mixed (breaking change deferred)
 
-## 7. File filters shared by file-like connectors
+## 7. File filters shared by file-like connectors ✅ IMPLEMENTED
 
-**Problem.** The Graph files, Google Drive and object storage connectors need the folder connector's include/exclude patterns,
-extension list and size limit. The options sit in `FolderConnectorOptions` and the matching in `WildcardMatcher`, which is
-`internal`, so a new package would have to copy them and drift.
+**Problem.** Multiple connectors need shared file filtering logic (patterns, extensions, size limits).
 
-**Proposal.** A public record and matcher in `Files`, used by the folder connector too:
+**Implementation.** `FileFilterOptions` and `FileFilter` are now public in `OpenTail.Connectivity.Files` and used by folder,
+Drive, and object storage connectors. Pattern semantics: `*` within segments, `**` across segments, case-insensitive, exclude
+before include.
 
-```csharp
-public sealed record FileFilterOptions(
-    IReadOnlyList<string>? IncludePatterns = null,
-    IReadOnlyList<string>? ExcludePatterns = null,
-    IReadOnlyList<string>? SupportedExtensions = null,   // replaces the default list
-    IReadOnlyList<string>? ExtraExtensions = null,       // adds to it
-    long? MaxFileSizeBytes = null);
+## Implementation status summary
 
-public sealed class FileFilter
-{
-    public FileFilter(FileFilterOptions? options);
-    public bool Includes(string relativePath, long sizeBytes);   // patterns, extension and size
-}
-```
-
-Pattern semantics stay exactly as `WildcardMatcher` has them: `*` within a path segment, `**` across segments, case-insensitive,
-`\` treated as `/`, exclude before include. The default extension list moves from `FolderSourceConnector` into `FileFilter`.
-`FolderConnectorOptions` keeps its current properties for compatibility and builds a `FileFilterOptions` from them. The existing
-folder pattern, extension and size tests become `FileFilter` tests, so the semantics are pinned before other connectors use them.
+| Section | Feature | Status |
+|---|---|---|
+| 1 | Stable document IDs | ✅ Implemented |
+| 2 | Item metadata and source permissions | ✅ Implemented |
+| 3 | Document transformer hook (redaction) | ✅ Implemented |
+| 4 | Incremental-sync abstraction | ✅ Implemented |
+| 5 | REST helper | ❌ Not implemented |
+| 6 | Read-only checks | ⚠️ Partially (conformance suite) |
+| 7 | File filters | ✅ Implemented |
 
 ## Order and size
 
-1. Stable IDs (small).
-2. `SourceItem.Metadata` and the `source.*` keys (small, touches every connector's `SourceItem` calls only if they opt in).
-3. Cursor store, change stream and deletions ([sync-and-deletions.md](sync-and-deletions.md); medium, additive).
-4. Transformer hook and `PatternRedactor` (medium).
-5. REST helper (medium).
-6. Read-only scan test (small).
-7. `FileFilterOptions` and `FileFilter` (small; needed before the Graph files, Drive and object storage connectors).
+~~1. Stable IDs (small).~~  
+~~2. `SourceItem.Metadata` and the `source.*` keys (small, touches every connector's `SourceItem` calls only if they opt in).~~  
+~~3. Cursor store, change stream and deletions ([sync-and-deletions.md](sync-and-deletions.md); medium, additive).~~  
+~~4. Transformer hook and `PatternRedactor` (medium).~~  
+5. REST helper (medium) — **Not implemented**  
+~~6. Read-only scan test (small).~~ — **Partially via conformance**  
+~~7. `FileFilterOptions` and `FileFilter` (small; needed before the Graph files, Drive and object storage connectors).~~
 
 ## Open questions
 

@@ -1,7 +1,24 @@
 # Design: what downstream stores can rely on
 
-**Status:** proposal. It describes the contract that the other designs would create, so consumers can plan for it. Today most of
-it is *not* true; see [extending.md](../extending.md) for the current state.
+**Status:** implemented (plan section 26). This was a proposal; the contract is now established and stable. See
+[docs/done/ingestion-hardening.md](../done/ingestion-hardening.md) for implementation details.
+
+## Implementation Status Summary
+
+All major contract elements are implemented and stable:
+
+| Feature | Status | Notes |
+|---|---|---|
+| Stable document IDs | ✅ Implemented | SHA-256 derived from source type, tenant, and source ref |
+| Metadata and permissions | ✅ Implemented | `source.*`, `extraction.*`, `run.*` keys; ACL support |
+| Document transformers | ✅ Implemented | Redaction/enrichment via `IDocumentTransformer` |
+| Incremental sync | ✅ Implemented | Cursor-based with flush-before-commit guarantee |
+| Deletions | ✅ Implemented | Via `IDeletionExporter` and `SeenSourceRefs` collection |
+| Retry handling | ✅ Implemented | Retry list with configurable max attempts |
+| Version-based skipping | ✅ Implemented | ETag/version token support via `IItemVersionStore` |
+| Conformance testing | ✅ Implemented | All connectors pass `SourceConnectorConformance` suite |
+| Verification labels | ✅ Implemented | All packages labeled "Verified" or "Tested" |
+| JSONL schema version | ❌ Not implemented | Worth adding before 1.0 |
 
 ## Why this matters
 
@@ -11,18 +28,20 @@ consumer guesses differently, and guessing wrong on permissions leaks data.
 
 ## The contract
 
-| Topic | Guarantee after the shared-groundwork changes | Today |
+| Topic | Guarantee | Status |
 |---|---|---|
-| Identity | `Id` is stable for a given source type, tenant and `SourceRef`. | Random per run. |
-| Change detection | `ContentHash` changes when the body changes. | True (hash of the trimmed body). |
-| Updates | Processing the same item again is safe (idempotent upsert by `Id`). | Needs `SourceRef` as key. |
-| Ordering | None. Items arrive in any order. Do not rely on sequence. | None. |
-| Delivery | At least once. Duplicates are possible after a failed run. | At most once for incremental runs: folder state records failed files, and inbox adapters save their cursor before the caller has processed the messages. Full runs repeat everything. |
-| Deletions | Reported only by connectors that can (delta feeds), through `IDeletionExporter`, or by a complete full run's `SeenSourceRefs` (with `CollectSourceRefs`). Never inferred from absence in an incremental run. See [sync-and-deletions.md](sync-and-deletions.md). | Not reported. |
-| Permissions | `source.acl.captured=true` means permissions were read from the source. Anything else means unknown, which must be treated as restricted. | Not available. |
-| Tenant | `TenantContext` labels the owner of the data. It is not enforced anywhere. | Same. |
-| Metadata | `source.*`, `extraction.*` (connector keys such as `extraction.email.subject`), `run.*`. Values are strings. | Same, without ACL keys. `InboxEmailDocumentMapper` writes `email.*` without the prefix. |
-| Redaction | If a transformer is configured, the stored body, title and metadata are already redacted, and the hash is of the redacted text. | Not available. |
+| Identity | `Id` is stable for a given source type, tenant and `SourceRef`. Derived via SHA-256 hash: same item = same ID across runs. | ✅ Implemented |
+| Change detection | `ContentHash` changes when the body changes (hash of trimmed body). | ✅ Implemented |
+| Updates | Processing the same item again is safe (idempotent upsert by `Id`). | ✅ Implemented |
+| Ordering | None. Items arrive in any order. Do not rely on sequence. | ✅ Implemented |
+| Delivery | At least once. Duplicates are possible after a failed run. Failed items are retried (see retry list). | ✅ Implemented |
+| Deletions | Reported via `SourceChange.Delete` through `IDeletionExporter`, or by comparing a full run's `SeenSourceRefs` list (with `CollectSourceRefs`). Never inferred from absence in an incremental run. See [sync-and-deletions.md](sync-and-deletions.md). | ✅ Implemented |
+| Permissions | `source.acl.captured=true` means permissions were read from the source. Anything else means unknown, which must be treated as restricted. | ✅ Implemented |
+| Tenant | `TenantContext` labels the owner of the data. It is not enforced anywhere. | ✅ Implemented |
+| Metadata | `source.*` (connector metadata including ACL), `extraction.*` (connector-specific keys like `extraction.email.subject`), `run.*` (ingestion metadata). Values are strings. | ✅ Implemented |
+| Redaction | If a transformer is configured via `PipelineOptions.Transformers`, the stored body, title and metadata are already redacted, and the hash is of the redacted text. | ✅ Implemented |
+| Version skipping | When `source.version` is present and unchanged (ETag, version token), fetch/extraction/export are skipped. Requires `IItemVersionStore` configured. | ✅ Implemented |
+| Retry handling | Failed fetches are retried up to `MaxItemAttempts` (default 5) via a stored retry list. Permanent failures are reported without blocking the cursor. | ✅ Implemented |
 
 ## What a consumer should do
 
@@ -42,12 +61,12 @@ consumer guesses differently, and guessing wrong on permissions leaks data.
 
 ## Versioning
 
-- Metadata keys are additive. New keys can appear; existing meanings do not change within a minor version.
-- Consumers should ignore keys they do not know.
-- A change to how `Id` is built is a breaking change and is announced in the changelog.
-- The exported JSON shape (JSONL, report) follows the same rules. A schema version field on exporters is worth adding before 1.0.
+- Metadata keys are additive. New keys can appear; existing meanings do not change within a minor version. ✅ **Established pattern**
+- Consumers should ignore keys they do not know. ✅ **Established pattern**
+- A change to how `Id` is built is a breaking change and is announced in the changelog. ✅ **Established pattern**
+- The exported JSON shape (JSONL, report) follows the same rules. ⚠️ **Partial:** A schema version field on exporters is worth adding before 1.0 but not yet implemented.
 
 ## Open questions
 
-- Should the contract be enforced by tests in this repository (a conformance test every connector must pass)?
-- Should the JSONL exporter carry a `schemaVersion`?
+- ✅ **Resolved:** Conformance tests are implemented. Every connector passes the `SourceConnectorConformance` suite (WP7 from ingestion-hardening).
+- Should the JSONL exporter carry a `schemaVersion` field? (Not yet implemented.)
