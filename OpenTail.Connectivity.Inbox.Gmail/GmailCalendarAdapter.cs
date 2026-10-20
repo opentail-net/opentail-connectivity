@@ -85,11 +85,16 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
         return created?.Id ?? string.Empty;
     }
 
+    /// <summary>
+    /// Changes only the fields <see cref="CalendarEvent"/> carries. Events.Update would replace the whole event and drop what the
+    /// model does not hold (recurrence, reminders, conference details, attachments); Patch leaves those alone. Null fields are
+    /// left unchanged; attendees are replaced as a list, with their responses kept.
+    /// </summary>
     public async Task UpdateEventAsync(CalendarEvent updated, CancellationToken ct = default)
     {
         var svc = await BuildServiceAsync(ct);
         await svc.Events
-            .Update(ToGoogleEvent(updated), updated.CalendarId, updated.EventId)
+            .Patch(ToGoogleEvent(updated), updated.CalendarId, updated.EventId)
             .ExecuteAsync(ct);
     }
 
@@ -161,7 +166,9 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
                 {
                     Email = a.Email,
                     DisplayName = a.DisplayName,
-                    Optional = a.Type == "optional"
+                    Optional = a.Type == "optional",
+                    // Sent back so replacing the attendee list does not reset everyone's answer.
+                    ResponseStatus = a.ResponseStatus is "accepted" or "tentative" or "declined" ? a.ResponseStatus : "needsAction"
                 })
                 .ToList()
         };

@@ -781,11 +781,11 @@ All done 2026-10-20 (T2, T3, T5 by the smaller model, reviewed). Weighed, not ap
 ## 25. External review, calendars, 2026-10-20
 
 All findings confirmed (two narrower than reported), five more found; plan in
-[review-2026-10-20-calendar.md](review-2026-10-20-calendar.md). All but K3 fixed 2026-10-20 (K2, K4, K5, K7, K8 by the smaller model).
+[review-2026-10-20-calendar.md](review-2026-10-20-calendar.md). All fixed 2026-10-20 (K2, K4, K5, K7, K8 by the smaller model).
 
 - [x] **[C]** K1: Graph times parsed as machine-local, writes send offset + zone. Every Graph event on a non-UTC server.
 - [x] **[C]** K2: Graph `"calendar"` used as a calendar id.
-- [ ] **[C]** K3: Gmail `Events.Update` wipes fields the model lacks; use `Patch`.
+- [x] **[C]** K3: Gmail `Events.Update` wipes fields the model lacks; use `Patch`.
 - [x] **[C]** K4: Gmail RSVP status read for the creator, not `self`.
 - [x] **[C]** K5: recurring flag wrong (Gmail masters, Graph listed occurrences).
 - [x] **[C]** K6: Gmail all-day dates machine-dependent; missing times become "now" (both adapters).

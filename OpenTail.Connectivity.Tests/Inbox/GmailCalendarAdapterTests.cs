@@ -59,6 +59,45 @@ public sealed class GmailCalendarAdapterTests
     }
 
     [Fact]
+    public async Task UpdateEvent_patches_only_the_model_fields_and_keeps_attendee_answers()
+    {
+        HttpMethod? method = null;
+        string? body = null;
+        using var handler = new StubCalendarHandler(request =>
+        {
+            method = request.Method;
+            var bytes = request.Content!.ReadAsByteArrayAsync().GetAwaiter().GetResult();
+            if (request.Content.Headers.ContentEncoding.Contains("gzip"))
+            {
+                using var compressed = new MemoryStream(bytes);
+                using var gzip = new GZipStream(compressed, CompressionMode.Decompress);
+                using var expanded = new MemoryStream();
+                gzip.CopyTo(expanded);
+                bytes = expanded.ToArray();
+            }
+            body = Encoding.UTF8.GetString(bytes);
+            return Json("{}");
+        });
+        using var service = CreateService(handler);
+        var adapter = new GmailCalendarAdapter(Settings, service);
+        var updated = new CalendarEvent("event-1", "primary", "New subject", DateTimeOffset.Parse("2026-10-20T09:00:00Z"),
+            DateTimeOffset.Parse("2026-10-20T10:00:00Z"), "UTC", null, null, false, false, null, "busy", "normal", "accepted", true, null,
+            "me@example.com", [new EventAttendee("guest@example.com", null, "required", "accepted")], [], "tenant");
+
+        await adapter.UpdateEventAsync(updated);
+
+        Assert.Equal(new HttpMethod("PATCH"), method);
+        using var document = JsonDocument.Parse(body!);
+        var sent = document.RootElement;
+        Assert.Equal("New subject", sent.GetProperty("summary").GetString());
+        Assert.False(sent.TryGetProperty("recurrence", out _));
+        Assert.False(sent.TryGetProperty("reminders", out _));
+        Assert.False(sent.TryGetProperty("conferenceData", out _));
+        Assert.False(sent.TryGetProperty("description", out _)); // null: left unchanged
+        Assert.Equal("accepted", sent.GetProperty("attendees")[0].GetProperty("responseStatus").GetString());
+    }
+
+    [Fact]
     public async Task GetEvents_stops_at_MaxEvents_across_pages()
     {
         var requests = new List<string>();
