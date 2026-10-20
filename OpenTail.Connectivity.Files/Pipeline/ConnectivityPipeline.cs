@@ -32,18 +32,36 @@ public sealed class ConnectivityPipeline
 
         var run = new Run(_options);
         var feedback = _source as ISourceItemFeedback;
+        var sync = _options.Sync;
+        var sourceRefs = sync?.CollectSourceRefs == true
+            ? new SourceRefCollector(sync.MaxReportedRefs, run.Issues, subject: null)
+            : null;
+        var discoveryCompleted = true;
         await foreach (var item in _source.DiscoverAsync(cancellationToken))
         {
             if (run.CapReached)
             {
                 feedback?.NotProcessed(item); // discovered, but the cap stopped the run before it
+                discoveryCompleted = false;
                 break;
             }
 
             run.Discovered++;
+            sourceRefs?.Add(item.Id);
             var outcome = await ProcessAsync(item, run, exporterFailuresStop: false, cancellationToken);
-            if (outcome is Outcome.Rejected or Outcome.FetchFailed) feedback?.NotProcessed(item);
-            if (run.CapReached) break;
+            if (outcome is Outcome.Rejected or Outcome.FetchFailed or Outcome.ExporterFailed) feedback?.NotProcessed(item);
+            if (outcome == Outcome.ExporterFailed) discoveryCompleted = false;
+            if (run.CapReached)
+            {
+                discoveryCompleted = false;
+                break;
+            }
+        }
+
+        if (discoveryCompleted && sourceRefs is not null)
+        {
+            run.SeenSourceRefs = sourceRefs.Refs;
+            run.SourceRefsTruncated = sourceRefs.Truncated;
         }
 
         foreach (var exporter in _exporters)
@@ -89,9 +107,9 @@ public sealed class ConnectivityPipeline
         var holdCommits = false;    // a fetch failed and the retry list is full (or a deletion had no tenant): committing would skip it
         var unflushed = true;       // exporters have not been flushed since the last export (or at all)
         var stoppedByCap = false;
-        List<string>? collectedRefs = sync.CollectSourceRefs ? [] : null;
-        var refsTruncated = false;
-        var refsTruncatedWarningAdded = false;
+        var sourceRefs = sync.CollectSourceRefs
+            ? new SourceRefCollector(sync.MaxReportedRefs, run.Issues, scope)
+            : null;
 
         async Task FlushAsync()
         {
@@ -183,22 +201,7 @@ public sealed class ConnectivityPipeline
                     }
                     run.Discovered++;
                     sinceCommit++;
-                    if (collectedRefs is not null && run.FullRun)
-                    {
-                        if (collectedRefs.Count < sync.MaxReportedRefs)
-                        {
-                            collectedRefs.Add(upsert.Item.Id);
-                        }
-                        else
-                        {
-                            refsTruncated = true;
-                            if (!refsTruncatedWarningAdded)
-                            {
-                                run.Issues.Add(new ValidationIssue(ValidationSeverity.Warning, "SOURCE_REFS_TRUNCATED", "The list of seen source refs was truncated and must not be used for deletions.", scope));
-                                refsTruncatedWarningAdded = true;
-                            }
-                        }
-                    }
+                    if (run.FullRun) sourceRefs?.Add(upsert.Item.Id);
                     var outcome = await ProcessAsync(upsert.Item, run, exporterFailuresStop: true, ct);
                     unflushed |= outcome == Outcome.Exported;
                     if (outcome == Outcome.FetchFailed)
@@ -276,8 +279,7 @@ public sealed class ConnectivityPipeline
                         retries.Clear(); // a full listing follows, which brings every item that still exists
                         retriesDirty = true;
                     }
-                    collectedRefs?.Clear();
-                    refsTruncated = false;
+                    sourceRefs?.Reset();
                     run.Issues.Add(new ValidationIssue(ValidationSeverity.Warning, "SYNC_RESET", "Full run: " + reset.Reason, scope));
                     break;
             }
@@ -299,14 +301,14 @@ public sealed class ConnectivityPipeline
 
         if (sync.CollectSourceRefs && run.FullRun && !stoppedByCap)
         {
-            run.SeenSourceRefs = collectedRefs;
-            run.SourceRefsTruncated = refsTruncated;
+            run.SeenSourceRefs = sourceRefs?.Refs;
+            run.SourceRefsTruncated = sourceRefs?.Truncated ?? false;
         }
 
         return run.Report();
     }
 
-    private enum Outcome { Exported, Skipped, Rejected, FetchFailed }
+    private enum Outcome { Exported, Skipped, Rejected, FetchFailed, ExporterFailed }
 
     /// <summary>One item, from fetch to export. Counts it in <paramref name="run"/>.</summary>
     private async Task<Outcome> ProcessAsync(SourceItem item, Run run, bool exporterFailuresStop, CancellationToken ct)
@@ -416,7 +418,7 @@ public sealed class ConnectivityPipeline
         {
             run.Failed++;
             run.Errors.Add($"{item.DisplayName}: {ex.Message}");
-            return Outcome.Rejected;
+            return Outcome.ExporterFailed;
         }
 
         if (itemVersion is not null)
@@ -424,6 +426,36 @@ public sealed class ConnectivityPipeline
 
         run.Processed(doc.Body?.Length ?? 0);
         return Outcome.Exported;
+    }
+
+    private sealed class SourceRefCollector(int maxReportedRefs, List<ValidationIssue> issues, string? subject)
+    {
+        private bool warningAdded;
+
+        public List<string> Refs { get; } = [];
+
+        public bool Truncated { get; private set; }
+
+        public void Add(string sourceRef)
+        {
+            if (Refs.Count < maxReportedRefs)
+            {
+                Refs.Add(sourceRef);
+                return;
+            }
+
+            Truncated = true;
+            if (warningAdded) return;
+            issues.Add(new ValidationIssue(ValidationSeverity.Warning, "SOURCE_REFS_TRUNCATED",
+                "The list of seen source refs was truncated and must not be used for deletions.", subject));
+            warningAdded = true;
+        }
+
+        public void Reset()
+        {
+            Refs.Clear();
+            Truncated = false;
+        }
     }
 
     /// <summary>Counters and lists for one run.</summary>
