@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Xml.Linq;
 
 namespace OpenTail.Connectivity.Web;
@@ -6,6 +7,7 @@ namespace OpenTail.Connectivity.Web;
 public sealed class RssFeedConnector : ISourceConnector
 {
     private static readonly XNamespace AtomNs = "http://www.w3.org/2005/Atom";
+    private static readonly XNamespace RssContentNs = "http://purl.org/rss/1.0/modules/content/";
 
     private readonly HttpClient _client;
     private readonly string _feedUrl;
@@ -94,13 +96,14 @@ public sealed class RssFeedConnector : ISourceConnector
                 ?? string.Empty).Trim();
             var pubDate = item.Element("pubDate")?.Value?.Trim();
             var guid = item.Element("guid")?.Value?.Trim();
+            var content = (item.Element(RssContentNs + "encoded")?.Value ?? string.Empty).Trim();
             var modified = ParseDate(pubDate);
             var categories = string.Join("; ", item.Elements("category")
                 .Select(c => c.Value?.Trim()).Where(v => !string.IsNullOrWhiteSpace(v)));
 
-            string? version = null;
-            if (!string.IsNullOrWhiteSpace(guid) && !string.IsNullOrWhiteSpace(pubDate))
-                version = $"{guid}|{pubDate}";
+            var versionFields = string.Join('\u001f', guid ?? string.Empty, link, title, description, content, pubDate ?? string.Empty);
+            var version = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(versionFields)))
+                .ToLowerInvariant()[..32];
 
             yield return (link, title, modified, version, new Dictionary<string, string>
             {

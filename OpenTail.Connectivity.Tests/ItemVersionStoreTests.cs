@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using OpenTail.Connectivity.Files.Connectors;
 using OpenTail.Connectivity.Files.Contracts;
@@ -190,7 +191,41 @@ public sealed class ItemVersionStoreTests : IDisposable
         var item1 = Assert.Single(items);
         Assert.NotNull(item1.Metadata);
         Assert.True(item1.Metadata.TryGetValue(SourceKeys.Version, out var version));
-        Assert.Equal("guid-123|Mon, 01 Jan 2026 00:00:00 GMT", version);
+        Assert.Equal(ExpectedRssVersion("guid-123", "https://example.com/1", "Post 1", "", "", "Mon, 01 Jan 2026 00:00:00 GMT"), version);
+    }
+
+    [Fact]
+    public async Task Rss_version_changes_when_description_changes_and_is_stable_for_identical_items()
+    {
+        var original = RssFeed("Before");
+        var same = RssFeed("Before");
+        var edited = RssFeed("After");
+
+        var originalVersion = await ReadRssVersionAsync(original);
+        var sameVersion = await ReadRssVersionAsync(same);
+        var editedVersion = await ReadRssVersionAsync(edited);
+
+        Assert.Equal(originalVersion, sameVersion);
+        Assert.NotEqual(originalVersion, editedVersion);
+    }
+
+    [Fact]
+    public async Task Pipeline_exports_Rss_item_again_when_description_changes()
+    {
+        var description = "Before";
+        using var handler = new MutableRssHttpHandler(() => RssFeed(description));
+        using var client = new HttpClient(handler);
+        var connector = new RssFeedConnector(client, "https://example.com/feed", "tenant");
+        var store = new FileItemVersionStore(Path.Combine(_dir, "rss-versions.json"));
+        var exporter = new RecordingExporter();
+        var pipeline = new ConnectivityPipeline(connector, new RssFeedTextExtractor(), [exporter], new PipelineOptions(VersionStore: store));
+
+        await pipeline.RunAsync();
+        description = "After";
+        var secondReport = await pipeline.RunAsync();
+
+        Assert.Equal(["https://example.com/1", "https://example.com/1"], exporter.ExportedIds);
+        Assert.Equal(0, secondReport.ItemsUnchanged);
     }
 
     [Fact]
@@ -220,6 +255,48 @@ public sealed class ItemVersionStoreTests : IDisposable
             };
             return Task.FromResult(res);
         }
+    }
+
+    private static string RssFeed(string description) => $$"""
+        <?xml version="1.0" encoding="utf-8"?>
+        <rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
+          <channel>
+            <item>
+              <title>Post 1</title>
+              <link>https://example.com/1</link>
+              <description>{{description}}</description>
+              <content:encoded><![CDATA[full content]]></content:encoded>
+              <guid>guid-123</guid>
+              <pubDate>Mon, 01 Jan 2026 00:00:00 GMT</pubDate>
+            </item>
+          </channel>
+        </rss>
+        """;
+
+    private static async Task<string?> ReadRssVersionAsync(string xml)
+    {
+        using var handler = new StaticHttpHandler(xml);
+        using var client = new HttpClient(handler);
+        var connector = new RssFeedConnector(client, "https://example.com/feed", "tenant");
+        var item = Assert.Single(await connector.DiscoverAsync().ToListAsync());
+        Assert.NotNull(item.Metadata);
+        Assert.True(item.Metadata.TryGetValue(SourceKeys.Version, out var version));
+        return version;
+    }
+
+    private static string ExpectedRssVersion(string guid, string link, string title, string description, string content, string pubDate)
+    {
+        var fields = string.Join('\u001f', guid, link, title, description, content, pubDate);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fields))).ToLowerInvariant()[..32];
+    }
+
+    private sealed class MutableRssHttpHandler(Func<string> getContent) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(getContent(), Encoding.UTF8, "application/xml")
+            });
     }
 
     private sealed class ETagHttpHandler(string html, string etag) : HttpMessageHandler
