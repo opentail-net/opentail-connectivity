@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Description>OpenTail Connectivity — Amazon S3 (and S3-compatible) adapter for OpenTail.Connectivity.Storage. Read-only: list, head and ranged get.</Description>
+    <Description>OpenTail Connectivity — Amazon S3 (and S3-compatible) adapter for OpenTail.Connectivity.Storage. Read-only: list, head and ranged get. Verification: Tested.</Description>
     <PackageTags>opentail;connectivity;connectors;object-storage;s3;aws</PackageTags>
   </PropertyGroup>
   <ItemGroup>

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Description>OpenTail Connectivity — rich-text converters to plain text: Atlassian Document Format (Jira, Confluence), Confluence storage format, Notion blocks and Slack markup. Pure functions, also usable as ITextExtractor.</Description>
+    <Description>OpenTail Connectivity — rich-text converters to plain text: Atlassian Document Format (Jira, Confluence), Confluence storage format, Notion blocks and Slack markup. Pure functions, also usable as ITextExtractor. Verification: Tested.</Description>
     <PackageTags>opentail;connectivity;jira;confluence;notion;slack;adf</PackageTags>
   </PropertyGroup>
   <ItemGroup>

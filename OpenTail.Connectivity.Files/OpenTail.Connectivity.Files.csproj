@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Description>OpenTail Connectivity Core — file/folder source connector with text extraction, normalisation, validation, and portable JSONL export.</Description>
+    <Description>OpenTail Connectivity Core — file/folder source connector with text extraction, normalisation, validation, and portable JSONL export. Verification: Verified.</Description>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Transformations.Text" />

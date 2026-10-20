@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Description>OpenTail Connectivity — web/URL source connector with same-domain crawling and text extraction.</Description>
+    <Description>OpenTail Connectivity — web/URL source connector with same-domain crawling and text extraction. Verification: Tested.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\OpenTail.Connectivity.Files\OpenTail.Connectivity.Files.csproj" />

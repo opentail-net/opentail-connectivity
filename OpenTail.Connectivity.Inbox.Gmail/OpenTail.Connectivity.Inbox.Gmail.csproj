@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Description>OpenTail Connectivity — read-only Gmail inbox adapter using the Gmail API.</Description>
+    <Description>OpenTail Connectivity — read-only Gmail inbox adapter using the Gmail API. Verification: Tested.</Description>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Google.Apis.Calendar.v3" />

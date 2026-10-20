@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Description>OpenTail Connectivity — ICS/iCalendar serialization and read-only CalDAV/ICS feed adapter.</Description>
+    <Description>OpenTail Connectivity — ICS/iCalendar serialization and read-only CalDAV/ICS feed adapter. Verification: Verified.</Description>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Ical.Net" />

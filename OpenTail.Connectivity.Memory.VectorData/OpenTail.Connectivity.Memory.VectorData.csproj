@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Description>OpenTail Connectivity — memory backend over Microsoft.Extensions.VectorData: one adapter for any vector store connector (Postgres with pgvector, Qdrant, Azure AI Search and others), with every governance rule translated into the connector's filter. The embedding generator is supplied by the caller; no models here.</Description>
+    <Description>OpenTail Connectivity — memory backend over Microsoft.Extensions.VectorData: one adapter for any vector store connector (Postgres with pgvector, Qdrant, Azure AI Search and others), with every governance rule translated into the connector's filter. The embedding generator is supplied by the caller; no models here. Verification: Verified.</Description>
     <PackageTags>opentail;connectivity;memory;vector;vectordata;pgvector</PackageTags>
   </PropertyGroup>
   <ItemGroup>

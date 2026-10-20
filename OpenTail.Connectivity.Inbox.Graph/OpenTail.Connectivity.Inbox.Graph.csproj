@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Description>OpenTail Connectivity — read-only Outlook inbox adapter using Microsoft Graph.</Description>
+    <Description>OpenTail Connectivity — read-only Outlook inbox adapter using Microsoft Graph. Verification: Tested.</Description>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Graph" />

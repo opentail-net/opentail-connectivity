@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <Description>OpenTail Connectivity — CSV row source connector with column-level field mapping.</Description>
+    <Description>OpenTail Connectivity — CSV row source connector with column-level field mapping. Verification: Verified.</Description>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="CsvHelper" />

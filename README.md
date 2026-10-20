@@ -8,24 +8,28 @@ licence (see [Licence](#licence)).
 
 They are used by the OpenTail Host's modules and by OpenTail itself.
 
-| Package | What |
-|---|---|
-| `OpenTail.Connectivity.Files` | The core: file and folder connector, text extraction, normalisation, validation, JSONL export. Every other package builds on it. |
-| `OpenTail.Connectivity.Web` | Web and URL connector with same-domain crawling and text extraction. |
-| `OpenTail.Connectivity.Csv` | CSV rows as documents, with column-level field mapping. |
-| `OpenTail.Connectivity.Email` | `.eml` files and `.mbox` archives. |
-| `OpenTail.Connectivity.Sql` | SQLite databases, with an allow-list of fields. |
-| `OpenTail.Connectivity.Social` | Social platforms (X, Reddit, YouTube, Meta), with sentiment scoring and marketing metadata. |
-| `OpenTail.Connectivity.Inbox.Imap` | IMAP inbox reader (MailKit), plus an SMTP sender. |
-| `OpenTail.Connectivity.Inbox.Graph` | Outlook inbox, sender and calendar (Microsoft Graph). |
-| `OpenTail.Connectivity.Inbox.Gmail` | Gmail inbox, sender and calendar (Gmail API). |
-| `OpenTail.Connectivity.Calendar.Ics` | ICS / iCalendar files and read-only ICS feed URLs. |
-| `OpenTail.Connectivity.RichText` | Rich text to plain text: Atlassian Document Format (Jira, Confluence), Confluence storage format, Notion blocks, Slack markup. Pure functions, also `ITextExtractor`s. |
-| `OpenTail.Connectivity.Storage` | Read-only object storage behind `IObjectStoreClient`; `ObjectStoreReader` lists and reads inside a prefix allow-list, with capped reads and bounded gzip. |
-| `OpenTail.Connectivity.Storage.S3` | Amazon S3 and S3-compatible stores (AWS SDK), through a caller-supplied `HttpClient`. |
-| `OpenTail.Connectivity.Memory` | Memory: records with typed provenance and policy, the `IMemoryBackend` contract, governance that reads fields and never text, governed retrieval, ingestion, a conformance suite and a quality gate. In-memory and Markdown-files backends included. See [memory](docs/design/memory.md). |
-| `OpenTail.Connectivity.Memory.Sqlite` | Memory backend in one SQLite file: FTS5 keyword search, every governance rule applied in SQL before ranking. |
-| `OpenTail.Connectivity.Memory.VectorData` | Memory backend over any `Microsoft.Extensions.VectorData` collection (Postgres with pgvector, Qdrant, Azure AI Search ...), the caller's embedding model. |
+| Package | What | Verification |
+|---|---|---|
+| `OpenTail.Connectivity.Files` | The core: file and folder connector, text extraction, normalisation, validation, JSONL export. Every other package builds on it. | Verified |
+| `OpenTail.Connectivity.Web` | Web and URL connector with same-domain crawling and text extraction. | Tested |
+| `OpenTail.Connectivity.Csv` | CSV rows as documents, with column-level field mapping. | Verified |
+| `OpenTail.Connectivity.Email` | `.eml` files and `.mbox` archives. | Verified |
+| `OpenTail.Connectivity.Sql` | SQLite databases, with an allow-list of fields. | Verified |
+| `OpenTail.Connectivity.Social` | Social platforms (X, Reddit, YouTube, Meta), with sentiment scoring and marketing metadata. | Tested |
+| `OpenTail.Connectivity.Inbox.Imap` | IMAP inbox reader (MailKit), plus an SMTP sender. | Tested |
+| `OpenTail.Connectivity.Inbox.Graph` | Outlook inbox, sender and calendar (Microsoft Graph). | Tested |
+| `OpenTail.Connectivity.Inbox.Gmail` | Gmail inbox, sender and calendar (Gmail API). | Tested |
+| `OpenTail.Connectivity.Calendar.Ics` | ICS / iCalendar files and read-only ICS feed URLs. | Verified |
+| `OpenTail.Connectivity.RichText` | Rich text to plain text: Atlassian Document Format (Jira, Confluence), Confluence storage format, Notion blocks, Slack markup. Pure functions, also `ITextExtractor`s. | Tested |
+| `OpenTail.Connectivity.Storage` | Read-only object storage behind `IObjectStoreClient`; `ObjectStoreReader` lists and reads inside a prefix allow-list, with capped reads and bounded gzip. | Tested |
+| `OpenTail.Connectivity.Storage.S3` | Amazon S3 and S3-compatible stores (AWS SDK), through a caller-supplied `HttpClient`. | Tested |
+| `OpenTail.Connectivity.Memory` | Memory: records with typed provenance and policy, the `IMemoryBackend` contract, governance that reads fields and never text, governed retrieval, ingestion, a conformance suite and a quality gate. In-memory and Markdown-files backends included. See [memory](docs/design/memory.md). | Verified |
+| `OpenTail.Connectivity.Memory.Sqlite` | Memory backend in one SQLite file: FTS5 keyword search, every governance rule applied in SQL before ranking. | Verified |
+| `OpenTail.Connectivity.Memory.VectorData` | Memory backend over any `Microsoft.Extensions.VectorData` collection (Postgres with pgvector, Qdrant, Azure AI Search ...), the caller's embedding model. | Verified |
+
+**Verification legend:**
+- **Verified**: Exercised against the real thing in CI (local filesystem, real SQLite, pgvector in CI containers).
+- **Tested**: Unit and stubbed-service tests only. Not tried against the real service.
 
 ## Documentation
 
