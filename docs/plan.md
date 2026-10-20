@@ -792,6 +792,24 @@ All findings confirmed (two narrower than reported), five more found; plan in
 - [x] **[C]** K7: Graph `calendarView` reads one page.
 - [x] **[C]** K8: `ReadOnlyCalendarAdapter`; Host test that write tools carry their risk and `ReadOnly` removes them.
 
+## 26. Ingestion hardening (informed by Rag.NET), 2026-10-20
+
+Plan with work packages for the coding model: [ingestion-hardening.md](ingestion-hardening.md). ChatGPT's Rag.NET advice was
+checked against the code: deletions, retries, conformance tests and labels are real gaps (designed in `sync-and-deletions.md`
+and `testing-and-verification.md`, never built); inbox cursors and folder retries were already fixed; sitemap and RSS exist;
+job queues belong to the Host's triggers (section 21).
+
+- [ ] **[C]** WP0: design docs say what is built.
+- [ ] **[C]** WP1: deletions through the sync core (`SourceChange.Delete`, `IDeletionExporter`, fail closed).
+- [ ] **[C]** WP2: `JsonlDeletionExporter`.
+- [ ] **[C]** WP3: full-run `SeenSourceRefs` for deletion by comparison.
+- [ ] **[C]** WP4: retry list instead of holding the cursor (main model).
+- [ ] **[C]** WP5: folder connector lists files deleted since the last scan.
+- [ ] **[C]** WP6: skip unchanged items by `source.version` (`IItemVersionStore`; RSS and site crawl first).
+- [ ] **[C]** WP7a/b: connector conformance suite, applied to every connector.
+- [ ] **[C]** WP8: verification labels in the README and package descriptions.
+- [ ] **[C]** WP9: RSS and sitemap regression tests.
+
 ## Background, no action planned
 
 These are kept for the day their content needs indexing. Read them, but nothing above depends on them.
