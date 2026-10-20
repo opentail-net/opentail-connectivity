@@ -794,7 +794,7 @@ All findings confirmed (two narrower than reported), five more found; plan in
 
 ## 26. Ingestion hardening (informed by Rag.NET), 2026-10-20
 
-All done 2026-10-20 (WP4 by the main model, the rest by the coding model). Plan: [ingestion-hardening.md](ingestion-hardening.md). ChatGPT's Rag.NET advice was
+Built 2026-10-20 (WP4 by the main model, the rest by the coding model), **reopened by the review in section 27**. Plan: [ingestion-hardening.md](ingestion-hardening.md). ChatGPT's Rag.NET advice was
 checked against the code: deletions, retries, conformance tests and labels are real gaps (designed in `sync-and-deletions.md`
 and `testing-and-verification.md`, never built); inbox cursors and folder retries were already fixed; sitemap and RSS exist;
 job queues belong to the Host's triggers (section 21).
@@ -809,6 +809,20 @@ job queues belong to the Host's triggers (section 21).
 - [x] **[C]** WP7a/b: connector conformance suite, applied to every connector.
 - [x] **[C]** WP8: verification labels in the README and package descriptions.
 - [x] **[C]** WP9: RSS and sitemap regression tests.
+
+## 27. External review of the ingestion work, 2026-10-20
+
+All nine findings confirmed; plan in [review-2026-10-20-ingestion.md](review-2026-10-20-ingestion.md). Nothing fixed yet.
+
+- [ ] **[C]** I1: `SeenSourceRefs` for ordinary (non-incremental) connectors.
+- [ ] **[C]** I2: an item failed after the last checkpoint is tried twice in the next run (main model).
+- [ ] **[C]** I3: RSS version is a hash of the item, not `guid|pubDate`.
+- [ ] **[C]** I4: `FileItemVersionStore` re-reads and merges under the lock.
+- [ ] **[C]** I5: escape plain cursors that start with `otail-`.
+- [ ] **[C]** I6: RSS duplicate test and conformance check 3 assert what they claim.
+- [ ] **[C]** C1: Graph update sends a body only when there is one.
+- [ ] **[C]** C2: Graph writes timed events in their own zone (main model).
+- [ ] **[C]** C3: Gmail `GetEventAsync` uses the calendar's zone for all-day events.
 
 ## Background, no action planned
 
