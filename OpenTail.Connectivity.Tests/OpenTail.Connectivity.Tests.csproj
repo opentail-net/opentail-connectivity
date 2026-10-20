@@ -38,5 +38,6 @@
     <ProjectReference Include="..\OpenTail.Connectivity.Storage.S3\OpenTail.Connectivity.Storage.S3.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Storage.AzureBlob\OpenTail.Connectivity.Storage.AzureBlob.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Storage.Sftp\OpenTail.Connectivity.Storage.Sftp.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Storage.Dropbox\OpenTail.Connectivity.Storage.Dropbox.csproj" />
   </ItemGroup>
 </Project>

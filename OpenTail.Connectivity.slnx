@@ -4,6 +4,7 @@
     <Project Path="OpenTail.Connectivity.Storage.S3/OpenTail.Connectivity.Storage.S3.csproj" />
     <Project Path="OpenTail.Connectivity.Storage.AzureBlob/OpenTail.Connectivity.Storage.AzureBlob.csproj" />
     <Project Path="OpenTail.Connectivity.Storage.Sftp/OpenTail.Connectivity.Storage.Sftp.csproj" />
+    <Project Path="OpenTail.Connectivity.Storage.Dropbox/OpenTail.Connectivity.Storage.Dropbox.csproj" />
     <Project Path="OpenTail.Connectivity.Storage/OpenTail.Connectivity.Storage.csproj" />
     <Project Path="OpenTail.Connectivity.Web/OpenTail.Connectivity.Web.csproj" />
     <Project Path="OpenTail.Connectivity.Csv/OpenTail.Connectivity.Csv.csproj" />
