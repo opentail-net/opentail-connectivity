@@ -149,7 +149,8 @@ package has stubbed-service unit tests; it has not been verified against a live 
 The read-only WebDAV adapter supports services such as Nextcloud and ownCloud. Pass the HTTPS collection URL and credentials; for
 Nextcloud, an application password is suitable when a separate client credential is needed. Plain HTTP requires explicitly
 setting `allowInsecureHttp: true`. The adapter follows collections recursively and caches one sorted listing while paging;
-its key-based resume token is not a snapshot across process restarts.
+its key-based resume token is not a snapshot across process restarts. Discovery is limited to 100,000 items by default;
+set `maxSnapshotItems` to raise or lower the cap. Exceeding the cap throws `InvalidOperationException`.
 When supplying an `HttpClient`, configure its handler with automatic redirects disabled so the adapter can validate each
 redirect before sending credentials to the next request:
 
@@ -169,8 +170,9 @@ root. Tokens are not refreshed by the adapter; Box access tokens are short-lived
 an authentication failure. Listings recursively page through each folder with Box's marker API and return relative paths
 within the configured root. One listing snapshot is cached while paging; after process restart the token resumes by key and
 re-discovers the tree. `HeadAsync` and `ReadAsync` walk only the requested key's parent folders. File ETags, or SHA-1 when
-the ETag is absent, are used as version tokens; if both are absent the adapter leaves the version unset. Download redirects
-are restricted to HTTPS Box download hosts; when supplying an `HttpClient`, disable
+the ETag is absent, are used as version tokens; if both are absent the adapter leaves the version unset. Discovery is limited
+to 100,000 items by default; set `maxSnapshotItems` to adjust the cap. Exceeding it throws `InvalidOperationException`.
+Download redirects are restricted to HTTPS Box download hosts; when supplying an `HttpClient`, disable
 automatic redirects so authorization is not sent before redirect validation:
 
 ```csharp

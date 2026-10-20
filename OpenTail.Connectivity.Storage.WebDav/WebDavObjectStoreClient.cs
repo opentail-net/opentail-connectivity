@@ -13,25 +13,35 @@ namespace OpenTail.Connectivity.Storage.WebDav;
 /// that root, including when redirects are followed. If a caller supplies an <see cref="HttpClient"/>, its handler must have
 /// automatic redirects disabled so this class can validate each destination before resending credentials. WebDAV has no
 /// snapshot cursor. One in-progress sorted listing is cached so subsequent pages do not traverse the tree again; a token
-/// resumed after process restart falls back to a new traversal from its last key.
+/// resumed after process restart falls back to a new traversal from its last key. Discovery is capped at 100,000 items by
+/// default; set <c>maxSnapshotItems</c> to adjust the limit.
 /// </remarks>
 public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
 {
     private static readonly XNamespace Dav = "DAV:";
     private const int MaxRedirects = 5;
+    private const int DefaultMaxSnapshotItems = 100_000;
     private readonly Uri _root;
     private readonly string _rootPath;
     private readonly string _authorization;
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
+    private readonly int _maxSnapshotItems;
     private readonly object _snapshotLock = new();
     private ListingSnapshot? _snapshot;
 
-    public WebDavObjectStoreClient(Uri root, string username, string password, HttpClient? http = null, bool allowInsecureHttp = false)
+    public WebDavObjectStoreClient(
+        Uri root,
+        string username,
+        string password,
+        HttpClient? http = null,
+        bool allowInsecureHttp = false,
+        int maxSnapshotItems = DefaultMaxSnapshotItems)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentException.ThrowIfNullOrWhiteSpace(username);
         ArgumentNullException.ThrowIfNull(password);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxSnapshotItems, 1);
         if (username.Contains(':'))
             throw new ArgumentException("A WebDAV Basic-auth username cannot contain a colon.", nameof(username));
         if (!root.IsAbsoluteUri || root.Scheme != Uri.UriSchemeHttps && !(allowInsecureHttp && root.Scheme == Uri.UriSchemeHttp) ||
@@ -43,6 +53,7 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
         _authorization = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(username + ":" + password));
         _http = http ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
         _ownsHttp = http is null;
+        _maxSnapshotItems = maxSnapshotItems;
         Container = _root.Authority + _root.AbsolutePath.TrimEnd('/');
     }
 
@@ -54,6 +65,11 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
     {
         ValidateKey(prefix, allowEmpty: true, nameof(prefix));
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+        if (resumeToken is null)
+        {
+            lock (_snapshotLock)
+                _snapshot = null;
+        }
 
         var cursor = ParseCursor(resumeToken);
         ListingSnapshot? snapshot = null;
@@ -190,6 +206,8 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
 
     public void Dispose()
     {
+        lock (_snapshotLock)
+            _snapshot = null;
         if (_ownsHttp)
             _http.Dispose();
     }
@@ -197,6 +215,7 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
     private async Task<List<ObjectInfo>> EnumerateAsync(CancellationToken cancellationToken)
     {
         var objects = new List<ObjectInfo>();
+        var discoveredCount = 0;
         var pending = new Queue<Uri>();
         var visited = new HashSet<string>(StringComparer.Ordinal);
         pending.Enqueue(_root);
@@ -216,6 +235,9 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
                 var key = RelativeKey(href);
                 if (key.Length == 0)
                     continue;
+                if (discoveredCount >= _maxSnapshotItems)
+                    throw new InvalidOperationException($"WebDAV listing exceeded the configured limit of {_maxSnapshotItems} discovered items.");
+                discoveredCount++;
 
                 if (IsCollection(entry, href))
                 {

@@ -12,7 +12,8 @@ namespace OpenTail.Connectivity.Storage.Box;
 /// Supply an access token obtained and refreshed by the caller. The configured folder ID is the root of this adapter's
 /// namespace; folder IDs remain internal while relative keys are derived from Box item names. Folder listings use Box's
 /// marker cursors and object-store listings use key-based resume tokens. Subsequent pages reuse one in-process snapshot;
-/// resuming after process restart re-discovers the tree from the last key.
+/// resuming after process restart re-discovers the tree from the last key. Discovery is capped at 100,000 items by default;
+/// set <c>maxSnapshotItems</c> to adjust the limit.
 /// If supplying an <see cref="HttpClient"/>, configure its handler with automatic redirects disabled so the adapter can inspect
 /// Box's download redirect and avoid forwarding the access token to the download host.
 /// </remarks>
@@ -20,22 +21,26 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
 {
     private static readonly Uri ApiRoot = new("https://api.box.com/2.0/");
     private const int PageLimit = 1000;
+    private const int DefaultMaxSnapshotItems = 100_000;
     private const int MaxDownloadRedirects = 5;
     private readonly string _rootFolderId;
     private readonly string _accessToken;
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
+    private readonly int _maxSnapshotItems;
     private readonly object _snapshotLock = new();
     private ListingSnapshot? _snapshot;
 
-    public BoxObjectStoreClient(string accessToken, string rootFolderId, HttpClient? http = null)
+    public BoxObjectStoreClient(string accessToken, string rootFolderId, HttpClient? http = null, int maxSnapshotItems = DefaultMaxSnapshotItems)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(accessToken);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxSnapshotItems, 1);
         ValidateId(rootFolderId, nameof(rootFolderId));
         _accessToken = accessToken;
         _rootFolderId = rootFolderId;
         _http = http ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
         _ownsHttp = http is null;
+        _maxSnapshotItems = maxSnapshotItems;
         Container = rootFolderId;
     }
 
@@ -47,6 +52,11 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
     {
         ValidateKey(prefix, allowEmpty: true, nameof(prefix));
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+        if (resumeToken is null)
+        {
+            lock (_snapshotLock)
+                _snapshot = null;
+        }
 
         var cursor = ParseCursor(resumeToken);
         ListingSnapshot? snapshot = null;
@@ -169,6 +179,8 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
 
     public void Dispose()
     {
+        lock (_snapshotLock)
+            _snapshot = null;
         if (_ownsHttp)
             _http.Dispose();
     }
@@ -178,6 +190,7 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
         var files = new List<DiscoveredFile>();
         var pending = new Stack<FolderNode>();
         var visited = new HashSet<string>(StringComparer.Ordinal);
+        var discoveredCount = 0;
         pending.Push(new FolderNode(_rootFolderId, ""));
 
         while (pending.TryPop(out var folder))
@@ -194,6 +207,9 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
                 foreach (var item in page.Entries)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    if (discoveredCount >= _maxSnapshotItems)
+                        throw new InvalidOperationException($"Box listing exceeded the configured limit of {_maxSnapshotItems} discovered items.");
+                    discoveredCount++;
                     if (item.Type == "folder")
                     {
                         pending.Push(new FolderNode(item.Id, JoinKey(folder.Key, item.Name)));

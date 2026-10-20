@@ -193,6 +193,21 @@ public sealed class WebDavObjectStoreClientTests
         Assert.Equal("webdav", allowed.Scheme);
     }
 
+    [Fact]
+    public async Task Listing_over_snapshot_limit_fails_with_configured_limit_message()
+    {
+        var handler = new StubHandler(_ => Xml(Multi(
+            Collection("/remote.php/dav/files/alice/library/"),
+            File("/remote.php/dav/files/alice/library/a.txt", 1, "a"),
+            File("/remote.php/dav/files/alice/library/b.txt", 1, "b"))));
+        using var http = new HttpClient(handler);
+        using var client = new WebDavObjectStoreClient(new Uri(Root), "alice", "pass", http, maxSnapshotItems: 1);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => client.ListAsync("", null, 1));
+
+        Assert.Contains("limit of 1", error.Message, StringComparison.Ordinal);
+    }
+
     private static WebDavObjectStoreClient Client(HttpClient http) =>
         new(new Uri(Root), "alice", "app-pass", http);
 

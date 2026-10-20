@@ -169,6 +169,18 @@ public sealed class BoxObjectStoreClientTests
         await Assert.ThrowsAsync<ArgumentException>(() => client.ReadAsync("/absolute.txt", 10));
     }
 
+    [Fact]
+    public async Task Listing_over_snapshot_limit_fails_with_configured_limit_message()
+    {
+        var handler = new StubHandler(_ => Json("""{"entries":[{"id":"f1","type":"file","name":"a.txt"},{"id":"f2","type":"file","name":"b.txt"}]}"""));
+        using var http = new HttpClient(handler);
+        using var client = new BoxObjectStoreClient("token", "root", http, maxSnapshotItems: 1);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => client.ListAsync("", null, 1));
+
+        Assert.Contains("limit of 1", error.Message, StringComparison.Ordinal);
+    }
+
     private static BoxObjectStoreClient Client(HttpClient http) => new("test-token", "root", http);
 
     private static HttpResponseMessage Json(string json) => new(HttpStatusCode.OK)
