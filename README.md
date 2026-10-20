@@ -1,0 +1,99 @@
+# OpenTail Connectivity
+
+Small .NET libraries that read content from where it lives: folders, web pages, CSV, email files, SQL databases, inboxes (IMAP,
+Microsoft Graph, Gmail), calendars (ICS feeds, Outlook, Google) and social platforms. They normalise it into documents with text and metadata. Source connectors only read; the Graph, Gmail and IMAP
+packages also contain email-sending and (Graph, Gmail) calendar-editing code, see [safety and credentials](docs/safety-and-credentials.md). They depend only on
+public NuGet packages. They are licensed under PolyForm Strict 1.0.0: noncommercial use only; commercial use needs a
+licence (see [Licence](#licence)).
+
+They are used by the OpenTail Host's modules and by OpenTail itself.
+
+| Package | What |
+|---|---|
+| `OpenTail.Connectivity.Files` | The core: file and folder connector, text extraction, normalisation, validation, JSONL export. Every other package builds on it. |
+| `OpenTail.Connectivity.Web` | Web and URL connector with same-domain crawling and text extraction. |
+| `OpenTail.Connectivity.Csv` | CSV rows as documents, with column-level field mapping. |
+| `OpenTail.Connectivity.Email` | `.eml` files and `.mbox` archives. |
+| `OpenTail.Connectivity.Sql` | SQLite databases, with an allow-list of fields. |
+| `OpenTail.Connectivity.Social` | Social platforms (X, Reddit, YouTube, Meta), with sentiment scoring and marketing metadata. |
+| `OpenTail.Connectivity.Inbox.Imap` | IMAP inbox reader (MailKit), plus an SMTP sender. |
+| `OpenTail.Connectivity.Inbox.Graph` | Outlook inbox, sender and calendar (Microsoft Graph). |
+| `OpenTail.Connectivity.Inbox.Gmail` | Gmail inbox, sender and calendar (Gmail API). |
+| `OpenTail.Connectivity.Calendar.Ics` | ICS / iCalendar files and read-only ICS feed URLs. |
+| `OpenTail.Connectivity.RichText` | Rich text to plain text: Atlassian Document Format (Jira, Confluence), Confluence storage format, Notion blocks, Slack markup. Pure functions, also `ITextExtractor`s. |
+| `OpenTail.Connectivity.Storage` | Read-only object storage behind `IObjectStoreClient`; `ObjectStoreReader` lists and reads inside a prefix allow-list, with capped reads and bounded gzip. |
+| `OpenTail.Connectivity.Storage.S3` | Amazon S3 and S3-compatible stores (AWS SDK), through a caller-supplied `HttpClient`. |
+| `OpenTail.Connectivity.Memory` | Memory: records with typed provenance and policy, the `IMemoryBackend` contract, governance that reads fields and never text, governed retrieval, ingestion, a conformance suite and a quality gate. In-memory and Markdown-files backends included. See [memory](docs/design/memory.md). |
+| `OpenTail.Connectivity.Memory.Sqlite` | Memory backend in one SQLite file: FTS5 keyword search, every governance rule applied in SQL before ranking. |
+| `OpenTail.Connectivity.Memory.VectorData` | Memory backend over any `Microsoft.Extensions.VectorData` collection (Postgres with pgvector, Qdrant, Azure AI Search ...), the caller's embedding model. |
+
+## Documentation
+
+- [Architecture](docs/architecture.md): the pipeline, the packages, and how documents are shaped.
+- [Connector reference](docs/connectors.md): per package, how to construct it, its options, and what it emits.
+- [Safety and credentials](docs/safety-and-credentials.md): what can write, email send policy, OAuth scopes, handling secrets.
+- [Work plan](docs/plan.md): one checklist across the roadmap, the designs and the Host notes, in order.
+- [Roadmap](docs/roadmap.md): live tools in the Host versus indexing here, the three tiers of document search, and what this
+  repository builds for each.
+- [Extending](docs/extending.md): building on the packages from another project, and where it is awkward today.
+- Design proposals (nothing implemented yet): [shared groundwork](docs/design/shared-groundwork.md),
+  [incremental sync and deletions](docs/design/sync-and-deletions.md),
+  [summary cards](docs/design/summary-cards.md),
+  [skills and scenarios](docs/design/skills-and-scenarios.md),
+  [roles and permissions](docs/design/roles-and-permissions.md),
+  [what downstream stores can rely on](docs/design/consumer-contract.md),
+  [testing and verification](docs/design/testing-and-verification.md),
+  [SQL connectors](docs/design/sql-connectors.md),
+  [SharePoint / OneDrive](docs/design/microsoft-graph-files.md),
+  [Google Drive](docs/design/google-drive.md),
+  [object storage](docs/design/object-storage.md),
+  [tickets, wikis and chat](docs/design/tickets-wikis-and-chat.md),
+  [CRM](docs/design/crm.md),
+  [finance systems](docs/design/finance.md),
+  [plug-and-play memory](docs/design/memory.md) and
+  [triggers](docs/design/triggers.md) (the *when*).
+- [Using and writing connectors](docs/writing-a-connector.md): a worked example and the contracts to implement.
+- [Host Sql module: Postgres and MySQL](docs/host/sql-postgres-mysql.md): a plan for code in `opentail-host`, including a
+  security fix, kept here with the other SQL design work.
+- [Notes for the Host](docs/host/notes.md): smaller items for `opentail-host` found during this work (IMAP lookback, text
+  extraction in the Files module, a `storage` module, a Microsoft 365 files profile, coordinating breaking changes).
+- [skills.publish: questions to resolve](docs/host/skills-publish-questions.md): whether the change request's report can be
+  trusted, what an approval applies to, and reviewer edits.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Build and test
+
+```
+dotnet build OpenTail.Connectivity.slnx
+dotnet test --solution OpenTail.Connectivity.slnx
+```
+
+## Releases
+
+All packages share one version, taken from `v*` tags by MinVer. To release them all as 0.0.2, tag `v0.0.2` and push the tag; CI
+builds, tests and publishes to GitHub Packages (`https://nuget.pkg.github.com/opentail-net/index.json`). Untagged builds are
+`0.0.x-alpha.0.<height>`.
+
+Repository history was restarted on 2026-10-20 and versions reset to 0.0.1. Commit hashes and version numbers in older
+documents refer to the earlier history.
+
+## Using the packages
+
+GitHub Packages needs a token even to read. Add the feed once, with a classic personal access token that has `read:packages`:
+
+```
+dotnet nuget add source https://nuget.pkg.github.com/opentail-net/index.json --name opentail-net \
+  --username <github user> --password <token> --store-password-in-clear-text
+```
+
+In GitHub Actions, give the consuming repository read access to the packages (package settings > Manage Actions access) and
+authenticate with `GITHUB_TOKEN`, or use a secret holding such a token.
+
+## Licence
+
+PolyForm Strict 1.0.0, see [LICENSE.md](LICENSE.md): personal and other noncommercial use is permitted; any commercial use,
+including use inside a business, needs a separate commercial licence from OpenTail. Code released before 20 October 2026 under
+the MIT licence stays under that licence for those who received it.

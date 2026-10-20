@@ -1,0 +1,22 @@
+global using System.Text;
+global using System.Text.Json;
+global using Microsoft.Data.Sqlite;
+global using MimeKit;
+global using Xunit;
+global using OpenTail.Connectivity.Files.Connectors;
+global using OpenTail.Connectivity.Files.Contracts;
+global using OpenTail.Connectivity.Files.Export;
+global using OpenTail.Connectivity.Files.Models;
+global using OpenTail.Connectivity.Files.Extraction;
+global using OpenTail.Connectivity.Files.Pipeline;
+global using OpenTail.Connectivity.Files.Validation;
+global using OpenTail.Connectivity.Web;
+global using OpenTail.Connectivity.Sql;
+global using OpenTail.Connectivity.Email;
+global using OpenTail.Connectivity.Files.Inbox;
+global using OpenTail.Connectivity.Inbox.Imap;
+// global using OpenTail.Connectivity.Sql.SqlServer;
+global using OpenTail.Connectivity.Csv;
+
+global using OpenTail.Connectivity.Inbox.Gmail;
+global using OpenTail.Connectivity.Inbox.Graph;

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <UseMicrosoftTestingPlatform>true</UseMicrosoftTestingPlatform>
+    <IsPackable>false</IsPackable>
+    <Description>The memory conformance suite and quality gate against a real Postgres with pgvector. Skipped unless OTAIL_MEMORY_PGVECTOR is set; run by memory-pgvector.yml.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.SemanticKernel.Connectors.PgVector" />
+    <PackageReference Include="Microsoft.SemanticKernel.Connectors.InMemory" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Memory.VectorData\OpenTail.Connectivity.Memory.VectorData.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\OpenTail.Connectivity.Tests\Memory\HashedBagOfWordsEmbeddings.cs" Link="HashedBagOfWordsEmbeddings.cs" />
+  </ItemGroup>
+</Project>

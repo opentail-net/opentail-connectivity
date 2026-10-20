@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Description>OpenTail Connectivity — SQL/database source connector with allowlist field mapping.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Not .Core: that has no native SQLite, so the connector failed at first use unless the app added a provider. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Connectivity.Files\OpenTail.Connectivity.Files.csproj" />
+  </ItemGroup>
+</Project>

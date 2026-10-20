@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <UseMicrosoftTestingPlatform>true</UseMicrosoftTestingPlatform>
+    <NoWarn>$(NoWarn);xUnit1051;xUnit1031</NoWarn>
+    <Description>Unit tests for the OpenTail Connectivity Core projects.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="MimeKit" />
+    <!-- The SQLite native library (the Sql package brings it too). -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Microsoft.SemanticKernel.Connectors.InMemory" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Files\OpenTail.Connectivity.Files.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Web\OpenTail.Connectivity.Web.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Sql\OpenTail.Connectivity.Sql.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Email\OpenTail.Connectivity.Email.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Inbox.Imap\OpenTail.Connectivity.Inbox.Imap.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Inbox.Gmail\OpenTail.Connectivity.Inbox.Gmail.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Inbox.Graph\OpenTail.Connectivity.Inbox.Graph.csproj" />
+
+    <ProjectReference Include="..\OpenTail.Connectivity.Csv\OpenTail.Connectivity.Csv.csproj" />
+
+    <ProjectReference Include="..\OpenTail.Connectivity.Social\OpenTail.Connectivity.Social.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.RichText\OpenTail.Connectivity.RichText.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Memory\OpenTail.Connectivity.Memory.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Memory.Sqlite\OpenTail.Connectivity.Memory.Sqlite.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Memory.VectorData\OpenTail.Connectivity.Memory.VectorData.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Storage\OpenTail.Connectivity.Storage.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Storage.S3\OpenTail.Connectivity.Storage.S3.csproj" />
+  </ItemGroup>
+</Project>

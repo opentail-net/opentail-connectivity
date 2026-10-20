@@ -1,0 +1,67 @@
+name: Memory on pgvector
+
+# The VectorData memory backend against a real Postgres with pgvector (OpenTail.Connectivity.Tests.PgVector): the conformance
+# suite and the quality gate, with a flat (exact) and an HNSW (approximate) index.
+# Linux only and never on every push, to save Actions minutes: run it by hand, or it runs when the memory packages, these
+# tests or this workflow change.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'OpenTail.Connectivity.Memory/**'
+      - 'OpenTail.Connectivity.Memory.VectorData/**'
+      - 'OpenTail.Connectivity.Tests.PgVector/**'
+      - '.github/workflows/memory-pgvector.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: memory-pgvector-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # A throwaway password for a throwaway container; it guards nothing.
+  PG_PASSWORD: Ci_Admin_Pass_1234x
+
+jobs:
+  pgvector:
+    name: Postgres 17 with pgvector
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: Ci_Admin_Pass_1234x
+          POSTGRES_DB: otail
+        ports: [ '5432:5432' ]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # MinVer reads the v* tags
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build OpenTail.Connectivity.Tests.PgVector -c Release
+
+      - name: Vector extension
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -v ON_ERROR_STOP=1 -U postgres -d otail -c "CREATE EXTENSION IF NOT EXISTS vector;"
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -d otail -tAc "SELECT 'pgvector ' || extversion FROM pg_extension WHERE extname = 'vector';"
+
+      - name: Test
+        env:
+          OTAIL_MEMORY_PGVECTOR: Host=localhost;Port=5432;Database=otail;Username=postgres;Password=${{ env.PG_PASSWORD }}
+        # A skipped test here means the connection string is missing: fail rather than pass quietly.
+        run: |
+          dotnet test --project OpenTail.Connectivity.Tests.PgVector -c Release --no-build 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          if grep -Eq "skipped: [1-9]" test.log; then echo "::error::Some pgvector tests were skipped"; exit 1; fi
+          exit $status

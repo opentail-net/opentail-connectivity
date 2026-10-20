@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Description>OpenTail Connectivity — memory contracts: records with typed provenance and policy, a swappable backend contract with declared capabilities, and governance that reads fields, never text. No AI models.</Description>
+    <PackageTags>opentail;connectivity;memory;retrieval</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Connectivity.Files\OpenTail.Connectivity.Files.csproj" />
+  </ItemGroup>
+</Project>

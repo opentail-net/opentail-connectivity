@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Description>OpenTail Connectivity — read-only object storage (buckets and containers) behind one small client interface: listing, capped reads, gzip, prefix allow-lists. Cloud adapters are separate packages.</Description>
+    <PackageTags>opentail;connectivity;connectors;object-storage;s3</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\OpenTail.Connectivity.Files\OpenTail.Connectivity.Files.csproj" />
+  </ItemGroup>
+</Project>

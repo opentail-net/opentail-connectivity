@@ -1,0 +1,32 @@
+<Project>
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Versioning via MinVer from v* tags: tag v0.0.2 to release every package as 0.0.2. Untagged builds are 0.0.x-alpha.0.<height>. -->
+    <MinVerTagPrefix>v</MinVerTagPrefix>
+    <MinVerMinimumMajorMinor>0.0</MinVerMinimumMajorMinor>
+    <MinVerDefaultPreReleaseIdentifiers>alpha.0</MinVerDefaultPreReleaseIdentifiers>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+
+    <PackageId Condition="'$(PackageId)'==''">$(MSBuildProjectName)</PackageId>
+    <Authors Condition="'$(Authors)'==''">OpenTail</Authors>
+    <Company Condition="'$(Company)'==''">OpenTail</Company>
+    <Description Condition="'$(Description)'==''">$(MSBuildProjectName): an OpenTail Connectivity library.</Description>
+    <PackageProjectUrl>https://github.com/opentail-net/opentail-connectivity</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/opentail-net/opentail-connectivity</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <!-- PolyForm Strict 1.0.0; shipped as a file because not every NuGet client knows the SPDX id. -->
+    <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
+    <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
+    <PackageTags Condition="'$(PackageTags)'==''">opentail;connectivity;connectors</PackageTags>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)LICENSE.md" Pack="true" PackagePath="" Visible="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="MinVer" PrivateAssets="All" />
+  </ItemGroup>
+</Project>

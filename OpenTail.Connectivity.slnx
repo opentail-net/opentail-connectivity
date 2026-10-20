@@ -1,0 +1,24 @@
+<Solution>
+  <Folder Name="/Connectivity/">
+    <Project Path="OpenTail.Connectivity.Files/OpenTail.Connectivity.Files.csproj" />
+    <Project Path="OpenTail.Connectivity.Storage.S3/OpenTail.Connectivity.Storage.S3.csproj" />
+    <Project Path="OpenTail.Connectivity.Storage/OpenTail.Connectivity.Storage.csproj" />
+    <Project Path="OpenTail.Connectivity.Web/OpenTail.Connectivity.Web.csproj" />
+    <Project Path="OpenTail.Connectivity.Csv/OpenTail.Connectivity.Csv.csproj" />
+    <Project Path="OpenTail.Connectivity.Email/OpenTail.Connectivity.Email.csproj" />
+    <Project Path="OpenTail.Connectivity.Sql/OpenTail.Connectivity.Sql.csproj" />
+    <Project Path="OpenTail.Connectivity.RichText/OpenTail.Connectivity.RichText.csproj" />
+    <Project Path="OpenTail.Connectivity.Memory/OpenTail.Connectivity.Memory.csproj" />
+    <Project Path="OpenTail.Connectivity.Memory.Sqlite/OpenTail.Connectivity.Memory.Sqlite.csproj" />
+    <Project Path="OpenTail.Connectivity.Memory.VectorData/OpenTail.Connectivity.Memory.VectorData.csproj" />
+    <Project Path="OpenTail.Connectivity.Social/OpenTail.Connectivity.Social.csproj" />
+    <Project Path="OpenTail.Connectivity.Inbox.Imap/OpenTail.Connectivity.Inbox.Imap.csproj" />
+    <Project Path="OpenTail.Connectivity.Inbox.Graph/OpenTail.Connectivity.Inbox.Graph.csproj" />
+    <Project Path="OpenTail.Connectivity.Inbox.Gmail/OpenTail.Connectivity.Inbox.Gmail.csproj" />
+    <Project Path="OpenTail.Connectivity.Calendar.Ics/OpenTail.Connectivity.Calendar.Ics.csproj" />
+  </Folder>
+  <Folder Name="/Tests/">
+    <Project Path="OpenTail.Connectivity.Tests/OpenTail.Connectivity.Tests.csproj" />
+    <Project Path="OpenTail.Connectivity.Tests.PgVector/OpenTail.Connectivity.Tests.PgVector.csproj" />
+  </Folder>
+</Solution>

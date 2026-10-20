@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+    # Documentation-only pushes skip CI (saves Actions minutes). Tag pushes always run: path filters do not apply to tags.
+    paths-ignore: [ 'docs/**', '**/*.md' ]
+  pull_request:
+    paths-ignore: [ 'docs/**', '**/*.md' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # MinVer reads the v* tags
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # The vulnerability audit stays on: a new advisory fails the build until it is pinned or upgraded.
+      - name: Restore
+        run: dotnet restore OpenTail.Connectivity.slnx
+
+      - name: Build
+        run: dotnet build OpenTail.Connectivity.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test --solution OpenTail.Connectivity.slnx -c Release --no-build
+
+  publish:
+    name: Publish packages
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Pack
+        run: dotnet pack OpenTail.Connectivity.slnx -c Release -o out
+
+      - name: Push to GitHub Packages
+        run: dotnet nuget push "out/*.nupkg" --source https://nuget.pkg.github.com/opentail-net/index.json --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate

@@ -1,0 +1,62 @@
+namespace OpenTail.Connectivity.Tests;
+
+public sealed class SqlServerSourceConnectorTests
+{
+    private static SqlConnectorConfig MakeConfig(string connectionString = "Server=.;Database=test;Integrated Security=true;") =>
+        new SqlConnectorConfig(
+            ConnectionString: connectionString,
+            TableOrQuery: "dbo.Articles",
+            IdField: "Id",
+            TitleField: "Title",
+            BodyFields: ["Body"],
+            ModifiedField: "UpdatedAt",
+            MetadataFields: ["Category"]);
+
+    [Fact]
+    public void Constructor_ThrowsForNullConfig()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            new SqlServerSourceConnector(null!, "tenant"));
+    }
+
+    [Fact]
+    public void Constructor_ThrowsForBlankTenant()
+    {
+        var config = MakeConfig();
+        Assert.Throws<ArgumentException>(() =>
+            new SqlServerSourceConnector(config, ""));
+    }
+
+    [Fact]
+    public void Constructor_Succeeds_WithValidArguments()
+    {
+        var config = MakeConfig();
+        var connector = new SqlServerSourceConnector(config, "acme");
+        Assert.NotNull(connector);
+    }
+
+    [Fact]
+    public async Task DiscoverAsync_ThrowsOnBadConnectionString()
+    {
+        var config = MakeConfig("Server=nonexistent-host-xyz;Database=test;Connect Timeout=1;Integrated Security=true;");
+        var connector = new SqlServerSourceConnector(config, "tenant");
+
+        var ex = await Record.ExceptionAsync(async () =>
+        {
+            await foreach (var _ in connector.DiscoverAsync()) { }
+        });
+
+        Assert.NotNull(ex);
+    }
+
+    [Fact]
+    public async Task FetchAsync_ReturnsEmptyBytesOnBadConnectionString()
+    {
+        var config = MakeConfig("Server=nonexistent-host-xyz;Database=test;Connect Timeout=1;Integrated Security=true;");
+        var connector = new SqlServerSourceConnector(config, "tenant");
+        var item = new SourceItem("1", "Title", "sql-row", 0, DateTimeOffset.UtcNow, "tenant");
+
+        var ex = await Record.ExceptionAsync(() => connector.FetchAsync(item));
+        Assert.NotNull(ex);
+    }
+}
