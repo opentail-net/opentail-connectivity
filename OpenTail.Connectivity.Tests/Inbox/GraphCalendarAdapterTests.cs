@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.Graph;
+using Microsoft.Graph.Models;
 using Microsoft.Kiota.Abstractions.Authentication;
 using OpenTail.Connectivity.Inbox.Graph;
 
@@ -66,6 +67,31 @@ public sealed class GraphCalendarAdapterTests
         Assert.Contains(handler.Requests, uri => uri.AbsolutePath.EndsWith("/calendars/abc/events", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(handler.Requests, uri => uri.AbsolutePath.Contains("/calendars/abc/events/e1", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(handler.Requests, uri => uri.AbsolutePath.EndsWith("/calendars/abc/events/e1/accept", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Recurrence_type_classifies_occurrences_and_series_masters()
+    {
+        var occurrence = new Event { Type = EventType.Occurrence };
+        var single = new Event { Type = EventType.SingleInstance };
+        var master = new Event { Type = EventType.SeriesMaster };
+
+        Assert.True(GraphCalendarMapper.MapEvent(occurrence, "", "tenant").IsRecurring);
+        Assert.False(GraphCalendarMapper.MapEvent(single, "", "tenant").IsRecurring);
+        Assert.True(GraphCalendarMapper.MapEvent(master, "", "tenant").IsRecurring);
+    }
+
+    [Fact]
+    public async Task Calendar_view_selects_event_type()
+    {
+        var handler = new StubGraph(_ => """{"value":[]}""");
+        var adapter = Create(handler);
+
+        await adapter.GetEventsAsync(new CalendarFetchOptions()).ToListAsync();
+
+        var query = Uri.UnescapeDataString(handler.Requests[0].Query);
+        Assert.Contains("type", query, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("seriesMasterId", query, StringComparison.OrdinalIgnoreCase);
     }
 
     private static GraphCalendarAdapter Create(StubGraph handler)

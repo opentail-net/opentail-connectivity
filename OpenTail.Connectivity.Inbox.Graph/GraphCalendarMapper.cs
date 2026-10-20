@@ -25,7 +25,7 @@ internal static class GraphCalendarMapper
             ShowAs: MapShowAs(e.ShowAs),
             Sensitivity: MapSensitivity(e.Sensitivity),
             ResponseStatus: MapResponse(e.ResponseStatus?.Response),
-            IsRecurring: e.Recurrence is not null,
+            IsRecurring: e.Type is EventType.Occurrence or EventType.Exception or EventType.SeriesMaster || e.Recurrence is not null,
             RecurrenceDescription: null,
             Organizer: e.Organizer?.EmailAddress?.Address ?? string.Empty,
             Attendees: (e.Attendees ?? [])

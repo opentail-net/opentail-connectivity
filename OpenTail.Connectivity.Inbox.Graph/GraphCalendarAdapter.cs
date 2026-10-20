@@ -52,7 +52,7 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
                     "id", "subject", "start", "end", "location", "body",
                     "isAllDay", "isOnlineMeeting", "onlineMeetingUrl",
                     "showAs", "sensitivity", "responseStatus", "recurrence",
-                    "organizer", "attendees", "categories"
+                    "organizer", "attendees", "categories", "type", "seriesMasterId"
                 ];
             }, ct)
             : await user.Calendars[calendarId].CalendarView.GetAsync(req =>
@@ -65,7 +65,7 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
                     "id", "subject", "start", "end", "location", "body",
                     "isAllDay", "isOnlineMeeting", "onlineMeetingUrl",
                     "showAs", "sensitivity", "responseStatus", "recurrence",
-                    "organizer", "attendees", "categories"
+                    "organizer", "attendees", "categories", "type", "seriesMasterId"
                 ];
             }, ct);
 

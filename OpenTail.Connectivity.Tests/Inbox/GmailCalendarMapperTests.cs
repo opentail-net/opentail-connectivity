@@ -53,4 +53,16 @@ public sealed class GmailCalendarMapperTests
 
         Assert.Equal("notResponded", mapped.ResponseStatus);
     }
+
+    [Fact]
+    public void Recurring_masters_occurrences_and_single_events_are_classified()
+    {
+        var master = new Event { Recurrence = ["RRULE:FREQ=WEEKLY"] };
+        var occurrence = new Event { RecurringEventId = "master" };
+        var single = new Event();
+
+        Assert.True(GmailCalendarMapper.MapEvent(master, "primary", "tenant").IsRecurring);
+        Assert.True(GmailCalendarMapper.MapEvent(occurrence, "primary", "tenant").IsRecurring);
+        Assert.False(GmailCalendarMapper.MapEvent(single, "primary", "tenant").IsRecurring);
+    }
 }

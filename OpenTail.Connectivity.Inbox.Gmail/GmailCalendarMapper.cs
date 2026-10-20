@@ -29,7 +29,7 @@ internal static class GmailCalendarMapper
             ShowAs: MapTransparency(e.Transparency),
             Sensitivity: MapVisibility(e.Visibility),
             ResponseStatus: MapSelfStatus(e.Attendees, accountEmail),
-            IsRecurring: !string.IsNullOrWhiteSpace(e.RecurringEventId),
+            IsRecurring: !string.IsNullOrWhiteSpace(e.RecurringEventId) || e.Recurrence is { Count: > 0 },
             RecurrenceDescription: e.Recurrence is { Count: > 0 } ? e.Recurrence[0] : null,
             Organizer: e.Organizer?.Email ?? string.Empty,
             Attendees: (e.Attendees ?? [])
