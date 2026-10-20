@@ -12,8 +12,8 @@ guards each one, and what it leaves to you.
 | Create, update, delete, respond to events | `ICalendarAdapter` on Graph and Gmail | **None.** Calling `CreateEventAsync` and the others acts on the real calendar. Only the ICS adapter refuses (`NotSupportedException`). |
 | Everything else (folders, web, CSV, `.eml`, SQL, social) | Source connectors | Read only. |
 
-If you wire an agent or other automation to these types, expose only what it needs. For calendars, hand it a read-only wrapper or
-the ICS adapter rather than the Graph or Gmail adapter.
+If you wire an agent or other automation to these types, expose only what it needs. `ReadOnlyCalendarAdapter` wraps any adapter
+and refuses every write; use it or the ICS adapter rather than the Graph or Gmail adapter.
 
 ## Email send policy
 
