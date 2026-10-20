@@ -20,4 +20,5 @@ public sealed record IngestionReport(
     double AvgBodyLength = 0,
     string? SyncScope = null,
     bool FullRun = false,
-    bool SyncCommitted = false);
+    bool SyncCommitted = false,
+    int ItemsDeleted = 0);

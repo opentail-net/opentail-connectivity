@@ -58,6 +58,9 @@ public sealed class ConnectivityPipeline
     /// </summary>
     private async Task<IngestionReport> RunIncrementalAsync(IIncrementalSourceConnector source, ISyncCursorStore store, CancellationToken ct)
     {
+        if (source.ReportsDeletions && !_exporters.OfType<IDeletionExporter>().Any())
+            throw new InvalidOperationException("This connector reports deletions but no exporter can apply them.");
+
         var run = new Run(_options);
         var sync = _options.Sync ?? new SyncOptions();
         var every = sync.CheckpointEvery ?? TimeSpan.FromMinutes(5);
@@ -106,6 +109,36 @@ public sealed class ConnectivityPipeline
                         holdCommits = true;
                         run.Errors.Add($"{upsert.Item.DisplayName}: not committed past this item; the next run starts again from the last commit.");
                     }
+                    break;
+
+                case SourceChange.Delete d:
+                    if (run.CapReached) goto stop;
+                    sinceCommit++;
+                    var deletion = new DocumentDeletion(
+                        Id: DocumentId(_sourceType, run.TenantContext, d.SourceRef),
+                        SourceRef: d.SourceRef,
+                        SourceType: _sourceType,
+                        TenantContext: run.TenantContext,
+                        Reason: d.Reason,
+                        DetectedAt: DateTimeOffset.UtcNow);
+
+                    try
+                    {
+                        foreach (var exporter in _exporters)
+                        {
+                            if (exporter is IDeletionExporter deletionExporter)
+                                await deletionExporter.DeleteAsync(deletion, ct);
+                        }
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        run.Failed++;
+                        run.Errors.Add($"{d.SourceRef}: {ex.Message}");
+                        return run.Report();
+                    }
+
+                    run.Deleted++;
+                    unflushed = true;
                     break;
 
                 case SourceChange.Checkpoint checkpoint:
@@ -244,6 +277,7 @@ public sealed class ConnectivityPipeline
         public int Discovered { get; set; }
         public int Skipped { get; set; }
         public int Failed { get; set; }
+        public int Deleted { get; set; }
         public List<string> Errors { get; } = [];
         public List<ValidationIssue> Issues { get; } = [];
         public HashSet<string> SeenRefs { get; } = new(StringComparer.Ordinal);
@@ -288,7 +322,8 @@ public sealed class ConnectivityPipeline
             AvgBodyLength: processed > 0 ? Math.Round((double)totalBody / processed, 1) : 0,
             SyncScope: SyncScope,
             FullRun: FullRun,
-            SyncCommitted: SyncCommitted);
+            SyncCommitted: SyncCommitted,
+            ItemsDeleted: Deleted);
     }
 
     private static NormalisedDocument Normalise(SourceItem item, TextExtractionResult extraction, PipelineOptions options, string sourceType)

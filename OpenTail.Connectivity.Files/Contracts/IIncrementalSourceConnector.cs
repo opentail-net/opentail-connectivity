@@ -19,6 +19,9 @@ public interface IIncrementalSourceConnector : ISourceConnector
     /// from a <see cref="SourceChange.Checkpoint"/> cursor skips nothing that came after it.
     /// </summary>
     IAsyncEnumerable<SourceChange> GetChangesAsync(string? cursor, CancellationToken cancellationToken = default);
+
+    /// <summary>Whether this connector can yield <see cref="SourceChange.Delete"/> changes.</summary>
+    bool ReportsDeletions => false;
 }
 
 /// <summary>One step of a change stream.</summary>
@@ -28,6 +31,9 @@ public abstract record SourceChange
 
     /// <summary>An item is new or changed: fetch, extract and export it.</summary>
     public sealed record Upsert(SourceItem Item) : SourceChange;
+
+    /// <summary>An item no longer exists at the source, or no longer matches the connector's filter.</summary>
+    public sealed record Delete(string SourceRef, Models.DeletionReason Reason) : SourceChange;
 
     /// <summary>A cursor that is valid once everything yielded before it has been handled. Opaque to everyone but the connector.</summary>
     public sealed record Checkpoint(string Cursor) : SourceChange;

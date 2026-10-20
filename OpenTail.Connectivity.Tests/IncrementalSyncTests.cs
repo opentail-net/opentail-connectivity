@@ -10,11 +10,12 @@ public sealed class IncrementalSyncTests : IDisposable
         try { File.Delete(_stateFile); } catch (IOException) { }
     }
 
-    /// <summary>Yields a script of changes. "U:x" upserts item x, "C:n" a checkpoint, "R" a reset. Items in failFetch throw on fetch.</summary>
+    /// <summary>Yields a script of changes. "U:x" upserts item x, "C:n" a checkpoint, "R" a reset, "D:x" deletes x, "D-:x" out of scope. Items in failFetch throw on fetch.</summary>
     private sealed class Scripted(string[] script, params string[] failFetch) : IIncrementalSourceConnector
     {
         public string SyncScope => "test:acme:things";
         public List<string?> CursorsAskedFor { get; } = [];
+        public bool ReportsDeletions { get; set; }
 
         public async IAsyncEnumerable<SourceChange> GetChangesAsync(string? cursor, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
@@ -26,6 +27,8 @@ public sealed class IncrementalSyncTests : IDisposable
                 {
                     "R" => new SourceChange.Reset("token expired"),
                     _ when step.StartsWith("C:") => new SourceChange.Checkpoint(step[2..]),
+                    _ when step.StartsWith("D-:") => new SourceChange.Delete(step[3..], DeletionReason.OutOfScope),
+                    _ when step.StartsWith("D:") => new SourceChange.Delete(step[2..], DeletionReason.Deleted),
                     _ => new SourceChange.Upsert(new SourceItem(step[2..], step[2..] + ".txt", "txt", 1, DateTimeOffset.UnixEpoch, "acme")),
                 };
             }
@@ -53,11 +56,36 @@ public sealed class IncrementalSyncTests : IDisposable
         }
     }
 
-    private sealed class Exporter(List<string> log, string? failOn = null) : IConnectivityExporter
+    private sealed class Exporter(List<string> log, string? failOn = null, string? failDeleteOn = null) : IConnectivityExporter, IDeletionExporter
     {
+        public List<DocumentDeletion> Deletions { get; } = [];
+
         public Task ExportAsync(NormalisedDocument document, CancellationToken cancellationToken = default)
         {
             if (document.SourceRef == failOn) throw new IOException("store down");
+            log.Add("export " + document.SourceRef);
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteAsync(DocumentDeletion deletion, CancellationToken cancellationToken = default)
+        {
+            if (deletion.SourceRef == failDeleteOn) throw new IOException("delete failed");
+            Deletions.Add(deletion);
+            log.Add("delete " + deletion.SourceRef);
+            return Task.CompletedTask;
+        }
+
+        public Task FlushAsync(CancellationToken cancellationToken = default)
+        {
+            log.Add("flush");
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class NonDeletionExporter(List<string> log) : IConnectivityExporter
+    {
+        public Task ExportAsync(NormalisedDocument document, CancellationToken cancellationToken = default)
+        {
             log.Add("export " + document.SourceRef);
             return Task.CompletedTask;
         }
@@ -86,8 +114,8 @@ public sealed class IncrementalSyncTests : IDisposable
 
     private FileSyncCursorStore Store() => new(_stateFile);
 
-    private Task<IngestionReport> Run(Scripted source, string? failExportOn = null, int every = 1, int? cap = null) =>
-        new ConnectivityPipeline(source, new Extractor(), [new Exporter(_log, failExportOn)],
+    private Task<IngestionReport> Run(Scripted source, string? failExportOn = null, int every = 1, int? cap = null, IConnectivityExporter? exporter = null, string? failDeleteOn = null) =>
+        new ConnectivityPipeline(source, new Extractor(), [exporter ?? new Exporter(_log, failExportOn, failDeleteOn)],
             new PipelineOptions(MaxItemsProcessed: cap, SyncStore: new LoggingStore(Store(), _log), Sync: new SyncOptions(CheckpointEveryItems: every)))
         .RunAsync();
 
@@ -205,5 +233,62 @@ public sealed class IncrementalSyncTests : IDisposable
         Assert.Equal(1, report.ItemsProcessed);
         Assert.Null(report.SyncScope);
         Assert.Equal([null], source.CursorsAskedFor);
+    }
+
+    [Fact]
+    public async Task Deletions_are_exported_in_order_before_the_next_checkpoint()
+    {
+        var exporter = new Exporter(_log);
+        var source = new Scripted(["U:a", "D:b", "C:1"]);
+        var report = await Run(source, exporter: exporter);
+
+        Assert.Equal(["export a", "delete b", "flush", "save 1"], _log);
+        var deletion = Assert.Single(exporter.Deletions);
+        Assert.Equal(ConnectivityPipeline.DocumentId("file", "acme", "b"), deletion.Id);
+        Assert.Equal("b", deletion.SourceRef);
+        Assert.Equal("file", deletion.SourceType);
+        Assert.Equal("acme", deletion.TenantContext);
+        Assert.Equal(DeletionReason.Deleted, deletion.Reason);
+    }
+
+    [Fact]
+    public async Task A_deletion_exporter_that_throws_stops_the_run_without_committing_and_records_the_error()
+    {
+        var source = new Scripted(["U:a", "D:b", "C:1"]);
+        var report = await Run(source, failDeleteOn: "b");
+
+        Assert.Null(await Store().LoadAsync("test:acme:things"));
+        Assert.Equal(1, report.ItemsFailed);
+        Assert.Contains(report.Errors, e => e.Contains("delete failed"));
+    }
+
+    [Fact]
+    public async Task Reports_deletions_without_a_deletion_exporter_throws_before_reading_changes()
+    {
+        var source = new Scripted(["D:b", "C:1"]) { ReportsDeletions = true };
+        var exporter = new NonDeletionExporter(_log);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Run(source, exporter: exporter));
+        Assert.Empty(source.CursorsAskedFor);
+    }
+
+    [Fact]
+    public async Task Item_cap_stops_before_deletion()
+    {
+        var exporter = new Exporter(_log);
+        var source = new Scripted(["U:a", "D:b", "C:1"]);
+        var report = await Run(source, cap: 1, exporter: exporter);
+
+        Assert.Equal(1, report.ItemsProcessed);
+        Assert.Empty(exporter.Deletions);
+    }
+
+    [Fact]
+    public async Task Items_deleted_counts_deletions()
+    {
+        var source = new Scripted(["U:a", "D:b", "D-:c", "C:1"]);
+        var report = await Run(source);
+
+        Assert.Equal(2, report.ItemsDeleted);
     }
 }
