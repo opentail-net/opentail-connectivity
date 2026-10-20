@@ -33,8 +33,9 @@ Limits to be aware of:
   recipient lists and limits explicitly.
 - Rate-limit counters live in memory, per `PolicyEnforcingEmailSender` instance. They reset on restart and are not shared between
   processes.
-- With approval on, the recipient and rate checks run when a send is queued, not when it is approved. `EmailSendApprovalService`
-  sends through the raw sender you give it, so approved sends are not counted against the rate limits.
+- With approval on, recipients are checked both when a send is queued and again when it is approved. Approval also reserves a
+  rate-limit slot before sending. Build the service with `PolicyEnforcingEmailSender.CreateApprovalService()` so queued and
+  approved sends use the same policy and limiter; a separately constructed service can split the rate cap.
 - `InMemoryPendingSendStore` is in memory unless you pass it a `filePath`, in which case it also saves to and loads from that file.
   Use that, or your own `IPendingSendStore`, if pending sends must survive a restart.
 - The policy only guards the `IEmailSender` you wrapped. Nothing stops code that holds a raw sender or the provider SDK.
@@ -85,10 +86,10 @@ limit the app to specific mailboxes (RBAC for Applications, or the older applica
 `SqlConnectorConfig` reads only the listed fields. Two cautions:
 
 - With `IsQuery = true`, `TableOrQuery` is run as SQL as written, and is also embedded in a subquery when fetching a row. Never
-  build it from user input. Table and field names are wrapped in double quotes without escaping, so treat them as trusted input
-  too.
-- The connector does not open the database read-only. Connect with a read-only account or a read-only SQLite connection string
-  (`Mode=ReadOnly`).
+  build it from user input. Table and field names are quoted with embedded double quotes escaped; they still must come from
+  trusted configuration, not user input.
+- The connector forces SQLite connections to `Mode=ReadOnly`, enables `PRAGMA query_only`, and rejects connection strings that
+  explicitly permit writes. Keep the database file and its directory protected as well.
 
 ## Web crawling
 
