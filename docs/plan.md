@@ -781,16 +781,16 @@ All done 2026-10-20 (T2, T3, T5 by the smaller model, reviewed). Weighed, not ap
 ## 25. External review, calendars, 2026-10-20
 
 All findings confirmed (two narrower than reported), five more found; plan in
-[review-2026-10-20-calendar.md](review-2026-10-20-calendar.md). Nothing fixed yet.
+[review-2026-10-20-calendar.md](review-2026-10-20-calendar.md). All but K3 fixed 2026-10-20 (K2, K4, K5, K7, K8 by the smaller model).
 
-- [ ] **[C]** K1: Graph times parsed as machine-local, writes send offset + zone. Every Graph event on a non-UTC server.
-- [ ] **[C]** K2: Graph `"calendar"` used as a calendar id.
+- [x] **[C]** K1: Graph times parsed as machine-local, writes send offset + zone. Every Graph event on a non-UTC server.
+- [x] **[C]** K2: Graph `"calendar"` used as a calendar id.
 - [ ] **[C]** K3: Gmail `Events.Update` wipes fields the model lacks; use `Patch`.
-- [ ] **[C]** K4: Gmail RSVP status read for the creator, not `self`.
-- [ ] **[C]** K5: recurring flag wrong (Gmail masters, Graph listed occurrences).
-- [ ] **[C]** K6: Gmail all-day dates machine-dependent; missing times become "now" (both adapters).
-- [ ] **[C]** K7: Graph `calendarView` reads one page.
-- [ ] **[C]** K8: `ReadOnlyCalendarGuard`, like the inbox one; Host test that write tools carry their risk.
+- [x] **[C]** K4: Gmail RSVP status read for the creator, not `self`.
+- [x] **[C]** K5: recurring flag wrong (Gmail masters, Graph listed occurrences).
+- [x] **[C]** K6: Gmail all-day dates machine-dependent; missing times become "now" (both adapters).
+- [x] **[C]** K7: Graph `calendarView` reads one page.
+- [x] **[C]** K8: `ReadOnlyCalendarAdapter`. *Host test that `ReadOnly` removes the write tools still to add.*
 
 ## Background, no action planned
 

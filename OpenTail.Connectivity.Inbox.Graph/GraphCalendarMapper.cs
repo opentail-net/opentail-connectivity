@@ -9,14 +9,19 @@ internal static class GraphCalendarMapper
             IsDefault: c.IsDefaultCalendar ?? false,
             TenantContext: tenantContext);
 
-    public static CalendarEvent MapEvent(Event e, string calendarId, string tenantContext)
-        => new(
+    /// <summary>Null when the event has no readable start or end: a made-up time would look real.</summary>
+    public static CalendarEvent? MapEvent(Event e, string calendarId, string tenantContext)
+        => CalendarTime.FromZoned(e.Start?.DateTime, e.Start?.TimeZone) is not { } start
+           || CalendarTime.FromZoned(e.End?.DateTime, e.End?.TimeZone) is not { } end
+            ? null
+            : new(
             EventId: e.Id ?? string.Empty,
             CalendarId: calendarId,
             Subject: e.Subject ?? string.Empty,
-            Start: ParseDtz(e.Start),
-            End: ParseDtz(e.End),
-            TimeZone: e.Start?.TimeZone ?? "UTC",
+            Start: start,
+            End: end,
+            // The adapter asks Graph for UTC times; the event's own zone is kept for display and writes.
+            TimeZone: e.OriginalStartTimeZone ?? e.Start?.TimeZone ?? "UTC",
             Location: e.Location?.DisplayName,
             Body: e.Body?.Content,
             IsAllDay: e.IsAllDay ?? false,
@@ -37,12 +42,6 @@ internal static class GraphCalendarMapper
                 .ToArray(),
             Categories: (e.Categories ?? []).ToArray(),
             TenantContext: tenantContext);
-
-    private static DateTimeOffset ParseDtz(DateTimeTimeZone? dtz)
-    {
-        if (dtz?.DateTime is null) return DateTimeOffset.UtcNow;
-        return DateTimeOffset.TryParse(dtz.DateTime, out var dto) ? dto : DateTimeOffset.UtcNow;
-    }
 
     private static string MapShowAs(FreeBusyStatus? status) => status switch
     {

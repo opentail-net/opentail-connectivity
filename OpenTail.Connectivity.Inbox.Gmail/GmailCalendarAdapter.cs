@@ -54,10 +54,10 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
         {
             response = await request.ExecuteAsync(ct);
             foreach (var ev in response?.Items ?? [])
-                if (ev is not null)
+                if (ev is not null && GmailCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail, _settings.UserEmail, response?.TimeZone) is { } mapped)
                 {
                     yielded++;
-                    yield return GmailCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail, _settings.UserEmail);
+                    yield return mapped;
                     if (yielded >= options.MaxEvents)
                         yield break;
                 }
@@ -142,22 +142,20 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
     private Task<Google.Apis.Auth.OAuth2.ICredential> BuildCredentialAsync(CancellationToken ct)
         => _credentialProvider.GetCredentialAsync(ct);
 
+    // All-day events are dates in the event's zone; a timed one sent as dateTime here would become a timed event.
+    private static EventDateTime ToGoogleTime(DateTimeOffset value, CalendarEvent e)
+        => e.IsAllDay
+            ? new EventDateTime { Date = CalendarTime.ToDate(value, e.TimeZone) }
+            : new EventDateTime { DateTimeRaw = value.ToString("o", System.Globalization.CultureInfo.InvariantCulture), TimeZone = e.TimeZone };
+
     private static GEvent ToGoogleEvent(CalendarEvent e)
         => new()
         {
             Summary = e.Subject,
             Description = e.Body,
             Location = e.Location,
-            Start = new EventDateTime
-            {
-                DateTimeRaw = e.Start.ToString("o"),
-                TimeZone = e.TimeZone
-            },
-            End = new EventDateTime
-            {
-                DateTimeRaw = e.End.ToString("o"),
-                TimeZone = e.TimeZone
-            },
+            Start = ToGoogleTime(e.Start, e),
+            End = ToGoogleTime(e.End, e),
             Attendees = e.Attendees
                 .Select(a => new Google.Apis.Calendar.v3.Data.EventAttendee
                 {

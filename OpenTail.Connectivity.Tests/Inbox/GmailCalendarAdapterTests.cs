@@ -99,7 +99,7 @@ public sealed class GmailCalendarAdapterTests
     private static string EventsPage(string[] ids, string? nextPageToken = null)
         => JsonSerializer.Serialize(new
         {
-            items = ids.Select(id => new { id, summary = $"event {id}" }),
+            items = ids.Select(id => new { id, summary = $"event {id}", start = new { dateTime = "2026-10-20T09:00:00Z" }, end = new { dateTime = "2026-10-20T10:00:00Z" } }),
             nextPageToken
         });
 

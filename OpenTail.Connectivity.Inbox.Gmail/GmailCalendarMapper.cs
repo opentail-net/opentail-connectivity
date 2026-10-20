@@ -13,14 +13,18 @@ internal static class GmailCalendarMapper
             IsDefault: c.Primary ?? false,
             TenantContext: tenantContext);
 
-    public static CalendarEvent MapEvent(Event e, string calendarId, string tenantContext, string? accountEmail = null)
-        => new(
+    /// <param name="calendarTimeZone">The calendar's zone (from the events list), for all-day dates and times without an offset.</param>
+    /// <returns>Null when the event has no readable start or end: a made-up time would look real.</returns>
+    public static CalendarEvent? MapEvent(Event e, string calendarId, string tenantContext, string? accountEmail = null, string? calendarTimeZone = null)
+        => ParseEventDateTime(e.Start, calendarTimeZone) is not { } start || ParseEventDateTime(e.End, calendarTimeZone) is not { } end
+            ? null
+            : new(
             EventId: e.Id ?? string.Empty,
             CalendarId: calendarId,
             Subject: e.Summary ?? string.Empty,
-            Start: ParseEventDateTime(e.Start),
-            End: ParseEventDateTime(e.End),
-            TimeZone: e.Start?.TimeZone ?? "UTC",
+            Start: start,
+            End: end, // all-day: exclusive, midnight starting the day after
+            TimeZone: e.Start?.TimeZone ?? calendarTimeZone ?? "UTC",
             Location: e.Location,
             Body: e.Description,
             IsAllDay: e.Start?.Date is not null,
@@ -42,16 +46,16 @@ internal static class GmailCalendarMapper
             Categories: [],
             TenantContext: tenantContext);
 
-    private static DateTimeOffset ParseEventDateTime(EventDateTime? edt)
+    // A timed value normally carries its offset; one without uses the event's or the calendar's zone. An all-day value is a date,
+    // read as midnight in that zone, never in the machine's.
+    private static DateTimeOffset? ParseEventDateTime(EventDateTime? edt, string? calendarTimeZone)
     {
-        if (edt is null) return DateTimeOffset.UtcNow;
-        if (!string.IsNullOrWhiteSpace(edt.DateTimeRaw) &&
-            DateTimeOffset.TryParse(edt.DateTimeRaw, out var dto))
-            return dto;
-        if (!string.IsNullOrWhiteSpace(edt.Date) &&
-            DateTimeOffset.TryParse(edt.Date, out var date))
-            return date;
-        return DateTimeOffset.UtcNow;
+        if (edt is null)
+            return null;
+        var zone = edt.TimeZone ?? calendarTimeZone;
+        return !string.IsNullOrWhiteSpace(edt.DateTimeRaw)
+            ? CalendarTime.FromZoned(edt.DateTimeRaw, zone)
+            : CalendarTime.FromDate(edt.Date, zone);
     }
 
     private static string MapTransparency(string? t) => t switch

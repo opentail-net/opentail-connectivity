@@ -58,23 +58,24 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
                     "id", "subject", "start", "end", "location", "body",
                     "isAllDay", "isOnlineMeeting", "onlineMeetingUrl",
                     "showAs", "sensitivity", "responseStatus", "recurrence",
-                    "organizer", "attendees", "categories", "type", "seriesMasterId"
+                    "organizer", "attendees", "categories", "type", "seriesMasterId", "originalStartTimeZone"
                 ];
+                req.Headers.Add("Prefer", PreferUtc);
             }, ct);
 
             while (response is not null)
             {
                 foreach (var ev in response.Value ?? [])
-                    if (ev is not null)
+                    if (ev is not null && GraphCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail) is { } mapped)
                     {
-                        yield return GraphCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail);
+                        yield return mapped;
                         if (++yielded >= options.MaxEvents)
                             yield break;
                     }
 
                 if (string.IsNullOrEmpty(response.OdataNextLink))
                     yield break;
-                response = await calendarView.WithUrl(response.OdataNextLink).GetAsync(cancellationToken: ct);
+                response = await calendarView.WithUrl(response.OdataNextLink).GetAsync(req => req.Headers.Add("Prefer", PreferUtc), ct);
             }
         }
         else
@@ -90,23 +91,24 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
                     "id", "subject", "start", "end", "location", "body",
                     "isAllDay", "isOnlineMeeting", "onlineMeetingUrl",
                     "showAs", "sensitivity", "responseStatus", "recurrence",
-                    "organizer", "attendees", "categories", "type", "seriesMasterId"
+                    "organizer", "attendees", "categories", "type", "seriesMasterId", "originalStartTimeZone"
                 ];
+                req.Headers.Add("Prefer", PreferUtc);
             }, ct);
 
             while (response is not null)
             {
                 foreach (var ev in response.Value ?? [])
-                    if (ev is not null)
+                    if (ev is not null && GraphCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail) is { } mapped)
                     {
-                        yield return GraphCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail);
+                        yield return mapped;
                         if (++yielded >= options.MaxEvents)
                             yield break;
                     }
 
                 if (string.IsNullOrEmpty(response.OdataNextLink))
                     yield break;
-                response = await calendarView.WithUrl(response.OdataNextLink).GetAsync(cancellationToken: ct);
+                response = await calendarView.WithUrl(response.OdataNextLink).GetAsync(req => req.Headers.Add("Prefer", PreferUtc), ct);
             }
         }
     }
@@ -116,8 +118,8 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
     {
         var user = GetClient().Users[_settings.UserEmail];
         var ev = IsDefault(calendarId)
-            ? await user.Calendar.Events[eventId].GetAsync(cancellationToken: ct)
-            : await user.Calendars[calendarId].Events[eventId].GetAsync(cancellationToken: ct);
+            ? await user.Calendar.Events[eventId].GetAsync(req => req.Headers.Add("Prefer", PreferUtc), ct)
+            : await user.Calendars[calendarId].Events[eventId].GetAsync(req => req.Headers.Add("Prefer", PreferUtc), ct);
 
         return ev is null ? null
             : GraphCalendarMapper.MapEvent(ev, IsDefault(calendarId) ? string.Empty : calendarId, _settings.UserEmail);
@@ -198,6 +200,9 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
     private static bool IsDefault(string? calendarId)
         => string.IsNullOrWhiteSpace(calendarId) || calendarId == "calendar";
 
+    /// <summary>Asks Graph for times in UTC, so reading them never depends on the mailbox's own zone setting.</summary>
+    private const string PreferUtc = "outlook.timezone=\"UTC\"";
+
     private GraphServiceClient GetClient()
     {
         if (_client is not null) return _client;
@@ -207,13 +212,20 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
         return _client;
     }
 
+    // Graph reads dateTime as a wall clock in timeZone, so no offset goes with it. Timed events go as UTC; all-day events must be
+    // midnight in their own zone, so they go in it when it is known.
+    private static DateTimeTimeZone ToGraphTime(DateTimeOffset value, CalendarEvent e)
+        => e.IsAllDay && CalendarTime.ToWallClock(value, e.TimeZone) is { } local
+            ? new DateTimeTimeZone { DateTime = local, TimeZone = e.TimeZone }
+            : new DateTimeTimeZone { DateTime = CalendarTime.ToUtcWallClock(value), TimeZone = "UTC" };
+
     private static Event ToGraphEvent(CalendarEvent e)
         => new()
         {
             Subject = e.Subject,
             Body = new ItemBody { ContentType = BodyType.Html, Content = e.Body },
-            Start = new DateTimeTimeZone { DateTime = e.Start.ToString("o"), TimeZone = e.TimeZone },
-            End = new DateTimeTimeZone { DateTime = e.End.ToString("o"), TimeZone = e.TimeZone },
+            Start = ToGraphTime(e.Start, e),
+            End = ToGraphTime(e.End, e),
             Location = string.IsNullOrWhiteSpace(e.Location)
                 ? null : new Location { DisplayName = e.Location },
             IsAllDay = e.IsAllDay,

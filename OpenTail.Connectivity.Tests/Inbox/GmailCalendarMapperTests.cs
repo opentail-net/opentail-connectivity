@@ -19,7 +19,7 @@ public sealed class GmailCalendarMapperTests
             ]
         };
 
-        var mapped = GmailCalendarMapper.MapEvent(ev, "primary", "tenant");
+        var mapped = GmailCalendarMapper.MapEvent(Timed(ev), "primary", "tenant")!;
 
         Assert.Equal("declined", mapped.ResponseStatus);
     }
@@ -36,7 +36,7 @@ public sealed class GmailCalendarMapperTests
             ]
         };
 
-        var mapped = GmailCalendarMapper.MapEvent(ev, "primary", "tenant", "ME@example.com");
+        var mapped = GmailCalendarMapper.MapEvent(Timed(ev), "primary", "tenant", "ME@example.com")!;
 
         Assert.Equal("tentative", mapped.ResponseStatus);
     }
@@ -49,7 +49,7 @@ public sealed class GmailCalendarMapperTests
             Attendees = [new GEventAttendee { Email = "someone@example.com", ResponseStatus = "accepted" }]
         };
 
-        var mapped = GmailCalendarMapper.MapEvent(ev, "primary", "tenant", "me@example.com");
+        var mapped = GmailCalendarMapper.MapEvent(Timed(ev), "primary", "tenant", "me@example.com")!;
 
         Assert.Equal("notResponded", mapped.ResponseStatus);
     }
@@ -61,8 +61,15 @@ public sealed class GmailCalendarMapperTests
         var occurrence = new Event { RecurringEventId = "master" };
         var single = new Event();
 
-        Assert.True(GmailCalendarMapper.MapEvent(master, "primary", "tenant").IsRecurring);
-        Assert.True(GmailCalendarMapper.MapEvent(occurrence, "primary", "tenant").IsRecurring);
-        Assert.False(GmailCalendarMapper.MapEvent(single, "primary", "tenant").IsRecurring);
+        Assert.True(GmailCalendarMapper.MapEvent(Timed(master), "primary", "tenant")!.IsRecurring);
+        Assert.True(GmailCalendarMapper.MapEvent(Timed(occurrence), "primary", "tenant")!.IsRecurring);
+        Assert.False(GmailCalendarMapper.MapEvent(Timed(single), "primary", "tenant")!.IsRecurring);
+    }
+
+    private static Event Timed(Event e)
+    {
+        e.Start = new EventDateTime { DateTimeRaw = "2026-10-20T09:00:00Z" };
+        e.End = new EventDateTime { DateTimeRaw = "2026-10-20T10:00:00Z" };
+        return e;
     }
 }

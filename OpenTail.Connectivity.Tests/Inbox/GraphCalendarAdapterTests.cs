@@ -13,7 +13,7 @@ public sealed class GraphCalendarAdapterTests
     [Fact]
     public async Task GetEvents_uses_default_calendar_route_and_returns_empty_calendar_id()
     {
-        var handler = new StubGraph(_ => """{"value":[{"id":"e1"}]}""");
+        var handler = new StubGraph(_ => """{"value":[{"id":"e1","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}}]}""");
         var adapter = Create(handler);
 
         var ev = Assert.Single(await adapter.GetEventsAsync(new CalendarFetchOptions()).ToListAsync());
@@ -37,7 +37,7 @@ public sealed class GraphCalendarAdapterTests
     [Fact]
     public async Task Default_calendar_event_operations_use_default_route()
     {
-        var handler = new StubGraph(_ => """{"id":"e1"}""");
+        var handler = new StubGraph(_ => """{"id":"e1","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}}""");
         var adapter = Create(handler);
 
         await adapter.GetEventAsync(string.Empty, "e1");
@@ -55,7 +55,7 @@ public sealed class GraphCalendarAdapterTests
     [Fact]
     public async Task Explicit_calendar_event_operations_keep_calendar_id_route()
     {
-        var handler = new StubGraph(_ => """{"id":"e1"}""");
+        var handler = new StubGraph(_ => """{"id":"e1","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}}""");
         var adapter = Create(handler);
 
         await adapter.GetEventAsync("abc", "e1");
@@ -76,9 +76,9 @@ public sealed class GraphCalendarAdapterTests
         var single = new Event { Type = EventType.SingleInstance };
         var master = new Event { Type = EventType.SeriesMaster };
 
-        Assert.True(GraphCalendarMapper.MapEvent(occurrence, "", "tenant").IsRecurring);
-        Assert.False(GraphCalendarMapper.MapEvent(single, "", "tenant").IsRecurring);
-        Assert.True(GraphCalendarMapper.MapEvent(master, "", "tenant").IsRecurring);
+        Assert.True(GraphCalendarMapper.MapEvent(Timed(occurrence), "", "tenant")!.IsRecurring);
+        Assert.False(GraphCalendarMapper.MapEvent(Timed(single), "", "tenant")!.IsRecurring);
+        Assert.True(GraphCalendarMapper.MapEvent(Timed(master), "", "tenant")!.IsRecurring);
     }
 
     [Fact]
@@ -98,8 +98,8 @@ public sealed class GraphCalendarAdapterTests
     public async Task GetEvents_follows_calendar_view_pages()
     {
         var handler = new StubGraph(uri => uri.Query.Contains("page=2", StringComparison.OrdinalIgnoreCase)
-            ? """{"value":[{"id":"e3"}]}"""
-            : """{"value":[{"id":"e1"},{"id":"e2"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/users/me%40example.com/calendar/calendarView?page=2"}""");
+            ? """{"value":[{"id":"e3","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}}]}"""
+            : """{"value":[{"id":"e1","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}},{"id":"e2","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/users/me%40example.com/calendar/calendarView?page=2"}""");
         var adapter = Create(handler);
 
         var events = await adapter.GetEventsAsync(new CalendarFetchOptions(MaxEvents: 10)).ToListAsync();
@@ -112,8 +112,8 @@ public sealed class GraphCalendarAdapterTests
     public async Task GetEvents_stops_paging_when_MaxEvents_is_reached()
     {
         var handler = new StubGraph(uri => uri.Query.Contains("page=2", StringComparison.OrdinalIgnoreCase)
-            ? """{"value":[{"id":"e3"}]}"""
-            : """{"value":[{"id":"e1"},{"id":"e2"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/users/me%40example.com/calendar/calendarView?page=2"}""");
+            ? """{"value":[{"id":"e3","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}}]}"""
+            : """{"value":[{"id":"e1","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}},{"id":"e2","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/users/me%40example.com/calendar/calendarView?page=2"}""");
         var adapter = Create(handler);
 
         var events = await adapter.GetEventsAsync(new CalendarFetchOptions(MaxEvents: 2)).ToListAsync();
@@ -126,8 +126,8 @@ public sealed class GraphCalendarAdapterTests
     public async Task GetEvents_follows_pages_for_an_explicit_calendar()
     {
         var handler = new StubGraph(uri => uri.Query.Contains("page=2", StringComparison.OrdinalIgnoreCase)
-            ? """{"value":[{"id":"e2"}]}"""
-            : """{"value":[{"id":"e1"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/users/me%40example.com/calendars/abc/calendarView?page=2"}""");
+            ? """{"value":[{"id":"e2","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}}]}"""
+            : """{"value":[{"id":"e1","start":{"dateTime":"2026-10-20T09:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-20T10:00:00","timeZone":"UTC"}}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/users/me%40example.com/calendars/abc/calendarView?page=2"}""");
         var adapter = Create(handler);
 
         var events = await adapter.GetEventsAsync(new CalendarFetchOptions(CalendarId: "abc", MaxEvents: 10)).ToListAsync();
@@ -143,6 +143,26 @@ public sealed class GraphCalendarAdapterTests
         return new GraphCalendarAdapter(Settings, client);
     }
 
+    [Fact]
+    public async Task Reads_ask_for_utc_and_writes_send_utc_wall_clock_without_an_offset()
+    {
+        var handler = new StubGraph(_ => """{"value":[],"id":"e1"}""");
+        var adapter = Create(handler);
+        var timed = Sample("abc") with { Start = DateTimeOffset.Parse("2026-10-20T09:00:00+02:00"), End = DateTimeOffset.Parse("2026-10-20T10:00:00+02:00"), TimeZone = "Europe/Berlin" };
+
+        await adapter.GetEventsAsync(new CalendarFetchOptions(CalendarId: "abc")).ToListAsync();
+        await adapter.CreateEventAsync(timed);
+        await adapter.CreateEventAsync(timed with { IsAllDay = true, Start = DateTimeOffset.Parse("2026-10-19T22:00:00Z"), End = DateTimeOffset.Parse("2026-10-20T22:00:00Z") });
+
+        Assert.Contains(handler.Prefers, p => p.Contains("outlook.timezone=\"UTC\"", StringComparison.Ordinal));
+        using var timedBody = JsonDocument.Parse(handler.Bodies[0]);
+        Assert.Equal("2026-10-20T07:00:00.0000000", timedBody.RootElement.GetProperty("start").GetProperty("dateTime").GetString());
+        Assert.Equal("UTC", timedBody.RootElement.GetProperty("start").GetProperty("timeZone").GetString());
+        using var allDayBody = JsonDocument.Parse(handler.Bodies[1]);
+        Assert.Equal("2026-10-20T00:00:00.0000000", allDayBody.RootElement.GetProperty("start").GetProperty("dateTime").GetString());
+        Assert.Equal("Europe/Berlin", allDayBody.RootElement.GetProperty("start").GetProperty("timeZone").GetString());
+    }
+
     private static CalendarEvent Sample(string calendarId)
         => new("e1", calendarId, "subject", DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddHours(1), "UTC",
             null, null, false, false, null, "busy", "normal", "notResponded", false, null, "",
@@ -152,10 +172,18 @@ public sealed class GraphCalendarAdapterTests
     {
         public List<Uri> Requests { get; } = [];
 
+        public List<string> Bodies { get; } = [];
+
+        public List<string> Prefers { get; } = [];
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var uri = request.RequestUri!;
             Requests.Add(uri);
+            if (request.Content is not null)
+                Bodies.Add(request.Content.ReadAsStringAsync(cancellationToken).GetAwaiter().GetResult());
+            if (request.Headers.TryGetValues("Prefer", out var prefer))
+                Prefers.Add(string.Join(",", prefer));
             var body = respond(uri);
             return Task.FromResult(new HttpResponseMessage(request.Method == HttpMethod.Delete ? HttpStatusCode.NoContent : HttpStatusCode.OK)
             {
@@ -163,5 +191,12 @@ public sealed class GraphCalendarAdapterTests
                 RequestMessage = request
             });
         }
+    }
+
+    private static Event Timed(Event e)
+    {
+        e.Start = new DateTimeTimeZone { DateTime = "2026-10-20T09:00:00", TimeZone = "UTC" };
+        e.End = new DateTimeTimeZone { DateTime = "2026-10-20T10:00:00", TimeZone = "UTC" };
+        return e;
     }
 }
