@@ -778,6 +778,20 @@ All done 2026-10-20 (T2, T3, T5 by the smaller model, reviewed). Weighed, not ap
 - [x] **[C]** T4: redacted (not summarized) memory hits keep only allowlisted metadata.
 - [x] **[C]** T5: document an integer change counter as the gap-free `ModifiedField`.
 
+## 25. External review, calendars, 2026-10-20
+
+All findings confirmed (two narrower than reported), five more found; plan in
+[review-2026-10-20-calendar.md](review-2026-10-20-calendar.md). Nothing fixed yet.
+
+- [ ] **[C]** K1: Graph times parsed as machine-local, writes send offset + zone. Every Graph event on a non-UTC server.
+- [ ] **[C]** K2: Graph `"calendar"` used as a calendar id.
+- [ ] **[C]** K3: Gmail `Events.Update` wipes fields the model lacks; use `Patch`.
+- [ ] **[C]** K4: Gmail RSVP status read for the creator, not `self`.
+- [ ] **[C]** K5: recurring flag wrong (Gmail masters, Graph listed occurrences).
+- [ ] **[C]** K6: Gmail all-day dates machine-dependent; missing times become "now" (both adapters).
+- [ ] **[C]** K7: Graph `calendarView` reads one page.
+- [ ] **[C]** K8: `ReadOnlyCalendarGuard`, like the inbox one; Host test that write tools carry their risk.
+
 ## Background, no action planned
 
 These are kept for the day their content needs indexing. Read them, but nothing above depends on them.
