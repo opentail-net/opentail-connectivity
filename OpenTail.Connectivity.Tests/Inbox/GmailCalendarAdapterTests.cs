@@ -122,6 +122,37 @@ public sealed class GmailCalendarAdapterTests
         Assert.Equal(2, requests.Count);
     }
 
+    [Fact]
+    public async Task GetEvent_uses_calendar_zone_for_all_day_events_without_an_event_zone()
+    {
+        var requests = new List<Uri>();
+        using var handler = new StubCalendarHandler(request =>
+        {
+            var uri = request.RequestUri!;
+            requests.Add(uri);
+            if (uri.AbsolutePath.EndsWith("/events/event-1", StringComparison.Ordinal))
+                return Json(AllDayEvent());
+            if (uri.AbsolutePath.EndsWith("/events", StringComparison.Ordinal))
+                return Json($"{{\"timeZone\":\"Europe/Berlin\",\"items\":[{AllDayEvent()}]}}");
+            if (uri.AbsolutePath.EndsWith("/calendars/primary", StringComparison.Ordinal))
+                return Json("{\"id\":\"primary\",\"timeZone\":\"Europe/Berlin\"}");
+            return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+        });
+        using var service = CreateService(handler);
+        var adapter = new GmailCalendarAdapter(Settings, service);
+
+        var single = await adapter.GetEventAsync("primary", "event-1");
+        var listed = Assert.Single(await adapter.GetEventsAsync(new CalendarFetchOptions()).ToListAsync());
+
+        Assert.NotNull(single);
+        Assert.Equal(listed.Start, single.Start);
+        Assert.Equal(listed.End, single.End);
+        Assert.Contains(requests, uri => uri.AbsolutePath.EndsWith("/calendars/primary", StringComparison.Ordinal));
+    }
+
+    private static string AllDayEvent()
+        => "{\"id\":\"event-1\",\"summary\":\"All day\",\"start\":{\"date\":\"2026-10-20\"},\"end\":{\"date\":\"2026-10-21\"}}";
+
     private static CalendarService CreateService(HttpMessageHandler handler)
         => new(new BaseClientService.Initializer
         {

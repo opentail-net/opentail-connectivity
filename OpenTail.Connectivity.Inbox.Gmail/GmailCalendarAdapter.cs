@@ -71,8 +71,12 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
     {
         var svc = await BuildServiceAsync(ct);
         var ev = await svc.Events.Get(calendarId, eventId).ExecuteAsync(ct);
-        return ev is null ? null
-            : GmailCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail, _settings.UserEmail);
+        if (ev is null) return null;
+
+        var calendarTimeZone = ev.Start?.Date is not null && string.IsNullOrWhiteSpace(ev.Start.TimeZone)
+            ? (await svc.Calendars.Get(calendarId).ExecuteAsync(ct))?.TimeZone
+            : null;
+        return GmailCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail, _settings.UserEmail, calendarTimeZone);
     }
 
     public async Task<string> CreateEventAsync(CalendarEvent draft, CancellationToken ct = default)
