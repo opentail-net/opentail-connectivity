@@ -146,6 +146,23 @@ The adapter reports the GCS object generation as the version token. Standard obj
 Coldline and Archive set `CostsExtraToRead`. These tiers remain directly readable and do not require a restore operation. This
 package has stubbed-service unit tests; it has not been verified against a live GCS bucket.
 
+The read-only WebDAV adapter supports services such as Nextcloud and ownCloud. Pass the collection URL and credentials; for
+Nextcloud, an application password is suitable when a separate client credential is needed. The adapter follows collections
+recursively and uses key-based resume tokens, so each page re-lists the collection tree and does not represent a snapshot.
+When supplying an `HttpClient`, configure its handler with automatic redirects disabled so the adapter can validate each
+redirect before sending credentials to the next request:
+
+```csharp
+var handler = new HttpClientHandler { AllowAutoRedirect = false };
+var http = new HttpClient(handler);
+var webDav = new WebDavObjectStoreClient(
+    new Uri("https://cloud.example/remote.php/dav/files/alice/Documents/"),
+    "alice", applicationPassword, http);
+var source = new ObjectStorageConnector(webDav, tenantContext);
+```
+
+The adapter is read-only and has XML-stubbed unit tests; it has not been verified against a live WebDAV service.
+
 ## Social
 
 Options common to all (`SocialConnectorOptions`): `MaxItems` (100), `Since`, `Keywords`, `Hashtags`, `RequestDelayMs` (250),

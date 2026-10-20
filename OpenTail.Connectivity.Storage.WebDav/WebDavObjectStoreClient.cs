@@ -1,0 +1,334 @@
+using System.Globalization;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Xml;
+using System.Xml.Linq;
+
+namespace OpenTail.Connectivity.Storage.WebDav;
+
+/// <summary>Read-only access to a WebDAV collection using Depth 1 PROPFIND and bounded GET requests.</summary>
+/// <remarks>
+/// The root is a collection URL ending at the allowed namespace. Credentials are sent only to that origin and paths below
+/// that root, including when redirects are followed. If a caller supplies an <see cref="HttpClient"/>, its handler must have
+/// automatic redirects disabled so this class can validate each destination before resending credentials. A resume token is
+/// the last returned key; WebDAV has no snapshot cursor.
+/// </remarks>
+public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
+{
+    private static readonly XNamespace Dav = "DAV:";
+    private const int MaxRedirects = 5;
+    private readonly Uri _root;
+    private readonly string _rootPath;
+    private readonly string _authorization;
+    private readonly HttpClient _http;
+    private readonly bool _ownsHttp;
+
+    public WebDavObjectStoreClient(Uri root, string username, string password, HttpClient? http = null)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentException.ThrowIfNullOrWhiteSpace(username);
+        ArgumentNullException.ThrowIfNull(password);
+        if (username.Contains(':'))
+            throw new ArgumentException("A WebDAV Basic-auth username cannot contain a colon.", nameof(username));
+        if (!root.IsAbsoluteUri || (root.Scheme != Uri.UriSchemeHttp && root.Scheme != Uri.UriSchemeHttps) ||
+            !string.IsNullOrEmpty(root.UserInfo) || !string.IsNullOrEmpty(root.Query) || !string.IsNullOrEmpty(root.Fragment))
+            throw new ArgumentException("The WebDAV root must be an absolute HTTP(S) collection URL without user info, query or fragment.", nameof(root));
+
+        _root = EnsureTrailingSlash(root);
+        _rootPath = _root.AbsolutePath;
+        _authorization = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(username + ":" + password));
+        _http = http ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+        _ownsHttp = http is null;
+        Container = _root.Authority + _root.AbsolutePath.TrimEnd('/');
+    }
+
+    public string Scheme => "webdav";
+
+    public string Container { get; }
+
+    public async Task<ObjectListingPage> ListAsync(string prefix, string? resumeToken, int pageSize, CancellationToken cancellationToken = default)
+    {
+        ValidateKey(prefix, allowEmpty: true, nameof(prefix));
+        if (resumeToken is not null)
+            ValidateKey(resumeToken, allowEmpty: false, nameof(resumeToken));
+        ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
+
+        var allObjects = await EnumerateAsync(cancellationToken).ConfigureAwait(false);
+        var matching = allObjects
+            .Where(item => item.Key.StartsWith(prefix, StringComparison.Ordinal))
+            .Where(item => resumeToken is null || string.CompareOrdinal(item.Key, resumeToken) > 0)
+            .OrderBy(item => item.Key, StringComparer.Ordinal)
+            .ToList();
+        var objects = matching.Take(pageSize).ToList();
+        var next = matching.Count > pageSize ? objects[^1].Key : null;
+        return new ObjectListingPage(objects, next);
+    }
+
+    public async Task<ObjectInfo?> HeadAsync(string key, CancellationToken cancellationToken = default)
+    {
+        ValidateKey(key, allowEmpty: false, nameof(key));
+        var uri = BuildUri(key);
+        using var response = await SendAsync(HttpMethodPropfind, uri, depth: "0", body: PropFindBody, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return null;
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+        var document = await ReadMultiStatusAsync(response, cancellationToken).ConfigureAwait(false);
+        var ownResponse = document.Root?.Elements(Dav + "response")
+            .FirstOrDefault(element => RelativeKey(ReadHref(element, response.RequestMessage?.RequestUri ?? uri)) == key);
+        return ownResponse is null ? null : Map(ownResponse, response.RequestMessage?.RequestUri ?? uri);
+    }
+
+    public async Task<ObjectContent> ReadAsync(string key, long maxBytes, CancellationToken cancellationToken = default)
+    {
+        ValidateKey(key, allowEmpty: false, nameof(key));
+        ArgumentOutOfRangeException.ThrowIfNegative(maxBytes);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maxBytes, Array.MaxLength - 1L);
+
+        var uri = BuildUri(key);
+        using var response = await SendAsync(HttpMethod.Get, uri, depth: null, body: null, cancellationToken, maxBytes).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            throw new ObjectNotFoundException(key);
+        if (response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            var range = response.Content.Headers.ContentRange;
+            if (range?.Unit.Equals("bytes", StringComparison.OrdinalIgnoreCase) == true && range.Length == 0)
+                return new ObjectContent([], Truncated: false, ContentType: response.Content.Headers.ContentType?.ToString());
+        }
+        await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var buffer = new MemoryStream();
+        var limit = maxBytes + 1;
+        var chunk = new byte[81920];
+        while (buffer.Length < limit)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var count = (int)Math.Min(chunk.Length, limit - buffer.Length);
+            var read = await stream.ReadAsync(chunk.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+                break;
+            buffer.Write(chunk, 0, read);
+        }
+
+        var truncated = buffer.Length > maxBytes;
+        var bytes = buffer.ToArray();
+        if (truncated)
+            Array.Resize(ref bytes, checked((int)maxBytes));
+        var contentType = response.Content.Headers.ContentType?.ToString();
+        var contentEncoding = response.Content.Headers.ContentEncoding.Count == 0
+            ? null
+            : string.Join(",", response.Content.Headers.ContentEncoding);
+        return new ObjectContent(bytes, truncated, contentType, contentEncoding);
+    }
+
+    public void Dispose()
+    {
+        if (_ownsHttp)
+            _http.Dispose();
+    }
+
+    private async Task<List<ObjectInfo>> EnumerateAsync(CancellationToken cancellationToken)
+    {
+        var objects = new List<ObjectInfo>();
+        var pending = new Queue<Uri>();
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        pending.Enqueue(_root);
+
+        while (pending.TryDequeue(out var directory))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!visited.Add(directory.AbsoluteUri))
+                continue;
+            using var response = await SendAsync(HttpMethodPropfind, directory, depth: "1", PropFindBody, cancellationToken).ConfigureAwait(false);
+            await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+            var document = await ReadMultiStatusAsync(response, cancellationToken).ConfigureAwait(false);
+            foreach (var entry in document.Root?.Elements(Dav + "response") ?? [])
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var href = ReadHref(entry, response.RequestMessage?.RequestUri ?? directory);
+                var key = RelativeKey(href);
+                if (key.Length == 0)
+                    continue;
+
+                if (IsCollection(entry, href))
+                {
+                    pending.Enqueue(EnsureTrailingSlash(href));
+                    continue;
+                }
+                objects.Add(Map(entry, response.RequestMessage?.RequestUri ?? directory));
+            }
+        }
+
+        return objects;
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(
+        HttpMethod method,
+        Uri initialUri,
+        string? depth,
+        string? body,
+        CancellationToken cancellationToken,
+        long? maxBytes = null)
+    {
+        var uri = initialUri;
+        for (var redirect = 0; ; redirect++)
+        {
+            ValidateUri(uri);
+            using var request = new HttpRequestMessage(method, uri);
+            request.Headers.Authorization = AuthenticationHeaderValue.Parse(_authorization);
+            if (depth is not null)
+                request.Headers.TryAddWithoutValidation("Depth", depth);
+            if (maxBytes is { } bytes)
+                request.Headers.Range = new RangeHeaderValue(0, bytes);
+            if (body is not null)
+                request.Content = new StringContent(body, Encoding.UTF8, "application/xml");
+
+            var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            var effectiveUri = response.RequestMessage?.RequestUri ?? uri;
+            try
+            {
+                ValidateUri(effectiveUri);
+            }
+            catch
+            {
+                response.Dispose();
+                throw;
+            }
+
+            if (!IsRedirect(response.StatusCode))
+                return response;
+            if (redirect >= MaxRedirects || response.Headers.Location is null)
+            {
+                response.Dispose();
+                throw new HttpRequestException("The WebDAV server returned an invalid or excessive redirect.");
+            }
+
+            var target = response.Headers.Location.IsAbsoluteUri
+                ? response.Headers.Location
+                : new Uri(effectiveUri, response.Headers.Location);
+            var status = response.StatusCode;
+            response.Dispose();
+            ValidateUri(target);
+            if (status == HttpStatusCode.SeeOther && method != HttpMethod.Get)
+                throw new HttpRequestException("The WebDAV server redirected PROPFIND with 303; the method cannot be preserved safely.");
+            uri = target;
+        }
+    }
+
+    private void ValidateUri(Uri uri)
+    {
+        if (!uri.IsAbsoluteUri || !SameOrigin(_root, uri) || !uri.AbsolutePath.StartsWith(_rootPath, StringComparison.Ordinal) ||
+            !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+            throw new HttpRequestException("The WebDAV response referred outside the configured origin or root path.");
+        _ = RelativeKey(uri);
+    }
+
+    private string RelativeKey(Uri uri)
+    {
+        var path = uri.AbsolutePath;
+        if (!SameOrigin(_root, uri) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) ||
+            !path.StartsWith(_rootPath, StringComparison.Ordinal))
+            throw new HttpRequestException("The WebDAV server returned an href outside the configured root.");
+        var relative = path[_rootPath.Length..].TrimEnd('/');
+        if (relative.Length == 0)
+            return "";
+        var decoded = new List<string>();
+        foreach (var escapedSegment in relative.Split('/'))
+        {
+            var segment = Uri.UnescapeDataString(escapedSegment);
+            if (segment is "." or ".." || segment.Contains('/') || segment.Contains('\\') ||
+                segment.Contains("%2e", StringComparison.OrdinalIgnoreCase) ||
+                segment.Contains("%2f", StringComparison.OrdinalIgnoreCase) ||
+                segment.Contains("%5c", StringComparison.OrdinalIgnoreCase))
+                throw new HttpRequestException("The WebDAV server returned a path with an unsafe encoded segment.");
+            decoded.Add(segment);
+        }
+        return string.Join('/', decoded);
+    }
+
+    private Uri BuildUri(string key) => new(_root, string.Join('/', key.Split('/').Select(Uri.EscapeDataString)));
+
+    private static async Task<XDocument> ReadMultiStatusAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        var settings = new XmlReaderSettings { Async = true, DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };
+        using var reader = XmlReader.Create(stream, settings);
+        return await XDocument.LoadAsync(reader, LoadOptions.None, cancellationToken).ConfigureAwait(false);
+    }
+
+    private ObjectInfo Map(XElement response, Uri requestUri)
+    {
+        var key = RelativeKey(ReadHref(response, requestUri));
+        var lengthText = Property(response, Dav + "getcontentlength")?.Value;
+        var size = long.TryParse(lengthText, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedSize) ? Math.Max(parsedSize, 0) : 0;
+        var modifiedText = Property(response, Dav + "getlastmodified")?.Value;
+        var modified = DateTimeOffset.TryParse(modifiedText, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsedModified)
+            ? parsedModified
+            : DateTimeOffset.UnixEpoch;
+        var etag = Property(response, Dav + "getetag")?.Value;
+        return new ObjectInfo(key, size, modified, etag);
+    }
+
+    private static IEnumerable<XElement> SuccessfulProperties(XElement response) => response.Elements(Dav + "propstat")
+        .Where(propstat => IsSuccessStatus(propstat.Element(Dav + "status")?.Value))
+        .Select(propstat => propstat.Element(Dav + "prop"))
+        .OfType<XElement>();
+
+    private static bool IsCollection(XElement response, Uri href) =>
+        SuccessfulProperties(response).Any(properties => properties.Element(Dav + "resourcetype")?.Element(Dav + "collection") is not null) ||
+        href.AbsolutePath.EndsWith("/", StringComparison.Ordinal);
+
+    private static XElement? Property(XElement response, XName name) =>
+        SuccessfulProperties(response).Select(properties => properties.Element(name)).FirstOrDefault(element => element is not null);
+
+    private static bool IsSuccessStatus(string? status)
+    {
+        var parts = status?.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts is { Length: >= 2 } && parts[1] == "200";
+    }
+
+    private static Uri ReadHref(XElement response, Uri requestUri)
+    {
+        var href = response.Element(Dav + "href")?.Value
+            ?? throw new InvalidDataException("The WebDAV server returned a response without an href.");
+        var uri = new Uri(requestUri, href);
+        if (!string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+            throw new HttpRequestException("The WebDAV server returned an href with a query or fragment.");
+        return uri;
+    }
+
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+            return;
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        throw new HttpRequestException($"WebDAV request failed with {(int)response.StatusCode} ({response.StatusCode}): {body}");
+    }
+
+    private static bool SameOrigin(Uri left, Uri right) =>
+        left.Scheme.Equals(right.Scheme, StringComparison.OrdinalIgnoreCase) &&
+        left.Host.Equals(right.Host, StringComparison.OrdinalIgnoreCase) && left.Port == right.Port;
+
+    private static bool IsRedirect(HttpStatusCode status) => status is HttpStatusCode.MovedPermanently or HttpStatusCode.Redirect or
+        HttpStatusCode.SeeOther or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect;
+
+    private static Uri EnsureTrailingSlash(Uri uri) => uri.AbsolutePath.EndsWith("/", StringComparison.Ordinal)
+        ? uri
+        : new Uri(uri.AbsoluteUri + "/", UriKind.Absolute);
+
+    private static void ValidateKey(string key, bool allowEmpty, string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(key, parameterName);
+        if (key.Length == 0 && allowEmpty)
+            return;
+        var segments = key.Split('/');
+        if (allowEmpty && segments.Length > 1 && segments[^1].Length == 0)
+            segments = segments[..^1];
+        if ((!allowEmpty && key.Length == 0) || key.StartsWith('/') || key.Contains('\\') || segments.Any(segment => segment is "" or "." or ".."))
+            throw new ArgumentException("WebDAV keys must be relative slash-separated paths without empty, '.' or '..' segments.", parameterName);
+    }
+
+    private static readonly HttpMethod HttpMethodPropfind = new("PROPFIND");
+    private const string PropFindBody = """<?xml version="1.0" encoding="utf-8"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/><d:getetag/><d:getcontenttype/></d:prop></d:propfind>""";
+}

@@ -40,5 +40,6 @@
     <ProjectReference Include="..\OpenTail.Connectivity.Storage.Sftp\OpenTail.Connectivity.Storage.Sftp.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Storage.Dropbox\OpenTail.Connectivity.Storage.Dropbox.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Storage.Gcs\OpenTail.Connectivity.Storage.Gcs.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Storage.WebDav\OpenTail.Connectivity.Storage.WebDav.csproj" />
   </ItemGroup>
 </Project>
