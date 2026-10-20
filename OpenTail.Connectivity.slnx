@@ -2,6 +2,7 @@
   <Folder Name="/Connectivity/">
     <Project Path="OpenTail.Connectivity.Files/OpenTail.Connectivity.Files.csproj" />
     <Project Path="OpenTail.Connectivity.Storage.S3/OpenTail.Connectivity.Storage.S3.csproj" />
+    <Project Path="OpenTail.Connectivity.Storage.AzureBlob/OpenTail.Connectivity.Storage.AzureBlob.csproj" />
     <Project Path="OpenTail.Connectivity.Storage/OpenTail.Connectivity.Storage.csproj" />
     <Project Path="OpenTail.Connectivity.Web/OpenTail.Connectivity.Web.csproj" />
     <Project Path="OpenTail.Connectivity.Csv/OpenTail.Connectivity.Csv.csproj" />

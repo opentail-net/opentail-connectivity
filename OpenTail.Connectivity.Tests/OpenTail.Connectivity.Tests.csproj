@@ -36,5 +36,6 @@
     <ProjectReference Include="..\OpenTail.Connectivity.Memory.VectorData\OpenTail.Connectivity.Memory.VectorData.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Storage\OpenTail.Connectivity.Storage.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Storage.S3\OpenTail.Connectivity.Storage.S3.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Storage.AzureBlob\OpenTail.Connectivity.Storage.AzureBlob.csproj" />
   </ItemGroup>
 </Project>
