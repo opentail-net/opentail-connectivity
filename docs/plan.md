@@ -830,6 +830,19 @@ All nine findings confirmed; plan in [review-2026-10-20-ingestion.md](review-202
 - [x] **[C]** C2: Graph writes timed events in their own zone (main model).
 - [x] **[C]** C3: Gmail `GetEventAsync` uses the calendar's zone for all-day events.
 
+## 28. Storage locations: Azure Blob, SFTP, Dropbox, a writer, archives (2026-10-20)
+
+Plan with decisions and work packages: [storage-locations.md](storage-locations.md). Every new place is one `IObjectStoreClient`
+adapter; one generic connector (ST1) makes all of them ingestible; writes go through a separate interface; zip is a pipeline step.
+
+- [ ] **[C]** ST1: `ObjectStorageConnector` (object-storage design slice 5), ingest any place.
+- [ ] **[C]** ST2: Azure Blob adapter.
+- [ ] **[C]** ST3: SFTP adapter with a pinned host key.
+- [ ] **[C]** ST4: `IObjectStoreWriter`, `ObjectStoreWriterGuard`, S3 and in-memory writers.
+- [ ] **[C]** ST5: Dropbox adapter (HTTP API, no SDK).
+- [ ] **[C]** ST6: Dropbox incremental connector with deletions.
+- [ ] **[C]** ST7: archive expander (main model).
+
 ## Background, no action planned
 
 These are kept for the day their content needs indexing. Read them, but nothing above depends on them.
