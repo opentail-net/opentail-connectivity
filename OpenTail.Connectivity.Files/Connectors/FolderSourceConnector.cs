@@ -20,6 +20,12 @@ public sealed class FolderSourceConnector : ISourceConnector, ISourceItemFeedbac
     private readonly FileFilter _filter;
     private readonly HashSet<string> _noisyDirectories;
 
+    /// <summary>
+    /// Paths present in the saved state but absent from the latest complete scan. Changing file filters can make
+    /// previously matched paths appear here as deleted.
+    /// </summary>
+    public IReadOnlyList<string> DeletedSinceLastScan { get; private set; } = Array.Empty<string>();
+
     public FolderSourceConnector(string folderPath, string tenantContext,
         FolderSyncStateStore? stateStore = null,
         FolderConnectorOptions? connectorOptions = null)
@@ -41,6 +47,7 @@ public sealed class FolderSourceConnector : ISourceConnector, ISourceItemFeedbac
 
     public async IAsyncEnumerable<SourceItem> DiscoverAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        DeletedSinceLastScan = Array.Empty<string>();
         _allScannedFiles.Clear();
         _loadedState = _stateStore?.Load();
         var includeNoisy = _connectorOptions?.IncludeNoisyDirectories ?? false;
@@ -58,11 +65,11 @@ public sealed class FolderSourceConnector : ISourceConnector, ISourceItemFeedbac
                 continue;
 
             var modified = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero);
-            _allScannedFiles[path] = modified;
-
             // Apply include/exclude patterns against path relative to folder root
             if (!_filter.MatchesPatterns(Path.GetRelativePath(_folderPath, path)))
                 continue;
+
+            _allScannedFiles[path] = modified;
 
             // ModifiedSince filter: skip files not modified on or after the cutoff
             if (_connectorOptions?.ModifiedSince is { } cutoff && modified < cutoff)
@@ -81,6 +88,13 @@ public sealed class FolderSourceConnector : ISourceConnector, ISourceItemFeedbac
                 Modified: modified,
                 TenantContext: _tenantContext);
         }
+
+        if (_loadedState is not null)
+            DeletedSinceLastScan = _loadedState.FileTimestamps.Keys
+                .Where(path => !_allScannedFiles.ContainsKey(path))
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
         await Task.CompletedTask;
     }
 

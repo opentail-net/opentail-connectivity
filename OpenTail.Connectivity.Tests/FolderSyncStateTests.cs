@@ -175,4 +175,68 @@ public sealed class FolderSyncStateTests : IDisposable
         var ex = await Record.ExceptionAsync(() => connector.SaveStateAsync());
         Assert.Null(ex);
     }
+
+    [Fact]
+    public async Task CompleteScan_ReportsDeletedPathsOnce()
+    {
+        var firstPath = Path.Combine(_dir, "first.txt");
+        var deletedPath = Path.Combine(_dir, "deleted.txt");
+        var thirdPath = Path.Combine(_dir, "third.txt");
+        File.WriteAllText(firstPath, "first");
+        File.WriteAllText(deletedPath, "deleted");
+        File.WriteAllText(thirdPath, "third");
+        var store = new FolderSyncStateStore(_stateFile);
+        var firstScan = new FolderSourceConnector(_dir, "tenant", store);
+
+        await firstScan.DiscoverAsync().ToListAsync();
+        await firstScan.SaveStateAsync();
+        File.Delete(deletedPath);
+
+        var secondScan = new FolderSourceConnector(_dir, "tenant", new FolderSyncStateStore(_stateFile));
+        await secondScan.DiscoverAsync().ToListAsync();
+
+        Assert.Equal([deletedPath], ReadDeletedSinceLastScan(secondScan));
+        await secondScan.SaveStateAsync();
+
+        var thirdScan = new FolderSourceConnector(_dir, "tenant", new FolderSyncStateStore(_stateFile));
+        await thirdScan.DiscoverAsync().ToListAsync();
+
+        Assert.Empty(ReadDeletedSinceLastScan(thirdScan));
+    }
+
+    [Fact]
+    public async Task CancelledScan_DoesNotReportDeletions()
+    {
+        var changedPath = Path.Combine(_dir, "a-changed.txt");
+        var keptPath = Path.Combine(_dir, "z-kept.txt");
+        var deletedPath = Path.Combine(_dir, "m-deleted.txt");
+        File.WriteAllText(changedPath, "old");
+        File.WriteAllText(keptPath, "old");
+        File.WriteAllText(deletedPath, "deleted");
+        var store = new FolderSyncStateStore(_stateFile);
+        var firstScan = new FolderSourceConnector(_dir, "tenant", store);
+
+        await firstScan.DiscoverAsync().ToListAsync();
+        await firstScan.SaveStateAsync();
+        File.Delete(deletedPath);
+        File.WriteAllText(changedPath, "changed");
+        File.SetLastWriteTimeUtc(changedPath, DateTime.UtcNow.AddMinutes(1));
+
+        var cancelledScan = new FolderSourceConnector(_dir, "tenant", new FolderSyncStateStore(_stateFile));
+        using var cts = new CancellationTokenSource();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var _ in cancelledScan.DiscoverAsync(cts.Token))
+                cts.Cancel();
+        });
+
+        Assert.Empty(ReadDeletedSinceLastScan(cancelledScan));
+    }
+
+    private static IReadOnlyList<string> ReadDeletedSinceLastScan(FolderSourceConnector connector)
+    {
+        var property = connector.GetType().GetProperty("DeletedSinceLastScan");
+        Assert.NotNull(property);
+        return Assert.IsAssignableFrom<IReadOnlyList<string>>(property!.GetValue(connector));
+    }
 }
