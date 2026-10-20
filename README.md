@@ -26,6 +26,7 @@ They are used by the OpenTail Host's modules and by OpenTail itself.
 | `OpenTail.Connectivity.Storage` | Read-only object storage behind `IObjectStoreClient`; `ObjectStoreReader` lists and reads inside a prefix allow-list, with capped reads and bounded gzip. | Tested |
 | `OpenTail.Connectivity.Storage.S3` | Amazon S3 and S3-compatible stores (AWS SDK), through a caller-supplied `HttpClient`. | Tested |
 | `OpenTail.Connectivity.Storage.AzureBlob` | Azure Blob Storage adapter, through a caller-supplied `BlobContainerClient`. | Tested |
+| `OpenTail.Connectivity.Storage.Sftp` | Read-only SFTP adapter with a required pinned SHA-256 host key. | Tested |
 | `OpenTail.Connectivity.Memory` | Memory: records with typed provenance and policy, the `IMemoryBackend` contract, governance that reads fields and never text, governed retrieval, ingestion, a conformance suite and a quality gate. In-memory and Markdown-files backends included. See [memory](docs/design/memory.md). | Verified |
 | `OpenTail.Connectivity.Memory.Sqlite` | Memory backend in one SQLite file: FTS5 keyword search, every governance rule applied in SQL before ranking. | Verified |
 | `OpenTail.Connectivity.Memory.VectorData` | Memory backend over any `Microsoft.Extensions.VectorData` collection (Postgres with pgvector, Qdrant, Azure AI Search ...), the caller's embedding model. | Verified |
