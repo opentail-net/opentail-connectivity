@@ -48,8 +48,8 @@ public sealed class ConnectivityPipeline
 
             run.Discovered++;
             sourceRefs?.Add(item.Id);
-            var outcome = await ProcessAsync(item, run, exporterFailuresStop: false, cancellationToken);
-            if (outcome is Outcome.Rejected or Outcome.FetchFailed or Outcome.ExporterFailed) feedback?.NotProcessed(item);
+            var outcome = await ProcessAsync(item, run, exporterFailuresStop: false, sourceRefs, cancellationToken);
+            if (outcome is Outcome.Rejected or Outcome.FetchFailed or Outcome.ExporterFailed or Outcome.ExportedSomeRejected) feedback?.NotProcessed(item);
             if (outcome == Outcome.ExporterFailed) discoveryCompleted = false;
             if (run.CapReached)
             {
@@ -88,6 +88,9 @@ public sealed class ConnectivityPipeline
     {
         if (source.ReportsDeletions && !_exporters.OfType<IDeletionExporter>().Any())
             throw new InvalidOperationException("This connector reports deletions but no exporter can apply them.");
+        if (source.ReportsDeletions && _options.Expander is not null && _options.VersionStore is null)
+            throw new InvalidOperationException(
+                "This connector reports deletions and an expander is set, but there is no version store: it holds each archive's entry list, without which a deleted archive's entries would stay.");
 
         var run = new Run(_options);
         var sync = _options.Sync ?? new SyncOptions();
@@ -185,8 +188,9 @@ public sealed class ConnectivityPipeline
             }
 
             retriedThisRun.Add(entry.Item.Id);
-            var retried = await ProcessAsync(entry.Item, run, exporterFailuresStop: true, ct);
-            unflushed |= retried == Outcome.Exported;
+            // No refs here: the item comes again from a full run's stream, which adds them.
+            var retried = await ProcessAsync(entry.Item, run, exporterFailuresStop: true, sourceRefs: null, ct);
+            unflushed |= NeedsFlush(retried);
             if (retried == Outcome.FetchFailed)
                 TrackRetry(entry.Item); // the list already holds it, so this never fails
             else
@@ -209,11 +213,13 @@ public sealed class ConnectivityPipeline
                     if (retriedThisRun.Contains(upsert.Item.Id))
                     {
                         run.Skipped++; // the retry pass already fetched its current content this run
+                        if (run.FullRun && run.ExpandedChildren.TryGetValue(upsert.Item.Id, out var children))
+                            foreach (var child in children) sourceRefs?.Add(child);
                         break;
                     }
 
-                    var outcome = await ProcessAsync(upsert.Item, run, exporterFailuresStop: true, ct);
-                    unflushed |= outcome == Outcome.Exported;
+                    var outcome = await ProcessAsync(upsert.Item, run, exporterFailuresStop: true, run.FullRun ? sourceRefs : null, ct);
+                    unflushed |= NeedsFlush(outcome);
                     if (outcome == Outcome.FetchFailed)
                     {
                         if (!TrackRetry(upsert.Item))
@@ -246,24 +252,19 @@ public sealed class ConnectivityPipeline
                     }
 
                     Untrack(d.SourceRef);
-                    var deletion = new DocumentDeletion(
-                        Id: DocumentId(_sourceType, tenant, d.SourceRef),
-                        SourceRef: d.SourceRef,
-                        SourceType: _sourceType,
-                        TenantContext: tenant,
-                        Reason: d.Reason,
-                        DetectedAt: DateTimeOffset.UtcNow);
-
-                    if (_options.VersionStore is { } delVs)
-                        await delVs.RemoveAsync(deletion.Id, ct);
-
                     try
                     {
-                        foreach (var exporter in _exporters)
+                        // An expanded archive was never a document itself, but its entries are.
+                        var parentId = DocumentId(_sourceType, tenant, d.SourceRef);
+                        if (_options.Expander is not null && _options.VersionStore is { } manifests
+                            && await manifests.GetAsync(ManifestKey(parentId), ct) is { } manifest)
                         {
-                            if (exporter is IDeletionExporter deletionExporter)
-                                await deletionExporter.DeleteAsync(deletion, ct);
+                            foreach (var child in ReadManifest(manifest))
+                                await DeleteDocumentAsync(child, tenant, d.Reason, run, ct);
+                            await manifests.RemoveAsync(ManifestKey(parentId), ct);
                         }
+
+                        await DeleteDocumentAsync(d.SourceRef, tenant, d.Reason, run, ct);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
@@ -272,7 +273,6 @@ public sealed class ConnectivityPipeline
                         return run.Report();
                     }
 
-                    run.Deleted++;
                     unflushed = true;
                     break;
 
@@ -318,10 +318,13 @@ public sealed class ConnectivityPipeline
         return run.Report();
     }
 
-    private enum Outcome { Exported, Skipped, Rejected, FetchFailed, ExporterFailed }
+    /// <summary><see cref="ExportedSomeRejected"/>: an archive with documents to flush, and entries that failed.</summary>
+    private enum Outcome { Exported, Skipped, Rejected, FetchFailed, ExporterFailed, ExportedSomeRejected }
 
-    /// <summary>One item, from fetch to export. Counts it in <paramref name="run"/>.</summary>
-    private async Task<Outcome> ProcessAsync(SourceItem item, Run run, bool exporterFailuresStop, CancellationToken ct)
+    private static bool NeedsFlush(Outcome outcome) => outcome is Outcome.Exported or Outcome.ExportedSomeRejected;
+
+    /// <summary>One item, from fetch to export. Counts it in <paramref name="run"/>. Adds an archive's child ids to <paramref name="sourceRefs"/>.</summary>
+    private async Task<Outcome> ProcessAsync(SourceItem item, Run run, bool exporterFailuresStop, SourceRefCollector? sourceRefs, CancellationToken ct)
     {
         if (run.TenantContext.Length == 0) run.TenantContext = item.TenantContext;
 
@@ -330,6 +333,7 @@ public sealed class ConnectivityPipeline
             itemVersion = v;
 
         var docId = DocumentId(_sourceType, item.TenantContext, item.Id);
+        var expander = _options.Expander is { } e && e.CanExpand(item) ? e : null;
 
         if (_options.VersionStore is { } versionStore && itemVersion is not null)
         {
@@ -338,12 +342,15 @@ public sealed class ConnectivityPipeline
             {
                 run.Skipped++;
                 run.Unchanged++;
+                // Unchanged archives' entries still exist, so a deletion comparison must see them.
+                if (expander is not null && sourceRefs is not null
+                    && await versionStore.GetAsync(ManifestKey(docId), ct).ConfigureAwait(false) is { } manifest)
+                    foreach (var child in ReadManifest(manifest)) sourceRefs.Add(child);
                 return Outcome.Skipped;
             }
         }
 
         byte[] bytes;
-        TextExtractionResult extraction;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -360,6 +367,85 @@ public sealed class ConnectivityPipeline
             return Outcome.FetchFailed;
         }
 
+        return expander is null
+            ? await ExportAsync(item, bytes, itemVersion, run, exporterFailuresStop, ct)
+            : await ExpandAsync(expander, item, bytes, docId, itemVersion, run, exporterFailuresStop, sourceRefs, ct);
+    }
+
+    /// <summary>
+    /// An archive: every child goes through extraction and export as an item of its own. The archive's version is recorded only
+    /// when no child failed (as for any item), its child list always, and children gone since the last list are deleted.
+    /// </summary>
+    private async Task<Outcome> ExpandAsync(IItemExpander expander, SourceItem item, byte[] bytes, string docId, string? itemVersion,
+        Run run, bool exporterFailuresStop, SourceRefCollector? sourceRefs, CancellationToken ct)
+    {
+        ItemExpansion expansion;
+        try
+        {
+            expansion = expander.Expand(item, bytes, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            run.Failed++;
+            run.Errors.Add($"{item.DisplayName}: {ex.Message}");
+            return Outcome.Rejected;
+        }
+
+        foreach (var refused in expansion.Refused)
+        {
+            run.Skipped++;
+            run.Issues.Add(new ValidationIssue(ValidationSeverity.Warning, "ARCHIVE_ENTRY_REFUSED",
+                $"Entry not expanded: {refused.Reason}.", item.Id + "!/" + refused.Path));
+        }
+
+        var childIds = expansion.Items.Select(i => i.Item.Id).ToList();
+        run.ExpandedChildren[item.Id] = childIds;
+        if (_options.VersionStore is { } manifests && await manifests.GetAsync(ManifestKey(docId), ct) is { } previous)
+        {
+            var current = new HashSet<string>(childIds, StringComparer.Ordinal);
+            foreach (var gone in ReadManifest(previous).Where(id => !current.Contains(id)))
+            {
+                try
+                {
+                    await DeleteDocumentAsync(gone, item.TenantContext, DeletionReason.Deleted, run, ct);
+                }
+                catch (Exception ex) when (!exporterFailuresStop && ex is not OperationCanceledException)
+                {
+                    run.Failed++;
+                    run.Errors.Add($"{gone}: {ex.Message}");
+                    return Outcome.ExporterFailed;
+                }
+            }
+        }
+
+        var anyRejected = false;
+        foreach (var child in expansion.Items)
+        {
+            run.Discovered++;
+            sourceRefs?.Add(child.Item.Id);
+            var outcome = await ExportAsync(child.Item, child.Content, itemVersion: null, run, exporterFailuresStop, ct);
+            if (outcome == Outcome.ExporterFailed) return outcome;
+            anyRejected |= outcome == Outcome.Rejected;
+        }
+
+        if (_options.VersionStore is not null)
+        {
+            run.PendingVersions.Add((ManifestKey(docId), JsonSerializer.Serialize(childIds)));
+            if (itemVersion is not null && !anyRejected) run.PendingVersions.Add((docId, itemVersion));
+        }
+
+        // Exported either way: there is a child list to flush even when no child produced a document.
+        return anyRejected ? Outcome.ExportedSomeRejected : Outcome.Exported;
+    }
+
+    /// <summary>Extraction to export, for an item whose content is fetched.</summary>
+    private async Task<Outcome> ExportAsync(SourceItem item, byte[] bytes, string? itemVersion, Run run, bool exporterFailuresStop, CancellationToken ct)
+    {
+        TextExtractionResult extraction;
         try
         {
             extraction = _extractor.Extract(item.DisplayName, bytes);
@@ -438,6 +524,43 @@ public sealed class ConnectivityPipeline
         return Outcome.Exported;
     }
 
+    private async Task DeleteDocumentAsync(string sourceRef, string tenant, DeletionReason reason, Run run, CancellationToken ct)
+    {
+        var deletion = new DocumentDeletion(
+            Id: DocumentId(_sourceType, tenant, sourceRef),
+            SourceRef: sourceRef,
+            SourceType: _sourceType,
+            TenantContext: tenant,
+            Reason: reason,
+            DetectedAt: DateTimeOffset.UtcNow);
+
+        if (_options.VersionStore is { } versionStore)
+            await versionStore.RemoveAsync(deletion.Id, ct);
+
+        foreach (var exporter in _exporters)
+        {
+            if (exporter is IDeletionExporter deletionExporter)
+                await deletionExporter.DeleteAsync(deletion, ct);
+        }
+
+        run.Deleted++;
+    }
+
+    /// <summary>Where an archive's child ids are kept in the version store: beside its version, never a document id (those are hex).</summary>
+    private static string ManifestKey(string documentId) => documentId + "!entries";
+
+    private static List<string> ReadManifest(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(json) ?? [];
+        }
+        catch (JsonException)
+        {
+            return []; // a damaged list loses only the deletion of entries that went away
+        }
+    }
+
     private sealed class SourceRefCollector(int maxReportedRefs, List<ValidationIssue> issues, string? subject)
     {
         private bool warningAdded;
@@ -493,6 +616,7 @@ public sealed class ConnectivityPipeline
         public int Unchanged { get; set; }
         public int RetriesPending { get; set; }
         public List<(string DocId, string Version)> PendingVersions { get; } = [];
+        public Dictionary<string, List<string>> ExpandedChildren { get; } = new(StringComparer.Ordinal);
         public string? SyncScope { get; set; }
         public bool FullRun { get; set; }
         public bool SyncCommitted { get; set; }

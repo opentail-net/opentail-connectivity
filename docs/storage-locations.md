@@ -1,7 +1,6 @@
 # Plan: storage locations (Azure Blob, SFTP, Dropbox, GCS, WebDAV and Box), a writer, and archives
 
-**Status:** updated 2026-10-20. ST1–ST6 are implemented. GCS, WebDAV and Box adapters were added as follow-on work. ST7 (archive
-expansion) remains planned. The README's **Tested** label means automated tests pass; it does not imply a live provider check.
+**Status:** updated 2026-10-20. ST1–ST7 are implemented. GCS, WebDAV and Box adapters were added as follow-on work. The README's **Tested** label means automated tests pass; it does not imply a live provider check.
 The work package marked **(owner model)** stays with the main model.
 
 ## The idea
@@ -262,17 +261,26 @@ checkpoints and tests.
   files as `OutOfScope`, and a pipeline run where a deletion reaches a deletion exporter with the right document id.
 - Commit `ST6: Dropbox incremental connector with deletions`.
 
-## ST7. Archive expander (medium) **(owner model)**
+## ST7. Archive expander (medium) **(owner model)** — built
 
-An archive is a container in any place, so it's a pipeline step: an item whose content is a zip becomes one child item per entry,
-each with id `<parent id>!/<entry path>`, and each extracted as if it were a file. This needs a contract decision (an
-`IItemExpander` the pipeline consults after fetch, or an extractor that returns several documents), and hard limits against
-archive bombs and path tricks: entry count, total uncompressed bytes, a per-entry cap, a compression ratio ceiling, no nesting
-beyond one level by default, and refusing `..` and absolute entry paths. Deletions need care too, because a removed entry inside
-a changed zip has to disappear. Rag.NET's `src/Rag.NET.Parsers.Archive` is a reference to read, not to copy. Kept with the main
-model; tar and tar.gz can be delegated once the contract exists.
+Built as `IItemExpander` (`OpenTail.Connectivity.Files/Contracts`) and `ArchiveExpander` (`Files/Archives`), set as
+`PipelineOptions.Expander`. Tests: `OpenTail.Connectivity.Tests/Archives`.
 
----
+- **Contract.** The pipeline fetches an item the expander claims once, exports each child as its own item and never the
+  archive itself. Child id `<parent id>!/<entry path>`; nested levels add `!/`. Children carry the parent's metadata (its
+  permissions) without `source.version`, plus `source.archive.parent` and `source.archive.path`, and the parent's modified time.
+- **Limits.** Entry count (checked before reading for zip), bytes per entry, total bytes per fetched item, compression ratio
+  (per zip entry and per `.tar.gz`, once output passes 1 MB) and depth (default 1: inner archives are refused). Bytes are
+  counted as read, never taken from headers. Entry count, total bytes and ratio refuse the whole item; the rest refuse one entry.
+- **Paths.** `\` becomes `/`, empty and `.` segments go; absolute paths, drive letters, `..`, control characters and `!/` are
+  refused, duplicates too. Tar links and special files are refused. Nothing is written to disk.
+- **Reporting.** A refused entry is an `ARCHIVE_ENTRY_REFUSED` warning; a refused archive fails with its reason.
+- **Versions and deletions.** With a version store, the archive's child list is kept under `<doc id>!entries` beside its
+  version. A changed archive deletes children no longer in it; a deleted archive deletes all of them; an unchanged (skipped)
+  archive still adds its children to `SeenSourceRefs`. The archive's version is recorded only when no child failed. A
+  connector that reports deletions needs a version store when an expander is set (the pipeline refuses to start otherwise).
+- **Not done.** Other formats (7z, rar). Default filters still leave `.zip`/`.tar` out; add them to `ExtraExtensions`. A
+  changed archive that is now unreadable keeps its old children until a full-run comparison removes them.
 
 ## Not planned here
 

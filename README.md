@@ -10,7 +10,7 @@ They are used by the OpenTail Host's modules and by OpenTail itself.
 
 | Package | What | Verification |
 |---|---|---|
-| `OpenTail.Connectivity.Files` | The core: file and folder connector, text extraction, normalisation, validation, JSONL export. Every other package builds on it. | Verified |
+| `OpenTail.Connectivity.Files` | The core: file and folder connector, text extraction, normalisation, validation, JSONL export. Every other package builds on it. Archive expansion (zip, tar, tar.gz) is newer and only Tested. | Verified |
 | `OpenTail.Connectivity.Web` | Web and URL connector with same-domain crawling and text extraction. | Tested |
 | `OpenTail.Connectivity.Csv` | CSV rows as documents, with column-level field mapping. | Verified |
 | `OpenTail.Connectivity.Email` | `.eml` files and `.mbox` archives. | Verified |

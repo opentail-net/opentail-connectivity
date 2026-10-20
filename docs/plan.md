@@ -843,7 +843,7 @@ still outstanding. Writes go through a separate interface; zip is a pipeline ste
 - [x] **[C]** ST4: `IObjectStoreWriter`, `ObjectStoreWriterGuard`, S3 and in-memory writers.
 - [x] **[C]** ST5: Dropbox adapter (HTTP API, no SDK).
 - [x] **[C]** ST6: Dropbox incremental connector with deletions.
-- [ ] **[C]** ST7: archive expander (main model).
+- [x] **[C]** ST7: archive expander (`IItemExpander`, `ArchiveExpander`: zip, tar, tar.gz).
 
 - [x] **[C]** Follow-on: Google Cloud Storage adapter (`OpenTail.Connectivity.Storage.Gcs`).
 - [x] **[C]** Follow-on: WebDAV adapter (`OpenTail.Connectivity.Storage.WebDav`).
