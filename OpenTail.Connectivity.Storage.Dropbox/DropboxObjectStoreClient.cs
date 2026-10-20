@@ -47,27 +47,55 @@ public sealed class DropboxObjectStoreClient : IObjectStoreClient, IDisposable
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
         ValidateRelativeKey(prefix, nameof(prefix), allowEmpty: true);
-        var endpoint = resumeToken is null ? "files/list_folder" : "files/list_folder/continue";
-        var body = resumeToken is null
+        var page = await ListFolderPageAsync(resumeToken, pageSize, cancellationToken).ConfigureAwait(false);
+        var objects = page.Entries
+            .Where(entry => entry.Tag == "file" && entry.Info is not null)
+            .Select(entry => entry.Info!)
+            .Where(info => info.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return new ObjectListingPage(objects, page.HasMore ? page.Cursor : null);
+    }
+
+    internal async Task<DropboxListPage> ListFolderPageAsync(string? cursor, int pageSize, CancellationToken cancellationToken)
+    {
+        var endpoint = cursor is null ? "files/list_folder" : "files/list_folder/continue";
+        var body = cursor is null
             ? JsonSerializer.Serialize(new { path = _root, recursive = true, limit = Math.Min(pageSize, MaxPageSize) })
-            : JsonSerializer.Serialize(new { cursor = resumeToken });
+            : JsonSerializer.Serialize(new { cursor });
         using var response = await SendAsync(
             token => JsonPost(new Uri(ApiRoot, endpoint), token, body), cancellationToken).ConfigureAwait(false);
+        if (cursor is not null && await IsCursorResetAsync(response, cancellationToken).ConfigureAwait(false))
+            throw new DropboxCursorResetException("Dropbox rejected the saved folder cursor.");
+
         using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
-        var objects = new List<ObjectInfo>();
+        var entries = new List<DropboxListEntry>();
         foreach (var entry in json.RootElement.GetProperty("entries").EnumerateArray())
         {
-            if (!IsTag(entry, "file"))
+            var tag = entry.TryGetProperty(".tag", out var tagValue) ? tagValue.GetString() ?? "" : "";
+            var displayPath = ReadDisplayPath(entry);
+            if (displayPath is null)
+            {
+                entries.Add(new DropboxListEntry(tag, null, null));
                 continue;
-            var info = MapFile(entry);
-            if (info.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                objects.Add(info);
+            }
+            string key;
+            try
+            {
+                key = RelativeKey(displayPath);
+            }
+            catch (InvalidDataException) when (tag == "deleted")
+            {
+                entries.Add(new DropboxListEntry(tag, null, null));
+                continue;
+            }
+            var info = tag == "file" ? MapFile(entry, key) : null;
+            entries.Add(new DropboxListEntry(tag, key, info));
         }
         var hasMore = json.RootElement.GetProperty("has_more").GetBoolean();
-        var next = hasMore ? json.RootElement.GetProperty("cursor").GetString() : null;
-        if (hasMore && string.IsNullOrEmpty(next))
-            throw new InvalidDataException("Dropbox returned has_more without a cursor.");
-        return new ObjectListingPage(objects, next);
+        var nextCursor = json.RootElement.TryGetProperty("cursor", out var cursorValue) ? cursorValue.GetString() : null;
+        if (string.IsNullOrEmpty(nextCursor))
+            throw new InvalidDataException("Dropbox returned a listing page without a cursor.");
+        return new DropboxListPage(entries, nextCursor, hasMore);
     }
 
     public async Task<ObjectInfo?> HeadAsync(string key, CancellationToken cancellationToken = default)
@@ -201,11 +229,11 @@ public sealed class DropboxObjectStoreClient : IObjectStoreClient, IDisposable
         return request;
     }
 
-    private ObjectInfo MapFile(JsonElement entry)
+    private ObjectInfo MapFile(JsonElement entry, string? knownKey = null)
     {
-        var displayPath = entry.GetProperty("path_display").GetString()
-            ?? throw new InvalidDataException("Dropbox returned a file without path_display.");
-        var key = RelativeKey(displayPath);
+        var displayPath = ReadDisplayPath(entry)
+            ?? throw new InvalidDataException("Dropbox returned a file without a display path.");
+        var key = knownKey ?? RelativeKey(displayPath);
         var size = entry.GetProperty("size").GetInt64();
         var modified = entry.GetProperty("server_modified").GetDateTimeOffset();
         var etag = entry.TryGetProperty("content_hash", out var hash) ? hash.GetString() : null;
@@ -232,6 +260,32 @@ public sealed class DropboxObjectStoreClient : IObjectStoreClient, IDisposable
     private static bool IsTag(JsonElement entry, string tag) =>
         entry.TryGetProperty(".tag", out var property) && property.GetString() == tag;
 
+    private static string? ReadDisplayPath(JsonElement entry)
+    {
+        if (entry.TryGetProperty("path_display", out var display) && display.ValueKind == JsonValueKind.String)
+            return display.GetString();
+        if (entry.TryGetProperty("path_lower", out var lower) && lower.ValueKind == JsonValueKind.String)
+            return lower.GetString();
+        return null;
+    }
+
+    private async Task<bool> IsCursorResetAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if ((int)response.StatusCode != 409)
+            return false;
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var error = JsonDocument.Parse(body);
+            return error.RootElement.TryGetProperty("error_summary", out var summary) &&
+                   summary.GetString()?.StartsWith("reset", StringComparison.Ordinal) == true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     private static string NormalizeRoot(string root)
     {
         ArgumentNullException.ThrowIfNull(root);
@@ -252,3 +306,7 @@ public sealed class DropboxObjectStoreClient : IObjectStoreClient, IDisposable
             throw new ArgumentException("Dropbox keys must be relative and cannot contain backslashes or '..' path segments.", parameterName);
     }
 }
+
+internal sealed record DropboxListEntry(string Tag, string? Key, ObjectInfo? Info);
+internal sealed record DropboxListPage(IReadOnlyList<DropboxListEntry> Entries, string Cursor, bool HasMore);
+internal sealed class DropboxCursorResetException(string message) : Exception(message);
