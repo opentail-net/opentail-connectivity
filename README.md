@@ -30,6 +30,7 @@ They are used by the OpenTail Host's modules and by OpenTail itself.
 | `OpenTail.Connectivity.Storage.Dropbox` | Read-only Dropbox adapter using the HTTP API and refresh-token authentication. | Tested |
 | `OpenTail.Connectivity.Storage.Gcs` | Google Cloud Storage adapter using caller-supplied credentials and HTTP transport. | Tested |
 | `OpenTail.Connectivity.Storage.WebDav` | Read-only WebDAV adapter for collection listing and bounded downloads. | Tested |
+| `OpenTail.Connectivity.Storage.Box` | Read-only Box folder adapter using caller-supplied bearer credentials. | Tested |
 | `OpenTail.Connectivity.Memory` | Memory: records with typed provenance and policy, the `IMemoryBackend` contract, governance that reads fields and never text, governed retrieval, ingestion, a conformance suite and a quality gate. In-memory and Markdown-files backends included. See [memory](docs/design/memory.md). | Verified |
 | `OpenTail.Connectivity.Memory.Sqlite` | Memory backend in one SQLite file: FTS5 keyword search, every governance rule applied in SQL before ranking. | Verified |
 | `OpenTail.Connectivity.Memory.VectorData` | Memory backend over any `Microsoft.Extensions.VectorData` collection (Postgres with pgvector, Qdrant, Azure AI Search ...), the caller's embedding model. | Verified |

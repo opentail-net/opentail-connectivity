@@ -163,6 +163,22 @@ var source = new ObjectStorageConnector(webDav, tenantContext);
 
 The adapter is read-only and has XML-stubbed unit tests; it has not been verified against a live WebDAV service.
 
+The Box adapter is in `OpenTail.Connectivity.Storage.Box`. Supply an access token and the Box folder ID to use as the fixed
+root. Tokens are not refreshed by the adapter; Box access tokens are short-lived, so the caller must obtain a fresh one after
+an authentication failure. Listings recursively page through each folder with Box's marker API and return relative paths
+within the configured root. Resume tokens are last-seen keys, and each new page re-discovers the tree. File ETags are used
+as version tokens. Download redirects are restricted to HTTPS Box download hosts; when supplying an `HttpClient`, disable
+automatic redirects so authorization is not sent before redirect validation:
+
+```csharp
+var handler = new HttpClientHandler { AllowAutoRedirect = false };
+var http = new HttpClient(handler);
+var box = new BoxObjectStoreClient(accessToken, rootFolderId, http);
+var source = new ObjectStorageConnector(box, tenantContext);
+```
+
+This adapter has recorded-response unit tests only; it has not been verified against a live Box account.
+
 ## Social
 
 Options common to all (`SocialConnectorOptions`): `MaxItems` (100), `Since`, `Keywords`, `Hashtags`, `RequestDelayMs` (250),

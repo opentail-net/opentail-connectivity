@@ -7,6 +7,7 @@
     <Project Path="OpenTail.Connectivity.Storage.Dropbox/OpenTail.Connectivity.Storage.Dropbox.csproj" />
     <Project Path="OpenTail.Connectivity.Storage.Gcs/OpenTail.Connectivity.Storage.Gcs.csproj" />
     <Project Path="OpenTail.Connectivity.Storage.WebDav/OpenTail.Connectivity.Storage.WebDav.csproj" />
+    <Project Path="OpenTail.Connectivity.Storage.Box/OpenTail.Connectivity.Storage.Box.csproj" />
     <Project Path="OpenTail.Connectivity.Storage/OpenTail.Connectivity.Storage.csproj" />
     <Project Path="OpenTail.Connectivity.Web/OpenTail.Connectivity.Web.csproj" />
     <Project Path="OpenTail.Connectivity.Csv/OpenTail.Connectivity.Csv.csproj" />
