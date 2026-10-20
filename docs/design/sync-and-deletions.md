@@ -1,6 +1,10 @@
 # Design: incremental sync and deletions
 
-**Status:** the smaller sync core is built. `IIncrementalSourceConnector`, checkpoints, flush-before-commit, `ISyncCursorStore`, `FileSyncCursorStore`, and the SQLite connector as first user are implemented. Deletions, retries and full-run comparison are planned in `docs/ingestion-hardening.md`.
+**Status:** built (2026-10-20). The sync core (`IIncrementalSourceConnector`, checkpoints, flush-before-commit, `ISyncCursorStore`,
+`FileSyncCursorStore`), deletions (`SourceChange.Delete`, `IDeletionExporter`, `JsonlDeletionExporter`), the retry list and
+full-run comparison (`SeenSourceRefs`, for ordinary connectors too) are implemented; see `docs/ingestion-hardening.md` and plan
+sections 26-27. Retries were built without `FindAsync`: the failed item is stored with the cursor and retried with `FetchAsync`.
+The first change-feed connector is `OpenTail.Connectivity.Drive.Graph` (Graph delta). The sections below are the original design.
 
 **Where it fits:** the sync behind tiers 2 and 3 of [document search](../roadmap.md#document-search-in-three-tiers). Build it in
 steps: the smaller core (checkpoints, saving only after the exporters flush, the version check) with the first tier 2 or 3

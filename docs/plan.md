@@ -252,8 +252,10 @@ connector, so the contract is tested by real use before it grows. Section 7's co
 ## 7. Tiers 2 and 3: indexing connectors (only if section 5 says so)
 
 **Microsoft 365 or Google first**, per section 2:
-- [ ] **[C]** Graph files, slice 1: `Drive` and `SiteLibrary` targets, whole-drive delta, downloads, name-only filters
-  ([Graph files](design/microsoft-graph-files.md#suggested-slices)).
+- [x] **[C]** Graph files, slice 1: `Drive` and `SiteLibrary` targets, whole-drive delta, downloads, name-only filters
+  ([Graph files](design/microsoft-graph-files.md#suggested-slices)). *Built 2026-10-20 as `OpenTail.Connectivity.Drive.Graph`
+  (owner: build it now), with `UserOneDrive` and the delegated-token check from slice 2. Stubbed tests only: needs a real tenant
+  before it is Verified.*
 - [ ] **[C]** Graph files, later slices: OneDrive targets, folder scoping, permissions and metadata-only mode, Teams channel files.
 - [ ] **[C]** Google Drive, slice 1: shared drives with a service account, listing then changes, exports
   ([Google Drive](design/google-drive.md#suggested-slices)).
@@ -320,7 +322,8 @@ Each design lists what it depends on. Tick when checked against current vendor d
   - Not yet checked: Zendesk search quoting, OData `contains`, SOQL `LIKE` escaping, Google Drive query escaping and shared-drive
     parameters, the AWS SDK `HttpClientFactory` hook beyond the stub test.
 
-- [ ] Graph files ([list](design/microsoft-graph-files.md#vendor-facts-to-verify)).
+- [~] Graph files ([list](design/microsoft-graph-files.md#vendor-facts-to-verify)). *Delta facts checked 2026-10-20 (two
+  corrections); `Sites.Selected` and folder-delete behaviour still need a real tenant.*
 - [ ] Google Drive ([list](design/google-drive.md#vendor-facts-to-verify)).
 - [ ] Object storage ([list](design/object-storage.md#vendor-facts-to-verify)).
 - [ ] Wikis: Confluence search and sign-in; Notion's title-only search ([roadmap: wikis](roadmap.md#wikis)).

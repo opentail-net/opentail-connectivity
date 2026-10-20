@@ -1,8 +1,12 @@
 # Design: SharePoint, OneDrive and Teams files (Microsoft Graph)
 
-**Status:** proposal. Nothing is implemented; the code blocks are sketches that have not been compiled. Vendor API details are
-written from general knowledge of Microsoft's documentation; the ones the design depends on are listed under
-[vendor facts to verify](#vendor-facts-to-verify) and must be checked before building. Depends on
+**Status:** slice 1 built (2026-10-20) as `OpenTail.Connectivity.Drive.Graph`, plus `UserOneDrive` targets and the delegated
+`scp` check from slice 2. Tested against stubbed Graph and download hosts only; **not yet run against a real tenant**. How it
+differs from the sketch below: it calls Graph over `HttpClient` with any `TokenCredential` rather than through the Graph SDK (the
+same-host and token checks stay visible and testable); there are no `CapturePermissions` or `DownloadContent` options yet (slice
+4); the version token is the content hash because `cTag` is missing from delta (see the facts below). Vendor facts were checked
+against Microsoft's delta reference on 2026-10-20; the results and corrections are under
+[vendor facts to verify](#vendor-facts-to-verify). Depends on
 [shared-groundwork.md](shared-groundwork.md) (stable IDs, item metadata, file filters) and
 [sync-and-deletions.md](sync-and-deletions.md) (change stream, checkpoints, deletions).
 
@@ -120,10 +124,11 @@ the changes since. So the first run is simply a delta run from the beginning.
   `Checkpoint(@odata.deltaLink)`. A crash mid-run resumes from the page after the last saved one.
 - **Cursor:** the next link or delta link URL. It is checked to be on `graph.microsoft.com` before use (the shared same-host
   rule), so a tampered state file cannot send the token elsewhere.
-- **Expired token:** HTTP 410 `resyncRequired` yields `Reset("graph delta token expired")` and restarts the delta query from the
-  beginning. Every item is upserted again; stable ids make that an overwrite.
-- **Retries:** `FindAsync(ref)` gets `/drives/{driveId}/items/{itemId}`. A 404 returns null (confirmed deleted); anything else
-  throws.
+- **Expired token:** HTTP 410 (codes `resyncChangesApplyDifferences` / `resyncChangesUploadDifferences`) yields
+  `Reset("graph delta token expired")` and restarts from the `Location` header's fresh link (or a fresh delta query without one).
+  Every item is upserted again; stable ids make that an overwrite.
+- **Retries:** the pipeline's retry list (no `FindAsync`). `FetchAsync` gets the item for a fresh download URL; a 404 throws
+  `FileNotFoundException`, so a vanished item uses up its attempts and is dropped.
 
 **Scope of a sync in v1 is the whole drive.** Delta responses do not include an item's path, so a sync limited to a folder, and
 include/exclude patterns on paths, need the connector to track folder ids itself. That is planned as step 3 below. In v1,
@@ -208,16 +213,24 @@ live access check before showing results.
 
 ## Vendor facts to verify
 
-- Delta on the drive root with no token enumerates every item; on OneDrive for Business and SharePoint, delta is supported on the
-  root only, not on subfolders.
-- Delta items omit `parentReference.path`.
-- The `deleted` facet marks removed items, and 410 with `resyncRequired` means the token expired.
-- `@microsoft.graph.downloadUrl` can be selected in delta responses, needs no auth header, and its lifetime.
-- `Sites.Selected` with a `read` grant allows delta, download and, for step 4, reading permissions.
-- What the Graph SDK's retry handler covers by default.
+Checked on 2026-10-20 against [driveItem: delta](https://learn.microsoft.com/en-us/graph/api/driveitem-delta?view=graph-rest-1.0):
+- **Confirmed:** delta with no token enumerates the hierarchy's current state; next links until the last page, then a delta link.
+- **Confirmed:** delta items omit `parentReference.path`; track items by id.
+- **Confirmed:** removed items carry the `deleted` facet. **Corrected:** an expired token gives 410 with `resyncChangesApplyDifferences`
+  or `resyncChangesUploadDifferences` (not `resyncRequired`) and a `Location` header holding a fresh link.
+- **New:** the same item may appear more than once in a feed; the last occurrence wins. On OneDrive for Business, delta leaves
+  out `cTag` (and `name` on deletes), so the connector uses `file.hashes.quickXorHash` as `source.version`.
+- **New:** "only delete a folder locally if it is empty after syncing": it is not stated that deleting a folder reports each file
+  in it. Until a real tenant shows it does, a periodic full run (reset the scope, with `CollectSourceRefs`) is the backstop.
+- **Not stated:** whether `@microsoft.graph.downloadUrl` is returned in delta. The connector fetches it per file instead (one small
+  request each), which also sidesteps its expiry.
+- **Not checked yet:** `Sites.Selected` with a `read` grant for delta and download. The documented least-privileged application
+  permission for delta is `Files.Read.All`.
+- **Not used:** the Graph SDK's retry handler. The connector honours `Retry-After` itself, up to `MaxThrottleWait`.
 
 ## Open questions
 
-- Is `Drive.Graph` the right package name, with `Drive.Google` alongside it?
-- Are name-only patterns acceptable for v1, with folder scoping in step 3?
-- Is the write-permission check on start wanted, or is documenting the grant enough?
+Built with these provisional answers (owner asked for the connector on 2026-10-20; easy to change before 1.0):
+- `Drive.Graph`, with `Drive.Google` alongside it later.
+- Name-only patterns in v1; folder scoping in step 3.
+- The write-permission check on start is in: a token whose `roles` or `scp` include a write permission is refused.

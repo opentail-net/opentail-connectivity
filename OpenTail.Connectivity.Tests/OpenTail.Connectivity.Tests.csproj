@@ -23,6 +23,7 @@
     <ProjectReference Include="..\OpenTail.Connectivity.Email\OpenTail.Connectivity.Email.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Inbox.Imap\OpenTail.Connectivity.Inbox.Imap.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Inbox.Gmail\OpenTail.Connectivity.Inbox.Gmail.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Drive.Graph\OpenTail.Connectivity.Drive.Graph.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Inbox.Graph\OpenTail.Connectivity.Inbox.Graph.csproj" />
 
     <ProjectReference Include="..\OpenTail.Connectivity.Csv\OpenTail.Connectivity.Csv.csproj" />

@@ -13,6 +13,7 @@
     <Project Path="OpenTail.Connectivity.Memory.VectorData/OpenTail.Connectivity.Memory.VectorData.csproj" />
     <Project Path="OpenTail.Connectivity.Social/OpenTail.Connectivity.Social.csproj" />
     <Project Path="OpenTail.Connectivity.Inbox.Imap/OpenTail.Connectivity.Inbox.Imap.csproj" />
+    <Project Path="OpenTail.Connectivity.Drive.Graph/OpenTail.Connectivity.Drive.Graph.csproj" />
     <Project Path="OpenTail.Connectivity.Inbox.Graph/OpenTail.Connectivity.Inbox.Graph.csproj" />
     <Project Path="OpenTail.Connectivity.Inbox.Gmail/OpenTail.Connectivity.Inbox.Gmail.csproj" />
     <Project Path="OpenTail.Connectivity.Calendar.Ics/OpenTail.Connectivity.Calendar.Ics.csproj" />
