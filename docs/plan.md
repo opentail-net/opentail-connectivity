@@ -178,7 +178,8 @@ Live search and reading, nothing copied. [Roadmap: three tiers](roadmap.md#docum
   *Done 2026-10-18 (host `9c2ffd0`): `OpenTail.Modules.Storage`, type `storage`, S3 or an S3-compatible store (`ServiceUrl`,
   `ForcePathStyle`); credentials `access-key`/`secret-key` or the ambient identity; `list` reports record counts. Tested with
   the in-memory client; not run against real S3.*
-- [ ] **[C]** Azure Blob, then GCS adapters, on demand.
+- [x] **[C]** *(built, unverified)* Azure Blob, GCS, WebDAV and Box object-store adapters; SFTP and Dropbox adapters.
+  *Added in separate packages. Unit tests and CI pass; these adapters have not all been verified against live provider accounts.*
 
 **Wikis, tickets and chat**
 - [x] **[C]** *(built, unverified)* Text converters as `ITextExtractor`s: Atlassian Document Format (Jira and Confluence), Confluence storage format,
@@ -830,18 +831,23 @@ All nine findings confirmed; plan in [review-2026-10-20-ingestion.md](review-202
 - [x] **[C]** C2: Graph writes timed events in their own zone (main model).
 - [x] **[C]** C3: Gmail `GetEventAsync` uses the calendar's zone for all-day events.
 
-## 28. Storage locations: Azure Blob, SFTP, Dropbox, a writer, archives (2026-10-20)
+## 28. Storage locations: Azure Blob, SFTP, Dropbox, GCS, WebDAV, Box, a writer, archives (2026-10-20)
 
-Plan with decisions and work packages: [storage-locations.md](storage-locations.md). Every new place is one `IObjectStoreClient`
-adapter; one generic connector (ST1) makes all of them ingestible; writes go through a separate interface; zip is a pipeline step.
+Plan with decisions and work packages: [storage-locations.md](storage-locations.md). ST1–ST6 are implemented, along with
+follow-on GCS, WebDAV and Box adapters. These packages are marked Tested based on automated tests; live service verification is
+still outstanding. Writes go through a separate interface; zip is a pipeline step.
 
-- [ ] **[C]** ST1: `ObjectStorageConnector` (object-storage design slice 5), ingest any place.
-- [ ] **[C]** ST2: Azure Blob adapter.
-- [ ] **[C]** ST3: SFTP adapter with a pinned host key.
-- [ ] **[C]** ST4: `IObjectStoreWriter`, `ObjectStoreWriterGuard`, S3 and in-memory writers.
-- [ ] **[C]** ST5: Dropbox adapter (HTTP API, no SDK).
-- [ ] **[C]** ST6: Dropbox incremental connector with deletions.
+- [x] **[C]** ST1: `ObjectStorageConnector` (object-storage design slice 5), ingest any place.
+- [x] **[C]** ST2: Azure Blob adapter.
+- [x] **[C]** ST3: SFTP adapter with a pinned host key.
+- [x] **[C]** ST4: `IObjectStoreWriter`, `ObjectStoreWriterGuard`, S3 and in-memory writers.
+- [x] **[C]** ST5: Dropbox adapter (HTTP API, no SDK).
+- [x] **[C]** ST6: Dropbox incremental connector with deletions.
 - [ ] **[C]** ST7: archive expander (main model).
+
+- [x] **[C]** Follow-on: Google Cloud Storage adapter (`OpenTail.Connectivity.Storage.Gcs`).
+- [x] **[C]** Follow-on: WebDAV adapter (`OpenTail.Connectivity.Storage.WebDav`).
+- [x] **[C]** Follow-on: Box adapter (`OpenTail.Connectivity.Storage.Box`).
 
 ## Background, no action planned
 

@@ -25,10 +25,11 @@ public sealed class BoxObjectStoreClientTests
 
         var first = await client.ListAsync("", null, 2);
         var second = await client.ListAsync("", first.NextResumeToken, 2);
+        Assert.Equal(3, handler.Requests.Count);
         var replay = await client.ListAsync("", null, 2);
 
         Assert.Equal(["a space.txt", "nested/report.txt"], first.Objects.Select(item => item.Key));
-        Assert.Equal("nested/report.txt", first.NextResumeToken);
+        Assert.StartsWith("v1|", first.NextResumeToken);
         Assert.Equal(["z.txt"], second.Objects.Select(item => item.Key));
         Assert.Null(second.NextResumeToken);
         Assert.Equal(first.Objects.Select(item => item.Key), replay.Objects.Select(item => item.Key));
@@ -42,6 +43,7 @@ public sealed class BoxObjectStoreClientTests
         });
         Assert.Contains(handler.Requests, request => request.Uri.Query.Contains("marker=page-2", StringComparison.Ordinal));
         Assert.Contains(handler.Requests, request => request.Uri.AbsolutePath.EndsWith("/folders/folder1/items", StringComparison.Ordinal));
+        Assert.Equal(6, handler.Requests.Count);
     }
 
     [Fact]
@@ -56,6 +58,19 @@ public sealed class BoxObjectStoreClientTests
         version = "11";
         Assert.Equal("11", (await client.HeadAsync("note.txt"))?.ETag);
         Assert.Null(await client.HeadAsync("deleted.txt"));
+    }
+
+    [Fact]
+    public async Task Missing_etag_and_hash_do_not_claim_the_file_id_as_a_version()
+    {
+        var handler = new StubHandler(_ => Json("""{"entries":[{"id":"file-id","type":"file","name":"unknown-version.txt","size":1}]}"""));
+        using var http = new HttpClient(handler);
+        using var client = Client(http);
+
+        var info = await client.HeadAsync("unknown-version.txt");
+
+        Assert.NotNull(info);
+        Assert.Null(info.ETag);
     }
 
     [Fact]
@@ -93,7 +108,7 @@ public sealed class BoxObjectStoreClientTests
     public async Task Read_uses_range_follows_box_download_redirect_without_bearer_and_caps_ignored_range()
     {
         var handler = new StubHandler(request => request.Uri.AbsolutePath.EndsWith("/folders/root/items", StringComparison.Ordinal)
-            ? Json("""{"entries":[{"id":"folder1","type":"folder","name":"nested"}]}""")
+            ? Json("""{"entries":[{"id":"folder1","type":"folder","name":"nested"},{"id":"other","type":"folder","name":"unrelated"}]}""")
             : request.Uri.AbsolutePath.EndsWith("/folders/folder1/items", StringComparison.Ordinal)
                 ? Json("""{"entries":[{"id":"f1","type":"file","name":"report.txt","size":11,"etag":"v1"}]}""")
                 : request.Uri.Host == "api.box.com"
@@ -110,6 +125,8 @@ public sealed class BoxObjectStoreClientTests
         Assert.Equal("Bearer test-token", handler.Requests[2].Authorization);
         Assert.Null(handler.Requests[3].Authorization);
         Assert.Equal("f1", handler.Requests[2].Uri.Segments[^2].TrimEnd('/'));
+        Assert.Equal(4, handler.Requests.Count);
+        Assert.DoesNotContain(handler.Requests, request => request.Uri.AbsolutePath.Contains("/folders/other/", StringComparison.Ordinal));
     }
 
     [Fact]

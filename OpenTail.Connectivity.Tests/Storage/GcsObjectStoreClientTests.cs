@@ -109,12 +109,18 @@ public sealed class GcsObjectStoreClientTests
     [InlineData("folder/../secret.txt")]
     [InlineData("/absolute.txt")]
     [InlineData("folder\\secret.txt")]
-    public async Task Refuses_keys_that_escape_the_bucket(string key)
+    public async Task Opaque_object_names_are_consistent_between_listing_head_and_read(string key)
     {
-        var client = new GcsObjectStoreClient(new StubStorageClient(), "bucket");
+        var storage = new StubStorageClient();
+        storage.Pages.Enqueue(new GcsPage([new GcsObject { Name = key, Size = 2 }], null));
+        storage.HeadResult = new GcsObject { Name = key, Size = 2 };
+        var client = new GcsObjectStoreClient(storage, "bucket");
 
-        await Assert.ThrowsAsync<ArgumentException>(() => client.HeadAsync(key));
-        await Assert.ThrowsAsync<ArgumentException>(() => client.ReadAsync(key, 1));
+        Assert.Equal(key, Assert.Single((await client.ListAsync("", null, 10)).Objects).Key);
+        Assert.Equal(key, (await client.HeadAsync(key))?.Key);
+        Assert.Equal(key, storage.HeadCall?.Name);
+        await client.ReadAsync(key, 1);
+        Assert.Equal(key, storage.DownloadCall?.Name);
     }
 
     private static GcsObject Item(string name, ulong size, string generation, string storageClass) => new()

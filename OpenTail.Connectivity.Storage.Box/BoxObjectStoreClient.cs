@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using OpenTail.Connectivity.Storage;
 
@@ -10,7 +11,8 @@ namespace OpenTail.Connectivity.Storage.Box;
 /// <remarks>
 /// Supply an access token obtained and refreshed by the caller. The configured folder ID is the root of this adapter's
 /// namespace; folder IDs remain internal while relative keys are derived from Box item names. Folder listings use Box's
-/// marker cursors and object-store listings use a key-based resume token, so a resumed listing re-discovers the tree and is not a snapshot.
+/// marker cursors and object-store listings use key-based resume tokens. Subsequent pages reuse one in-process snapshot;
+/// resuming after process restart re-discovers the tree from the last key.
 /// If supplying an <see cref="HttpClient"/>, configure its handler with automatic redirects disabled so the adapter can inspect
 /// Box's download redirect and avoid forwarding the access token to the download host.
 /// </remarks>
@@ -23,6 +25,8 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
     private readonly string _accessToken;
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
+    private readonly object _snapshotLock = new();
+    private ListingSnapshot? _snapshot;
 
     public BoxObjectStoreClient(string accessToken, string rootFolderId, HttpClient? http = null)
     {
@@ -42,24 +46,86 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
     public async Task<ObjectListingPage> ListAsync(string prefix, string? resumeToken, int pageSize, CancellationToken cancellationToken = default)
     {
         ValidateKey(prefix, allowEmpty: true, nameof(prefix));
-        if (resumeToken is not null)
-            ValidateKey(resumeToken, allowEmpty: false, nameof(resumeToken));
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
 
-        var all = await EnumerateAsync(Math.Min(pageSize, PageLimit), cancellationToken).ConfigureAwait(false);
-        var matching = all.Where(file => file.Key.StartsWith(prefix, StringComparison.Ordinal))
-            .Where(file => resumeToken is null || string.CompareOrdinal(file.Key, resumeToken) > 0)
-            .OrderBy(file => file.Key, StringComparer.Ordinal)
-            .ToList();
-        var objects = matching.Take(pageSize).Select(file => file.Info).ToList();
-        return new ObjectListingPage(objects, matching.Count > pageSize ? matching[pageSize - 1].Key : null);
+        var cursor = ParseCursor(resumeToken);
+        ListingSnapshot? snapshot = null;
+        if (cursor is { } parsed)
+        {
+            lock (_snapshotLock)
+                if (_snapshot is { } cached && cached.Id == parsed.Id && cached.Prefix == prefix)
+                    snapshot = cached;
+        }
+
+        if (snapshot is null)
+        {
+            var lastKey = cursor?.LastKey ?? resumeToken;
+            if (lastKey is not null)
+                ValidateKey(lastKey, allowEmpty: false, nameof(resumeToken));
+            var all = await EnumerateAsync(Math.Min(pageSize, PageLimit), cancellationToken).ConfigureAwait(false);
+            var matching = all.Where(file => file.Key.StartsWith(prefix, StringComparison.Ordinal))
+                .Where(file => lastKey is null || string.CompareOrdinal(file.Key, lastKey) > 0)
+                .OrderBy(file => file.Key, StringComparer.Ordinal).Select(file => file.Info).ToArray();
+            return Page(matching, 0, pageSize, prefix, cursor?.Id);
+        }
+
+        var start = Array.FindIndex(snapshot.Objects, item => string.CompareOrdinal(item.Key, cursor!.Value.LastKey) > 0);
+        if (start < 0)
+            start = snapshot.Objects.Length;
+        return Page(snapshot.Objects, start, pageSize, prefix, snapshot.Id);
+    }
+
+    private ObjectListingPage Page(ObjectInfo[] objects, int start, int pageSize, string prefix, Guid? existingId)
+    {
+        var page = objects.Skip(start).Take(pageSize).ToArray();
+        if (objects.Length <= start + page.Length)
+        {
+            ClearSnapshot(existingId);
+            return new ObjectListingPage(page, null);
+        }
+
+        var id = existingId ?? Guid.NewGuid();
+        var token = MakeCursor(id, page[^1].Key);
+        lock (_snapshotLock)
+            _snapshot = new ListingSnapshot(id, prefix, objects);
+        return new ObjectListingPage(page, token);
+    }
+
+    private void ClearSnapshot(Guid? id)
+    {
+        if (id is null)
+            return;
+        lock (_snapshotLock)
+            if (_snapshot?.Id == id)
+                _snapshot = null;
+    }
+
+    private static string MakeCursor(Guid id, string key) => $"v1|{id:N}|{Convert.ToBase64String(Encoding.UTF8.GetBytes(key)).TrimEnd('=').Replace('+', '-').Replace('/', '_')}";
+
+    private static (Guid Id, string LastKey)? ParseCursor(string? token)
+    {
+        var parts = token?.Split('|');
+        if (parts is not { Length: 3 } || parts[0] != "v1" || !Guid.TryParseExact(parts[1], "N", out var id))
+            return null;
+        var encoded = parts[2].Replace('-', '+').Replace('_', '/');
+        encoded = encoded.PadRight((encoded.Length + 3) / 4 * 4, '=');
+        try
+        {
+            var key = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+            ValidateKey(key, allowEmpty: false, nameof(token));
+            return (id, key);
+        }
+        catch (FormatException ex)
+        {
+            throw new ArgumentException("The Box listing cursor is invalid.", nameof(token), ex);
+        }
     }
 
     public async Task<ObjectInfo?> HeadAsync(string key, CancellationToken cancellationToken = default)
     {
         ValidateKey(key, allowEmpty: false, nameof(key));
-        var all = await EnumerateAsync(PageLimit, cancellationToken).ConfigureAwait(false);
-        return all.FirstOrDefault(file => string.Equals(file.Key, key, StringComparison.Ordinal))?.Info;
+        var item = await ResolveKeyAsync(key, cancellationToken).ConfigureAwait(false);
+        return item is { Type: "file" } ? item.ToInfo(key) : null;
     }
 
     public async Task<ObjectContent> ReadAsync(string key, long maxBytes, CancellationToken cancellationToken = default)
@@ -68,9 +134,8 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
         ArgumentOutOfRangeException.ThrowIfNegative(maxBytes);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maxBytes, Array.MaxLength - 1L);
 
-        var all = await EnumerateAsync(PageLimit, cancellationToken).ConfigureAwait(false);
-        var file = all.FirstOrDefault(item => string.Equals(item.Key, key, StringComparison.Ordinal));
-        if (file is null)
+        var file = await ResolveKeyAsync(key, cancellationToken).ConfigureAwait(false);
+        if (file is not { Type: "file" })
             throw new ObjectNotFoundException(key);
 
         using var response = await SendDownloadAsync(file.Id, maxBytes, cancellationToken).ConfigureAwait(false);
@@ -136,8 +201,7 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
                     else if (item.Type == "file")
                     {
                         var key = JoinKey(folder.Key, item.Name);
-                        var version = item.ETag ?? item.Sha1 ?? item.Id;
-                        var info = new ObjectInfo(key, item.Size, item.ModifiedAt, version);
+                        var info = item.ToInfo(key);
                         files.Add(new DiscoveredFile(key, item.Id, info));
                     }
                 }
@@ -151,6 +215,42 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
         }
 
         return files;
+    }
+
+    private async Task<BoxItem?> ResolveKeyAsync(string key, CancellationToken cancellationToken)
+    {
+        var segments = key.Split('/');
+        var folderId = _rootFolderId;
+        for (var index = 0; index < segments.Length; index++)
+        {
+            var item = await FindChildAsync(folderId, segments[index], cancellationToken).ConfigureAwait(false);
+            if (item is null)
+                return null;
+            if (index == segments.Length - 1)
+                return item;
+            if (item.Type != "folder")
+                return null;
+            folderId = item.Id;
+        }
+        return null;
+    }
+
+    private async Task<BoxItem?> FindChildAsync(string folderId, string name, CancellationToken cancellationToken)
+    {
+        string? marker = null;
+        var seenMarkers = new HashSet<string>(StringComparer.Ordinal);
+        while (true)
+        {
+            var page = await ListFolderPageAsync(folderId, marker, PageLimit, cancellationToken).ConfigureAwait(false);
+            var found = page.Entries.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.Ordinal));
+            if (found is not null)
+                return found;
+            if (string.IsNullOrEmpty(page.NextMarker))
+                return null;
+            if (!seenMarkers.Add(page.NextMarker))
+                throw new InvalidDataException("Box returned a repeated folder listing marker.");
+            marker = page.NextMarker;
+        }
     }
 
     private async Task<FolderPage> ListFolderPageAsync(string folderId, string? marker, int pageLimit, CancellationToken cancellationToken)
@@ -270,8 +370,13 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
 
     private sealed record FolderNode(string Id, string Key);
     private sealed record FolderPage(IReadOnlyList<BoxItem> Entries, string? NextMarker);
-    private sealed record BoxItem(string Id, string Type, string Name, long Size, DateTimeOffset ModifiedAt, string? ETag, string? Sha1);
+    private sealed record BoxItem(string Id, string Type, string Name, long Size, DateTimeOffset ModifiedAt, string? ETag, string? Sha1)
+    {
+        public ObjectInfo ToInfo(string key) => new(key, Size, ModifiedAt, ETag ?? Sha1);
+    }
+
     private sealed record DiscoveredFile(string Key, string Id, ObjectInfo Info);
+    private sealed record ListingSnapshot(Guid Id, string Prefix, ObjectInfo[] Objects);
 }
 
 public sealed class BoxApiException(string message, HttpStatusCode statusCode) : HttpRequestException(message, null, statusCode)

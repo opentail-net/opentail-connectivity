@@ -1,8 +1,8 @@
-# Plan: storage locations (Azure Blob, SFTP, Dropbox), a writer, and archives
+# Plan: storage locations (Azure Blob, SFTP, Dropbox, GCS, WebDAV and Box), a writer, and archives
 
-**Status:** plan, 2026-10-20. Nothing here is built yet. The owner asked for more places files live (SFTP, Dropbox and the like)
-and for archives such as zip. This plan makes the design decisions up front, so the smaller coding model only implements. The
-work packages marked **(owner model)** stay with the main model.
+**Status:** updated 2026-10-20. ST1–ST6 are implemented. GCS, WebDAV and Box adapters were added as follow-on work. ST7 (archive
+expansion) remains planned. The README's **Tested** label means automated tests pass; it does not imply a live provider check.
+The work package marked **(owner model)** stays with the main model.
 
 ## The idea
 
@@ -20,8 +20,9 @@ ingestion work, WP6) means unchanged items are never downloaded again.
 
 ## Decisions (made here, not by the coding model)
 
-**D1. One read interface.** New places implement `IObjectStoreClient` unchanged. Keys are `/`-separated paths relative to the
-adapter's root, never starting with `/`. `Scheme` values: `azblob`, `sftp`, `dropbox` (plus the existing `s3` and `memory`).
+**D1. One read interface.** New places implement `IObjectStoreClient` unchanged. Adapters backed by folder trees expose `/`-separated
+relative paths confined to their configured root. GCS preserves object names as opaque keys, including names that resemble
+filesystem traversal. `Scheme` values: `azblob`, `sftp`, `dropbox`, `gs`, `webdav`, `box` (plus the existing `s3` and `memory`).
 
 **D2. One generic connector** over any `IObjectStoreClient`: `ObjectStorageConnector`, as designed in
 `docs/design/object-storage.md` ("Discovery and incremental runs", watermark cursor). It's built once (ST1) and works for every
@@ -36,17 +37,18 @@ unless asked. In the Host, `put` will be an `ExternalEffect` tool and `delete` a
 -lf` prints it) and refuses to connect on any mismatch. There is no "accept any key" option, because that defeats the point of
 SSH. Keys are confined to the configured root: anything with `..`, a leading `/`, or a backslash is refused.
 
-**D5. Version tokens.** Use the place's own content token where it has one: S3 and Azure ETags, Dropbox `content_hash`. SFTP has
-none, so it uses `"{size}-{mtime ticks}"`: a weak token, which the adapter's doc comment says. That goes in `ObjectInfo.ETag`.
-ST1 copies it into `source.version`.
+**D5. Version tokens.** Use the place's own content token where it has one: S3/Azure ETags, Dropbox `content_hash`, GCS
+generation, Box ETag or SHA-1, and WebDAV ETag. Box leaves it null if neither ETag nor SHA-1 is returned. SFTP has no content
+token, so it uses `"{size}-{mtime ticks}"`: a weak token, which the adapter's doc comment says. ST1 copies a present token into
+`source.version`.
 
 **D6. Dependencies.** Azure Blob: `Azure.Storage.Blobs` (new). SFTP: `SSH.NET` (NuGet id `SSH.NET`, new). Dropbox: **no SDK**,
 plain `HttpClient` against the HTTP API, as the Drive connectors do. Use the latest stable version that is at least two weeks old,
 pinned in `Directory.Packages.props`. Each new package is labelled **Tested** in the README until it runs against the real
 service.
 
-**D7. Out of scope here:** Google Cloud Storage (on demand), Box (on demand), SMB shares (a mounted share already works through
-the folder connector), and the Host tools for the new places (a separate Host plan once the adapters exist).
+**D7. Follow-on work:** Google Cloud Storage, Box and WebDAV adapters are implemented in separate packages. SMB shares (a
+mounted share already works through the folder connector) and Host tools for the new places remain out of scope here.
 
 ## Rules for every work package
 
@@ -276,5 +278,6 @@ model; tar and tar.gz can be delegated once the contract exists.
 
 - Host tools for the new places (`storage` module factory types `azblob`, `sftp`, `dropbox`; `put` and `delete` behind
   `ObjectStoreWriterGuard`, with `ExternalEffect` and `Destructive` risks). That's a Host plan after batches A–C.
-- Google Cloud Storage and Box: same shape as ST2 and ST5, on demand.
+- Provider adapters shipped after the original plan: Google Cloud Storage, WebDAV and Box. They remain marked Tested until
+  service integration checks have run with suitable credentials.
 - Event-driven ingestion (bucket notifications, Dropbox webhooks): the Host's triggers design (plan section 21).

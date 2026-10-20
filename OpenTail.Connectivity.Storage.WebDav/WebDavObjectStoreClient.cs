@@ -11,8 +11,9 @@ namespace OpenTail.Connectivity.Storage.WebDav;
 /// <remarks>
 /// The root is a collection URL ending at the allowed namespace. Credentials are sent only to that origin and paths below
 /// that root, including when redirects are followed. If a caller supplies an <see cref="HttpClient"/>, its handler must have
-/// automatic redirects disabled so this class can validate each destination before resending credentials. A resume token is
-/// the last returned key; WebDAV has no snapshot cursor.
+/// automatic redirects disabled so this class can validate each destination before resending credentials. WebDAV has no
+/// snapshot cursor. One in-progress sorted listing is cached so subsequent pages do not traverse the tree again; a token
+/// resumed after process restart falls back to a new traversal from its last key.
 /// </remarks>
 public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
 {
@@ -23,17 +24,19 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
     private readonly string _authorization;
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
+    private readonly object _snapshotLock = new();
+    private ListingSnapshot? _snapshot;
 
-    public WebDavObjectStoreClient(Uri root, string username, string password, HttpClient? http = null)
+    public WebDavObjectStoreClient(Uri root, string username, string password, HttpClient? http = null, bool allowInsecureHttp = false)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentException.ThrowIfNullOrWhiteSpace(username);
         ArgumentNullException.ThrowIfNull(password);
         if (username.Contains(':'))
             throw new ArgumentException("A WebDAV Basic-auth username cannot contain a colon.", nameof(username));
-        if (!root.IsAbsoluteUri || (root.Scheme != Uri.UriSchemeHttp && root.Scheme != Uri.UriSchemeHttps) ||
+        if (!root.IsAbsoluteUri || root.Scheme != Uri.UriSchemeHttps && !(allowInsecureHttp && root.Scheme == Uri.UriSchemeHttp) ||
             !string.IsNullOrEmpty(root.UserInfo) || !string.IsNullOrEmpty(root.Query) || !string.IsNullOrEmpty(root.Fragment))
-            throw new ArgumentException("The WebDAV root must be an absolute HTTP(S) collection URL without user info, query or fragment.", nameof(root));
+            throw new ArgumentException("The WebDAV root must be an absolute HTTPS collection URL without user info, query or fragment. HTTP requires allowInsecureHttp.", nameof(root));
 
         _root = EnsureTrailingSlash(root);
         _rootPath = _root.AbsolutePath;
@@ -50,20 +53,83 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
     public async Task<ObjectListingPage> ListAsync(string prefix, string? resumeToken, int pageSize, CancellationToken cancellationToken = default)
     {
         ValidateKey(prefix, allowEmpty: true, nameof(prefix));
-        if (resumeToken is not null)
-            ValidateKey(resumeToken, allowEmpty: false, nameof(resumeToken));
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
 
-        var allObjects = await EnumerateAsync(cancellationToken).ConfigureAwait(false);
-        var matching = allObjects
-            .Where(item => item.Key.StartsWith(prefix, StringComparison.Ordinal))
-            .Where(item => resumeToken is null || string.CompareOrdinal(item.Key, resumeToken) > 0)
-            .OrderBy(item => item.Key, StringComparer.Ordinal)
-            .ToList();
-        var objects = matching.Take(pageSize).ToList();
-        var next = matching.Count > pageSize ? objects[^1].Key : null;
-        return new ObjectListingPage(objects, next);
+        var cursor = ParseCursor(resumeToken);
+        ListingSnapshot? snapshot = null;
+        if (cursor is { } parsed)
+        {
+            lock (_snapshotLock)
+                if (_snapshot is { } cached && cached.Id == parsed.Id && cached.Prefix == prefix)
+                    snapshot = cached;
+        }
+
+        if (snapshot is null)
+        {
+            var lastKey = cursor?.LastKey ?? resumeToken;
+            if (lastKey is not null)
+                ValidateKey(lastKey, allowEmpty: false, nameof(resumeToken));
+            var allObjects = await EnumerateAsync(cancellationToken).ConfigureAwait(false);
+            var matching = allObjects.Where(item => item.Key.StartsWith(prefix, StringComparison.Ordinal))
+                .Where(item => lastKey is null || string.CompareOrdinal(item.Key, lastKey) > 0)
+                .OrderBy(item => item.Key, StringComparer.Ordinal).ToArray();
+            return Page(matching, 0, pageSize, prefix, cursor?.Id);
+        }
+
+        var start = Array.FindIndex(snapshot.Objects, item => string.CompareOrdinal(item.Key, cursor!.Value.LastKey) > 0);
+        if (start < 0)
+            start = snapshot.Objects.Length;
+        return Page(snapshot.Objects, start, pageSize, prefix, snapshot.Id);
     }
+
+    private ObjectListingPage Page(ObjectInfo[] objects, int start, int pageSize, string prefix, Guid? existingId)
+    {
+        var page = objects.Skip(start).Take(pageSize).ToArray();
+        var hasMore = objects.Length > start + page.Length;
+        if (!hasMore)
+        {
+            ClearSnapshot(existingId);
+            return new ObjectListingPage(page, null);
+        }
+
+        var id = existingId ?? Guid.NewGuid();
+        var token = MakeCursor(id, page[^1].Key);
+        lock (_snapshotLock)
+            _snapshot = new ListingSnapshot(id, prefix, objects);
+        return new ObjectListingPage(page, token);
+    }
+
+    private void ClearSnapshot(Guid? id)
+    {
+        if (id is null)
+            return;
+        lock (_snapshotLock)
+            if (_snapshot?.Id == id)
+                _snapshot = null;
+    }
+
+    private static string MakeCursor(Guid id, string key) => $"v1|{id:N}|{Convert.ToBase64String(Encoding.UTF8.GetBytes(key)).TrimEnd('=').Replace('+', '-').Replace('/', '_')}";
+
+    private static (Guid Id, string LastKey)? ParseCursor(string? token)
+    {
+        var parts = token?.Split('|');
+        if (parts is not { Length: 3 } || parts[0] != "v1" || !Guid.TryParseExact(parts[1], "N", out var id))
+            return null;
+        var encoded = parts[2].Replace('-', '+').Replace('_', '/');
+        encoded = encoded.PadRight((encoded.Length + 3) / 4 * 4, '=');
+        try
+        {
+            var key = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+            ValidateKey(key, allowEmpty: false, nameof(token));
+            return (id, key);
+        }
+        catch (FormatException ex)
+        {
+            throw new ArgumentException("The WebDAV listing cursor is invalid.", nameof(token), ex);
+        }
+    }
+
+    private sealed record ListingSnapshot(Guid Id, string Prefix, ObjectInfo[] Objects);
 
     public async Task<ObjectInfo?> HeadAsync(string key, CancellationToken cancellationToken = default)
     {

@@ -9,8 +9,8 @@ using GcsObject = Google.Apis.Storage.v1.Data.Object;
 namespace OpenTail.Connectivity.Storage.Gcs;
 
 /// <summary>
-/// <see cref="IObjectStoreClient"/> over Google Cloud Storage. Generation is used as the stable object version token;
-/// Nearline, Coldline and Archive objects remain readable but incur retrieval charges.
+/// <see cref="IObjectStoreClient"/> over Google Cloud Storage. Object names are preserved as opaque keys, and generation is
+/// used as the stable object version token. Nearline, Coldline and Archive objects remain readable but incur retrieval charges.
 /// </summary>
 /// <remarks>
 /// The caller supplies a <see cref="StorageClient"/> built with its own credentials and HTTP transport. A
@@ -53,7 +53,7 @@ public sealed class GcsObjectStoreClient : IObjectStoreClient
 
     public async Task<ObjectInfo?> HeadAsync(string key, CancellationToken cancellationToken = default)
     {
-        ValidateKey(key);
+        ArgumentNullException.ThrowIfNull(key);
         try
         {
             var item = await _storage.GetObjectAsync(Container, key, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -67,7 +67,7 @@ public sealed class GcsObjectStoreClient : IObjectStoreClient
 
     public async Task<ObjectContent> ReadAsync(string key, long maxBytes, CancellationToken cancellationToken = default)
     {
-        ValidateKey(key);
+        ArgumentNullException.ThrowIfNull(key);
         ArgumentOutOfRangeException.ThrowIfNegative(maxBytes);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maxBytes, Array.MaxLength - 1L);
 
@@ -117,10 +117,4 @@ public sealed class GcsObjectStoreClient : IObjectStoreClient
         return new ObjectInfo(key, checked((long)size), modified, version, storageClass, NeedsRestore: false, CostsExtraToRead: costsExtraToRead);
     }
 
-    private static void ValidateKey(string key)
-    {
-        ArgumentNullException.ThrowIfNull(key);
-        if (key.Length == 0 || key.StartsWith('/') || key.Contains('\\') || key.Split('/').Any(segment => segment == ".."))
-            throw new ArgumentException("Google Cloud Storage keys must be relative and cannot contain backslashes or '..' path segments.", nameof(key));
-    }
 }

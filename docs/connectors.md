@@ -146,9 +146,10 @@ The adapter reports the GCS object generation as the version token. Standard obj
 Coldline and Archive set `CostsExtraToRead`. These tiers remain directly readable and do not require a restore operation. This
 package has stubbed-service unit tests; it has not been verified against a live GCS bucket.
 
-The read-only WebDAV adapter supports services such as Nextcloud and ownCloud. Pass the collection URL and credentials; for
-Nextcloud, an application password is suitable when a separate client credential is needed. The adapter follows collections
-recursively and uses key-based resume tokens, so each page re-lists the collection tree and does not represent a snapshot.
+The read-only WebDAV adapter supports services such as Nextcloud and ownCloud. Pass the HTTPS collection URL and credentials; for
+Nextcloud, an application password is suitable when a separate client credential is needed. Plain HTTP requires explicitly
+setting `allowInsecureHttp: true`. The adapter follows collections recursively and caches one sorted listing while paging;
+its key-based resume token is not a snapshot across process restarts.
 When supplying an `HttpClient`, configure its handler with automatic redirects disabled so the adapter can validate each
 redirect before sending credentials to the next request:
 
@@ -166,8 +167,10 @@ The adapter is read-only and has XML-stubbed unit tests; it has not been verifie
 The Box adapter is in `OpenTail.Connectivity.Storage.Box`. Supply an access token and the Box folder ID to use as the fixed
 root. Tokens are not refreshed by the adapter; Box access tokens are short-lived, so the caller must obtain a fresh one after
 an authentication failure. Listings recursively page through each folder with Box's marker API and return relative paths
-within the configured root. Resume tokens are last-seen keys, and each new page re-discovers the tree. File ETags are used
-as version tokens. Download redirects are restricted to HTTPS Box download hosts; when supplying an `HttpClient`, disable
+within the configured root. One listing snapshot is cached while paging; after process restart the token resumes by key and
+re-discovers the tree. `HeadAsync` and `ReadAsync` walk only the requested key's parent folders. File ETags, or SHA-1 when
+the ETag is absent, are used as version tokens; if both are absent the adapter leaves the version unset. Download redirects
+are restricted to HTTPS Box download hosts; when supplying an `HttpClient`, disable
 automatic redirects so authorization is not sent before redirect validation:
 
 ```csharp

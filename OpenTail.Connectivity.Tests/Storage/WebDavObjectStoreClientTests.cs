@@ -31,10 +31,11 @@ public sealed class WebDavObjectStoreClientTests
 
         var first = await client.ListAsync("", null, 2);
         var second = await client.ListAsync("", first.NextResumeToken, 2);
+        Assert.Equal(2, handler.Requests.Count);
         var replay = await client.ListAsync("", null, 2);
 
         Assert.Equal(["a space.txt", "folder/b.txt"], first.Objects.Select(item => item.Key));
-        Assert.Equal("folder/b.txt", first.NextResumeToken);
+        Assert.StartsWith("v1|", first.NextResumeToken);
         Assert.Equal(["z.txt"], second.Objects.Select(item => item.Key));
         Assert.Null(second.NextResumeToken);
         Assert.Equal(first.Objects.Select(item => item.Key), replay.Objects.Select(item => item.Key));
@@ -46,7 +47,7 @@ public sealed class WebDavObjectStoreClientTests
             Assert.Equal("1", request.Depth);
             Assert.Equal(Auth, request.Authorization);
         });
-        Assert.Equal(6, handler.Requests.Count);
+        Assert.Equal(4, handler.Requests.Count);
     }
 
     [Fact]
@@ -180,6 +181,16 @@ public sealed class WebDavObjectStoreClientTests
         await Assert.ThrowsAsync<ArgumentException>(() => client.ReadAsync("../private.txt", 10));
         await Assert.ThrowsAsync<ArgumentException>(() => client.HeadAsync("/absolute.txt"));
         await Assert.ThrowsAsync<ArgumentException>(() => client.ReadAsync("folder\\file.txt", 10));
+    }
+
+    [Fact]
+    public void Http_roots_require_explicit_insecure_transport_opt_in()
+    {
+        using var http = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
+
+        Assert.Throws<ArgumentException>(() => new WebDavObjectStoreClient(new Uri("http://dav.example/library/"), "alice", "pass", http));
+        using var allowed = new WebDavObjectStoreClient(new Uri("http://dav.example/library/"), "alice", "pass", http, allowInsecureHttp: true);
+        Assert.Equal("webdav", allowed.Scheme);
     }
 
     private static WebDavObjectStoreClient Client(HttpClient http) =>
