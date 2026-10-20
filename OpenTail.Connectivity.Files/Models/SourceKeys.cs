@@ -23,6 +23,9 @@ public static class SourceKeys
 
     /// <summary><c>true</c> when the principal list was cut at its cap; the item is then marked restricted.</summary>
     public const string AclTruncated = "source.acl.truncated";
+
+    /// <summary>An opaque token that changes whenever the item's content changes: an ETag, a version id. Not a timestamp unless the source guarantees one.</summary>
+    public const string Version = "source.version";
 }
 
 /// <summary>

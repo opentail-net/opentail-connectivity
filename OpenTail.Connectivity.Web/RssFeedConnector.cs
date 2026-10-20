@@ -39,7 +39,7 @@ public sealed class RssFeedConnector : ISourceConnector
             : ParseAtom(root);
 
         var count = 0;
-        foreach (var (id, displayName, modified, payload) in entries)
+        foreach (var (id, displayName, modified, version, payload) in entries)
         {
             if (count >= _maxItems) break;
             if (_since.HasValue && modified < _since.Value) continue;
@@ -50,13 +50,23 @@ public sealed class RssFeedConnector : ISourceConnector
             _itemCache[id] = bytes;
             count++;
 
+            Dictionary<string, string>? metadata = null;
+            if (version is not null)
+            {
+                metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [SourceKeys.Version] = version
+                };
+            }
+
             yield return new SourceItem(
                 Id: id,
                 DisplayName: displayName,
                 Extension: "rss-item",
                 SizeBytes: bytes.Length,
                 Modified: modified,
-                TenantContext: _tenant);
+                TenantContext: _tenant,
+                Metadata: metadata);
         }
     }
 
@@ -65,7 +75,7 @@ public sealed class RssFeedConnector : ISourceConnector
             ? Task.FromResult(bytes)
             : Task.FromResult(Array.Empty<byte>());
 
-    private static IEnumerable<(string id, string displayName, DateTimeOffset modified, Dictionary<string, string> payload)> ParseRss(XElement rss)
+    private static IEnumerable<(string id, string displayName, DateTimeOffset modified, string? version, Dictionary<string, string> payload)> ParseRss(XElement rss)
     {
         var channel = rss.Element("channel");
         if (channel is null) yield break;
@@ -80,12 +90,17 @@ public sealed class RssFeedConnector : ISourceConnector
             var author = (item.Element("author")?.Value
                 ?? item.Element("{http://purl.org/dc/elements/1.1/}creator")?.Value
                 ?? string.Empty).Trim();
-            var pubDate = item.Element("pubDate")?.Value;
+            var pubDate = item.Element("pubDate")?.Value?.Trim();
+            var guid = item.Element("guid")?.Value?.Trim();
             var modified = ParseDate(pubDate);
             var categories = string.Join("; ", item.Elements("category")
                 .Select(c => c.Value?.Trim()).Where(v => !string.IsNullOrWhiteSpace(v)));
 
-            yield return (link, title, modified, new Dictionary<string, string>
+            string? version = null;
+            if (!string.IsNullOrWhiteSpace(guid) && !string.IsNullOrWhiteSpace(pubDate))
+                version = $"{guid}|{pubDate}";
+
+            yield return (link, title, modified, version, new Dictionary<string, string>
             {
                 ["link"] = link,
                 ["title"] = title,
@@ -97,7 +112,7 @@ public sealed class RssFeedConnector : ISourceConnector
         }
     }
 
-    private static IEnumerable<(string id, string displayName, DateTimeOffset modified, Dictionary<string, string> payload)> ParseAtom(XElement feed)
+    private static IEnumerable<(string id, string displayName, DateTimeOffset modified, string? version, Dictionary<string, string> payload)> ParseAtom(XElement feed)
     {
         foreach (var entry in feed.Elements(AtomNs + "entry"))
         {
@@ -112,13 +127,19 @@ public sealed class RssFeedConnector : ISourceConnector
                 ?? string.Empty).Trim();
             var author = (entry.Element(AtomNs + "author")?.Element(AtomNs + "name")?.Value
                 ?? string.Empty).Trim();
-            var published = entry.Element(AtomNs + "published")?.Value
-                ?? entry.Element(AtomNs + "updated")?.Value;
+            var updated = entry.Element(AtomNs + "updated")?.Value?.Trim();
+            var published = entry.Element(AtomNs + "published")?.Value?.Trim() ?? updated;
+            var id = entry.Element(AtomNs + "id")?.Value?.Trim();
             var modified = ParseDate(published);
             var categories = string.Join("; ", entry.Elements(AtomNs + "category")
                 .Select(c => c.Attribute("term")?.Value?.Trim()).Where(v => !string.IsNullOrWhiteSpace(v)));
 
-            yield return (link, title, modified, new Dictionary<string, string>
+            string? version = null;
+            var dateToken = updated ?? published;
+            if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(dateToken))
+                version = $"{id}|{dateToken}";
+
+            yield return (link, title, modified, version, new Dictionary<string, string>
             {
                 ["link"] = link,
                 ["title"] = title,

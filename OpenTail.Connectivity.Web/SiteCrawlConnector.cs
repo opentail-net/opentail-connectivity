@@ -120,13 +120,24 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
             if (!robots.IsAllowed(uri.AbsolutePath))
                 continue;
 
-            var html = await FetchHtmlWithRetryAsync(uri, cancellationToken);
+            var (html, etag) = await FetchHtmlWithRetryAsync(uri, cancellationToken);
             if (html is null) { _failedFetches++; continue; }
 
             _fetchCache[uri.AbsoluteUri] = System.Text.Encoding.UTF8.GetBytes(html);
 
             var title = HtmlTextExtractor.ExtractTitle(html) ?? uri.AbsolutePath;
-            yield return WebSourceItemFactory.Create(uri.AbsoluteUri, title, _tenantContext);
+
+            // The connector fetches during discovery, so source.version saves extraction and export, not the download.
+            Dictionary<string, string>? metadata = null;
+            if (!string.IsNullOrWhiteSpace(etag))
+            {
+                metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [SourceKeys.Version] = etag
+                };
+            }
+
+            yield return WebSourceItemFactory.Create(uri.AbsoluteUri, title, _tenantContext, metadata);
 
             // Enqueue same-domain links
             if (depth >= _options.MaxDepth)
@@ -167,7 +178,7 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
         return bytes;
     }
 
-    private async Task<string?> FetchHtmlWithRetryAsync(Uri uri, CancellationToken cancellationToken)
+    private async Task<(string? Html, string? ETag)> FetchHtmlWithRetryAsync(Uri uri, CancellationToken cancellationToken)
     {
         var retryDelay = _options.RetryDelay ?? TimeSpan.FromMilliseconds(500);
         for (var attempt = 0; attempt <= _options.MaxRetries; attempt++)
@@ -176,18 +187,19 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
             {
                 using var response = await WebContentReader.GetWithinOriginAsync(_client, uri, _startUri, cancellationToken, WithinPathPrefixes);
                 if (response is null)
-                    return null;
+                    return (null, null);
                 if (response.IsSuccessStatusCode)
                 {
                     var finalUri = response.RequestMessage?.RequestUri ?? uri;
                     if (!HasSameOrigin(finalUri, _startUri))
-                        return null;
+                        return (null, null);
                     var bytes = await WebContentReader.ReadBoundedAsync(response.Content, MaxResponseBytes, cancellationToken);
-                    return bytes is null ? null : System.Text.Encoding.UTF8.GetString(bytes);
+                    var etag = response.Headers.ETag?.Tag ?? (response.Headers.TryGetValues("ETag", out var etags) ? etags.FirstOrDefault() : null);
+                    return (bytes is null ? null : System.Text.Encoding.UTF8.GetString(bytes), etag);
                 }
 
                 if (!IsTransient(response.StatusCode) || attempt >= _options.MaxRetries)
-                    return null;
+                    return (null, null);
             }
             catch (OperationCanceledException)
             {
@@ -200,13 +212,13 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
             }
             catch (HttpRequestException)
             {
-                return null;
+                return (null, null);
             }
 
             await Task.Delay(retryDelay, cancellationToken);
         }
 
-        return null;
+        return (null, null);
     }
 
     private static bool IsTransient(System.Net.HttpStatusCode statusCode)

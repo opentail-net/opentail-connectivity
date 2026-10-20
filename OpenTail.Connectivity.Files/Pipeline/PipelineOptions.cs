@@ -10,4 +10,5 @@ public sealed record PipelineOptions(
     int MaxDedupHashes = 100_000,
     ISyncCursorStore? SyncStore = null,
     SyncOptions? Sync = null,
-    IReadOnlyList<IDocumentTransformer>? Transformers = null);
+    IReadOnlyList<IDocumentTransformer>? Transformers = null,
+    IItemVersionStore? VersionStore = null);

@@ -1,3 +1,4 @@
+using OpenTail.Connectivity.Files.Connectors;
 using OpenTail.Connectivity.Files.Validation;
 
 namespace OpenTail.Connectivity.Files.Pipeline;
@@ -48,6 +49,15 @@ public sealed class ConnectivityPipeline
         foreach (var exporter in _exporters)
             await exporter.FlushAsync(cancellationToken);
 
+        if (_options.VersionStore is { } vStore)
+        {
+            foreach (var (docId, ver) in run.PendingVersions)
+                await vStore.SetAsync(docId, ver, cancellationToken);
+            run.PendingVersions.Clear();
+            if (vStore is FileItemVersionStore fvs)
+                await fvs.FlushAsync(cancellationToken);
+        }
+
         return run.Report();
     }
 
@@ -85,6 +95,14 @@ public sealed class ConnectivityPipeline
         {
             foreach (var exporter in _exporters) await exporter.FlushAsync(ct);
             unflushed = false;
+            if (_options.VersionStore is { } vStore)
+            {
+                foreach (var (docId, ver) in run.PendingVersions)
+                    await vStore.SetAsync(docId, ver, ct);
+                run.PendingVersions.Clear();
+                if (vStore is FileItemVersionStore fvs)
+                    await fvs.FlushAsync(ct);
+            }
         }
 
         async Task CommitAsync()
@@ -150,6 +168,9 @@ public sealed class ConnectivityPipeline
                         Reason: d.Reason,
                         DetectedAt: DateTimeOffset.UtcNow);
 
+                    if (_options.VersionStore is { } delVs)
+                        await delVs.RemoveAsync(deletion.Id, ct);
+
                     try
                     {
                         foreach (var exporter in _exporters)
@@ -204,6 +225,24 @@ public sealed class ConnectivityPipeline
     private async Task<Outcome> ProcessAsync(SourceItem item, Run run, bool exporterFailuresStop, CancellationToken ct)
     {
         if (run.TenantContext.Length == 0) run.TenantContext = item.TenantContext;
+
+        string? itemVersion = null;
+        if (item.Metadata is not null && item.Metadata.TryGetValue(SourceKeys.Version, out var v))
+            itemVersion = v;
+
+        var docId = DocumentId(_sourceType, item.TenantContext, item.Id);
+
+        if (_options.VersionStore is { } versionStore && itemVersion is not null)
+        {
+            var stored = await versionStore.GetAsync(docId, ct).ConfigureAwait(false);
+            if (stored is not null && string.Equals(stored, itemVersion, StringComparison.Ordinal))
+            {
+                run.Skipped++;
+                run.Unchanged++;
+                return Outcome.Skipped;
+            }
+        }
+
         byte[] bytes;
         TextExtractionResult extraction;
         try
@@ -293,6 +332,9 @@ public sealed class ConnectivityPipeline
             return Outcome.Rejected;
         }
 
+        if (itemVersion is not null)
+            run.PendingVersions.Add((doc.Id, itemVersion));
+
         run.Processed(doc.Body?.Length ?? 0);
         return Outcome.Exported;
     }
@@ -319,6 +361,8 @@ public sealed class ConnectivityPipeline
         public HashSet<string> SeenRefs { get; } = new(StringComparer.Ordinal);
         public List<string>? SeenSourceRefs { get; set; }
         public bool SourceRefsTruncated { get; set; }
+        public int Unchanged { get; set; }
+        public List<(string DocId, string Version)> PendingVersions { get; } = [];
         public string? SyncScope { get; set; }
         public bool FullRun { get; set; }
         public bool SyncCommitted { get; set; }
@@ -363,7 +407,8 @@ public sealed class ConnectivityPipeline
             SyncCommitted: SyncCommitted,
             ItemsDeleted: Deleted,
             SeenSourceRefs: SeenSourceRefs,
-            SourceRefsTruncated: SourceRefsTruncated);
+            SourceRefsTruncated: SourceRefsTruncated,
+            ItemsUnchanged: Unchanged);
     }
 
     private static NormalisedDocument Normalise(SourceItem item, TextExtractionResult extraction, PipelineOptions options, string sourceType)
