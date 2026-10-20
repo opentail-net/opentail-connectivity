@@ -24,4 +24,5 @@ public sealed record IngestionReport(
     int ItemsDeleted = 0,
     IReadOnlyList<string>? SeenSourceRefs = null,
     bool SourceRefsTruncated = false,
-    int ItemsUnchanged = 0);
+    int ItemsUnchanged = 0,
+    int RetriesPending = 0);

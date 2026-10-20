@@ -794,21 +794,21 @@ All findings confirmed (two narrower than reported), five more found; plan in
 
 ## 26. Ingestion hardening (informed by Rag.NET), 2026-10-20
 
-Plan with work packages for the coding model: [ingestion-hardening.md](ingestion-hardening.md). ChatGPT's Rag.NET advice was
+All done 2026-10-20 (WP4 by the main model, the rest by the coding model). Plan: [ingestion-hardening.md](ingestion-hardening.md). ChatGPT's Rag.NET advice was
 checked against the code: deletions, retries, conformance tests and labels are real gaps (designed in `sync-and-deletions.md`
 and `testing-and-verification.md`, never built); inbox cursors and folder retries were already fixed; sitemap and RSS exist;
 job queues belong to the Host's triggers (section 21).
 
-- [ ] **[C]** WP0: design docs say what is built.
-- [ ] **[C]** WP1: deletions through the sync core (`SourceChange.Delete`, `IDeletionExporter`, fail closed).
-- [ ] **[C]** WP2: `JsonlDeletionExporter`.
-- [ ] **[C]** WP3: full-run `SeenSourceRefs` for deletion by comparison.
-- [ ] **[C]** WP4: retry list instead of holding the cursor (main model).
-- [ ] **[C]** WP5: folder connector lists files deleted since the last scan.
-- [ ] **[C]** WP6: skip unchanged items by `source.version` (`IItemVersionStore`; RSS and site crawl first).
-- [ ] **[C]** WP7a/b: connector conformance suite, applied to every connector.
-- [ ] **[C]** WP8: verification labels in the README and package descriptions.
-- [ ] **[C]** WP9: RSS and sitemap regression tests.
+- [x] **[C]** WP0: design docs say what is built.
+- [x] **[C]** WP1: deletions through the sync core (`SourceChange.Delete`, `IDeletionExporter`, fail closed).
+- [x] **[C]** WP2: `JsonlDeletionExporter`.
+- [x] **[C]** WP3: full-run `SeenSourceRefs` for deletion by comparison.
+- [x] **[C]** WP4: retry list instead of holding the cursor. *Done: the failed item rides in the stored cursor (a wrapper only when the list is non-empty), retried first next run with `FetchAsync`, dropped after `MaxItemAttempts`; a full list falls back to holding the cursor. No `FindAsync`. Also fixed WP1: a deletion without a tenant before any item computed the wrong id; `Delete` now carries an optional tenant and holds the cursor without one.*
+- [x] **[C]** WP5: folder connector lists files deleted since the last scan.
+- [x] **[C]** WP6: skip unchanged items by `source.version` (`IItemVersionStore`; RSS and site crawl first).
+- [x] **[C]** WP7a/b: connector conformance suite, applied to every connector.
+- [x] **[C]** WP8: verification labels in the README and package descriptions.
+- [x] **[C]** WP9: RSS and sitemap regression tests.
 
 ## Background, no action planned
 

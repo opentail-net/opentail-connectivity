@@ -78,13 +78,15 @@ public sealed class ConnectivityPipeline
 
         var state = await store.LoadAsync(scope, ct);
         var version = state?.Version ?? 0;
+        var (committedCursor, retries) = RetryEnvelope.Read(state?.Cursor);
+        var retriesDirty = false;
         run.SyncScope = scope;
-        run.FullRun = state?.Cursor is null;
+        run.FullRun = committedCursor is null;
 
         string? pending = null;     // the latest checkpoint not yet committed
         var sinceCommit = 0;
         var lastCommit = DateTimeOffset.UtcNow;
-        var holdCommits = false;    // a fetch failed: committing past it would skip the item
+        var holdCommits = false;    // a fetch failed and the retry list is full (or a deletion had no tenant): committing would skip it
         var unflushed = true;       // exporters have not been flushed since the last export (or at all)
         var stoppedByCap = false;
         List<string>? collectedRefs = sync.CollectSourceRefs ? [] : null;
@@ -109,14 +111,67 @@ public sealed class ConnectivityPipeline
         {
             if (pending is null || holdCommits) return;
             await FlushAsync(); // never save the cursor before the documents it covers are flushed
-            version = (await store.SaveAsync(scope, pending, version, ct)).Version;
+            version = (await store.SaveAsync(scope, RetryEnvelope.Write(pending, retries), version, ct)).Version;
             run.SyncCommitted = true;
+            committedCursor = pending;
+            retriesDirty = false;
             pending = null;
             sinceCommit = 0;
             lastCommit = DateTimeOffset.UtcNow;
         }
 
-        await foreach (var change in source.GetChangesAsync(state?.Cursor, ct))
+        // Tracks a failed fetch so the cursor can move on. False when the list is full: the caller holds the cursor instead.
+        bool TrackRetry(SourceItem item)
+        {
+            var error = run.Errors.Count > 0 ? run.Errors[^1] : null;
+            var entry = retries.Find(r => r.Item.Id == item.Id);
+            if (entry is null)
+            {
+                if (retries.Count >= Math.Max(0, sync.MaxRetryItems))
+                    return false;
+                retries.Add(entry = new RetryEntry { Item = item, FirstFailedAt = DateTimeOffset.UtcNow });
+            }
+
+            entry.Attempts++;
+            entry.LastError = error;
+            retriesDirty = true;
+            if (entry.Attempts >= Math.Max(1, sync.MaxItemAttempts))
+            {
+                retries.Remove(entry);
+                run.Errors.Add($"{item.DisplayName}: dropped from the retry list after {entry.Attempts} failed attempts.");
+            }
+            else
+            {
+                run.Errors.Add($"{item.DisplayName}: will be retried on the next run (attempt {entry.Attempts} of {Math.Max(1, sync.MaxItemAttempts)}).");
+            }
+
+            return true;
+        }
+
+        void Untrack(string sourceRef)
+        {
+            if (retries.RemoveAll(r => r.Item.Id == sourceRef) > 0)
+                retriesDirty = true;
+        }
+
+        // Items that failed in earlier runs go first: the cursor has already moved past them.
+        foreach (var entry in retries.ToList())
+        {
+            if (run.CapReached)
+            {
+                stoppedByCap = true;
+                goto stop;
+            }
+
+            var retried = await ProcessAsync(entry.Item, run, exporterFailuresStop: true, ct);
+            unflushed |= retried == Outcome.Exported;
+            if (retried == Outcome.FetchFailed)
+                TrackRetry(entry.Item); // the list already holds it, so this never fails
+            else
+                Untrack(entry.Item.Id);
+        }
+
+        await foreach (var change in source.GetChangesAsync(committedCursor, ct))
         {
             switch (change)
             {
@@ -148,8 +203,15 @@ public sealed class ConnectivityPipeline
                     unflushed |= outcome == Outcome.Exported;
                     if (outcome == Outcome.FetchFailed)
                     {
-                        holdCommits = true;
-                        run.Errors.Add($"{upsert.Item.DisplayName}: not committed past this item; the next run starts again from the last commit.");
+                        if (!TrackRetry(upsert.Item))
+                        {
+                            holdCommits = true;
+                            run.Errors.Add($"{upsert.Item.DisplayName}: the retry list is full, so nothing is committed past this item; the next run starts again from the last commit.");
+                        }
+                    }
+                    else
+                    {
+                        Untrack(upsert.Item.Id); // the feed brought it again and it went through
                     }
                     break;
 
@@ -160,11 +222,22 @@ public sealed class ConnectivityPipeline
                         goto stop;
                     }
                     sinceCommit++;
+                    var tenant = d.TenantContext ?? (run.TenantContext.Length > 0 ? run.TenantContext : null);
+                    if (tenant is null)
+                    {
+                        // Without the tenant the document id is unknown, and a deletion under the wrong id would silently do nothing.
+                        run.Failed++;
+                        run.Errors.Add($"{d.SourceRef}: a deletion came before any item and without a tenant, so nothing is committed past it.");
+                        holdCommits = true;
+                        break;
+                    }
+
+                    Untrack(d.SourceRef);
                     var deletion = new DocumentDeletion(
-                        Id: DocumentId(_sourceType, run.TenantContext, d.SourceRef),
+                        Id: DocumentId(_sourceType, tenant, d.SourceRef),
                         SourceRef: d.SourceRef,
                         SourceType: _sourceType,
-                        TenantContext: run.TenantContext,
+                        TenantContext: tenant,
                         Reason: d.Reason,
                         DetectedAt: DateTimeOffset.UtcNow);
 
@@ -198,6 +271,11 @@ public sealed class ConnectivityPipeline
 
                 case SourceChange.Reset reset:
                     run.FullRun = true;
+                    if (retries.Count > 0)
+                    {
+                        retries.Clear(); // a full listing follows, which brings every item that still exists
+                        retriesDirty = true;
+                    }
                     collectedRefs?.Clear();
                     refsTruncated = false;
                     run.Issues.Add(new ValidationIssue(ValidationSeverity.Warning, "SYNC_RESET", "Full run: " + reset.Reason, scope));
@@ -209,6 +287,15 @@ public sealed class ConnectivityPipeline
         // The end of the stream, or the item cap: every item before the latest checkpoint has been handled, so it can be committed.
         await CommitAsync();
         if (unflushed) await FlushAsync(); // documents after the last checkpoint, or held back by a failed fetch
+        if (retriesDirty && !holdCommits)
+        {
+            // The retry list changed with no checkpoint to carry it (retries alone, or no new changes): save it with the cursor
+            // already committed.
+            version = (await store.SaveAsync(scope, RetryEnvelope.Write(committedCursor, retries), version, ct)).Version;
+            run.SyncCommitted = true;
+        }
+
+        run.RetriesPending = retries.Count;
 
         if (sync.CollectSourceRefs && run.FullRun && !stoppedByCap)
         {
@@ -362,6 +449,7 @@ public sealed class ConnectivityPipeline
         public List<string>? SeenSourceRefs { get; set; }
         public bool SourceRefsTruncated { get; set; }
         public int Unchanged { get; set; }
+        public int RetriesPending { get; set; }
         public List<(string DocId, string Version)> PendingVersions { get; } = [];
         public string? SyncScope { get; set; }
         public bool FullRun { get; set; }
@@ -408,7 +496,8 @@ public sealed class ConnectivityPipeline
             ItemsDeleted: Deleted,
             SeenSourceRefs: SeenSourceRefs,
             SourceRefsTruncated: SourceRefsTruncated,
-            ItemsUnchanged: Unchanged);
+            ItemsUnchanged: Unchanged,
+            RetriesPending: RetriesPending);
     }
 
     private static NormalisedDocument Normalise(SourceItem item, TextExtractionResult extraction, PipelineOptions options, string sourceType)

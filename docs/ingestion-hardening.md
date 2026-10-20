@@ -1,6 +1,6 @@
 # Plan: ingestion hardening (informed by Rag.NET)
 
-**Status:** plan, 2026-10-20. Nothing here is built yet. Work packages (WP) are sized and written so the smaller coding model can
+**Status:** built, 2026-10-20 (plan section 26). WP4 was built without `FindAsync`: see its section. Work packages (WP) are sized and written so the smaller coding model can
 take them one at a time. The ones marked **(owner model)** need design judgement and stay with the main model.
 
 ## Where this comes from
@@ -167,7 +167,13 @@ Shape, from `sync-and-deletions.md`: the stored sync state carries a small retry
 at). A failed fetch adds the item to the list and lets the cursor move on. Each run first retries listed items through
 `FindAsync`, a new optional connector method that fetches one item by ref and returns null if it's gone. An item that succeeds,
 is upserted again by the feed, or is deleted leaves the list. After `MaxItemAttempts` (default 5) the item is dropped with an
-error in the report, so a permanent failure never blocks the rest. Decisions needed while building: where the retry list lives
+error in the report, so a permanent failure never blocks the rest.
+
+**As built:** the list rides inside the stored cursor (`otail-retry-v1:` + JSON, only while it is non-empty, so plain cursors and
+stores are unchanged and list and cursor are saved in one write). The failed `SourceItem` is stored and retried with the
+connector's own `FetchAsync`, so no connector needed a new method; an item that has vanished uses up its attempts and is dropped
+with an error. Extraction failures are not retried, as the design says. `SyncOptions.MaxItemAttempts` (5) and `MaxRetryItems`
+(100); `IngestionReport.RetriesPending`. The original design notes follow. Decisions needed while building: where the retry list lives
 (`SyncState` gains a field, versus a separate key in the store); how `FindAsync` is offered without breaking connectors (a default
 interface member returning "not supported", which keeps today's hold-the-cursor behaviour for that connector). Tests follow the
 design's list. Kept with the main model.

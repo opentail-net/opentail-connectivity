@@ -152,15 +152,128 @@ public sealed class IncrementalSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task A_failed_fetch_holds_the_cursor_before_it_so_the_item_comes_round_again()
+    public async Task A_failed_fetch_goes_on_the_retry_list_and_the_cursor_moves_on()
     {
         var report = await Run(new Scripted(["U:a", "C:1", "U:b", "C:2", "U:c", "C:3"], failFetch: "b"));
 
-        Assert.Equal("1", (await Store().LoadAsync("test:acme:things"))!.Cursor);
-        Assert.Contains("export c", _log);                // the rest of the run still exports
-        Assert.Equal("flush", _log[^1]);                  // and is flushed
+        var (cursor, retries) = Envelope((await Store().LoadAsync("test:acme:things"))!.Cursor);
+        Assert.Equal("3", cursor);                          // no longer pinned at "1"
+        Assert.Equal(["b"], retries);
+        Assert.Contains("export c", _log);
         Assert.Equal(1, report.ItemsFailed);
-        Assert.Contains(report.Errors, e => e.Contains("not committed past this item"));
+        Assert.Equal(1, report.RetriesPending);
+        Assert.Contains(report.Errors, e => e.Contains("will be retried on the next run"));
+    }
+
+    [Fact]
+    public async Task The_next_run_retries_first_and_a_success_clears_the_list()
+    {
+        await Run(new Scripted(["U:a", "C:1", "U:b", "C:2"], failFetch: "b"));
+        _log.Clear();
+
+        var second = new Scripted(["U:c", "C:3"]);
+        var report = await Run(second);
+
+        Assert.Equal(["2"], second.CursorsAskedFor);       // the connector sees its own cursor, not the wrapper
+        Assert.Equal("export b", _log[0]);                  // the retried item goes first
+        Assert.Contains("export c", _log);
+        Assert.Equal("3", (await Store().LoadAsync("test:acme:things"))!.Cursor); // plain again: the list is empty
+        Assert.Equal(0, report.RetriesPending);
+    }
+
+    [Fact]
+    public async Task A_retry_that_succeeds_with_no_new_changes_still_saves_the_cleared_list()
+    {
+        await Run(new Scripted(["U:a", "C:1", "U:b", "C:2"], failFetch: "b"));
+
+        var report = await Run(new Scripted([]));
+
+        Assert.Equal("2", (await Store().LoadAsync("test:acme:things"))!.Cursor);
+        Assert.Equal(0, report.RetriesPending);
+    }
+
+    [Fact]
+    public async Task An_item_that_always_fails_is_dropped_after_the_attempt_limit_and_never_blocks_the_cursor()
+    {
+        var sync = new SyncOptions(CheckpointEveryItems: 1, MaxItemAttempts: 3);
+        await Run(new Scripted(["U:a", "C:1", "U:b", "C:2"], failFetch: "b"), sync: sync);
+        await Run(new Scripted(["U:c", "C:3"], failFetch: "b"), sync: sync);
+        var last = await Run(new Scripted(["U:d", "C:4"], failFetch: "b"), sync: sync);
+
+        Assert.Equal("4", (await Store().LoadAsync("test:acme:things"))!.Cursor);
+        Assert.Equal(0, last.RetriesPending);
+        Assert.Contains(last.Errors, e => e.Contains("dropped from the retry list after 3 failed attempts"));
+    }
+
+    [Fact]
+    public async Task A_full_retry_list_falls_back_to_holding_the_cursor()
+    {
+        var report = await Run(new Scripted(["U:a", "C:1", "U:b", "C:2", "U:c", "C:3"], "b", "c"),
+            sync: new SyncOptions(CheckpointEveryItems: 1, MaxRetryItems: 1));
+
+        var (cursor, retries) = Envelope((await Store().LoadAsync("test:acme:things"))!.Cursor);
+        Assert.Equal("2", cursor);                          // b fitted on the list; c did not, so nothing past c commits
+        Assert.Equal(["b"], retries);
+        Assert.Contains(report.Errors, e => e.Contains("retry list is full"));
+    }
+
+    [Fact]
+    public async Task A_deletion_or_a_reset_clears_the_item_from_the_retry_list()
+    {
+        await Run(new Scripted(["U:a", "C:1", "U:b", "C:2"], failFetch: "b"));
+        await Run(new Scripted(["D:b", "C:3"], failFetch: "b") { ReportsDeletions = true });
+        Assert.Equal("3", (await Store().LoadAsync("test:acme:things"))!.Cursor);
+
+        await Run(new Scripted(["U:x", "C:4", "U:y", "C:5"], failFetch: "y"));
+        await Run(new Scripted(["R", "U:z", "C:6"], failFetch: "y"));
+        Assert.Equal("6", (await Store().LoadAsync("test:acme:things"))!.Cursor);
+    }
+
+    [Fact]
+    public async Task A_deletion_uses_its_own_tenant_and_without_one_before_any_item_holds_the_cursor()
+    {
+        var exporter = new Exporter(_log);
+        var first = await new ConnectivityPipeline(new Scripted(["C:1"]) { ReportsDeletions = true }, new Extractor(), [exporter],
+            new PipelineOptions(SyncStore: Store())).RunAsync();
+        Assert.True(first.SyncCommitted);
+
+        var tenantless = await Run(new Scripted(["D:gone", "C:2"]) { ReportsDeletions = true });
+        Assert.Equal("1", (await Store().LoadAsync("test:acme:things"))!.Cursor);
+        Assert.Contains(tenantless.Errors, e => e.Contains("without a tenant"));
+
+        var withTenant = new Exporter(_log);
+        await new ConnectivityPipeline(new TenantDeletes(), new Extractor(), [withTenant], new PipelineOptions(SyncStore: Store())).RunAsync();
+        var deletion = Assert.Single(withTenant.Deletions);
+        Assert.Equal(ConnectivityPipeline.DocumentId("file", "acme", "gone"), deletion.Id);
+    }
+
+    private sealed class TenantDeletes : IIncrementalSourceConnector
+    {
+        public string SyncScope => "test:acme:things";
+        public bool ReportsDeletions => true;
+
+        public async IAsyncEnumerable<SourceChange> GetChangesAsync(string? cursor, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            yield return new SourceChange.Delete("gone", DeletionReason.Deleted, "acme");
+            yield return new SourceChange.Checkpoint("3");
+        }
+
+        public IAsyncEnumerable<SourceItem> DiscoverAsync(CancellationToken cancellationToken = default) => AsyncEnumerable.Empty<SourceItem>();
+
+        public Task<byte[]> FetchAsync(SourceItem item, CancellationToken cancellationToken = default) => Task.FromResult(Array.Empty<byte>());
+    }
+
+    /// <summary>Reads the pipeline's stored cursor: the connector's cursor and the refs on the retry list.</summary>
+    private static (string? Cursor, List<string> Retries) Envelope(string? stored)
+    {
+        const string prefix = "otail-retry-v1:";
+        if (stored is null || !stored.StartsWith(prefix, StringComparison.Ordinal))
+            return (stored, []);
+        using var doc = JsonDocument.Parse(stored[prefix.Length..]);
+        var root = doc.RootElement;
+        return (root.GetProperty("cursor").GetString(),
+            [.. root.GetProperty("retries").EnumerateArray().Select(r => r.GetProperty("item").GetProperty("id").GetString()!)]);
     }
 
     [Fact]
