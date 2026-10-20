@@ -57,7 +57,7 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
                 if (ev is not null)
                 {
                     yielded++;
-                    yield return GmailCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail);
+                    yield return GmailCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail, _settings.UserEmail);
                     if (yielded >= options.MaxEvents)
                         yield break;
                 }
@@ -72,7 +72,7 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
         var svc = await BuildServiceAsync(ct);
         var ev = await svc.Events.Get(calendarId, eventId).ExecuteAsync(ct);
         return ev is null ? null
-            : GmailCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail);
+            : GmailCalendarMapper.MapEvent(ev, calendarId, _settings.UserEmail, _settings.UserEmail);
     }
 
     public async Task<string> CreateEventAsync(CalendarEvent draft, CancellationToken ct = default)

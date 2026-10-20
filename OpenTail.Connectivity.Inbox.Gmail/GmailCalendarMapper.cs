@@ -13,7 +13,7 @@ internal static class GmailCalendarMapper
             IsDefault: c.Primary ?? false,
             TenantContext: tenantContext);
 
-    public static CalendarEvent MapEvent(Event e, string calendarId, string tenantContext)
+    public static CalendarEvent MapEvent(Event e, string calendarId, string tenantContext, string? accountEmail = null)
         => new(
             EventId: e.Id ?? string.Empty,
             CalendarId: calendarId,
@@ -28,7 +28,7 @@ internal static class GmailCalendarMapper
             OnlineMeetingUrl: e.HangoutLink,
             ShowAs: MapTransparency(e.Transparency),
             Sensitivity: MapVisibility(e.Visibility),
-            ResponseStatus: MapSelfStatus(e.Attendees, e.Creator?.Email),
+            ResponseStatus: MapSelfStatus(e.Attendees, accountEmail),
             IsRecurring: !string.IsNullOrWhiteSpace(e.RecurringEventId),
             RecurrenceDescription: e.Recurrence is { Count: > 0 } ? e.Recurrence[0] : null,
             Organizer: e.Organizer?.Email ?? string.Empty,
@@ -68,11 +68,12 @@ internal static class GmailCalendarMapper
     };
 
     private static string MapSelfStatus(
-        IList<GCalAttendee>? attendees, string? selfEmail)
+        IList<GCalAttendee>? attendees, string? accountEmail)
     {
-        if (attendees is null || selfEmail is null) return "notResponded";
-        var self = attendees.FirstOrDefault(
-            a => string.Equals(a.Email, selfEmail, StringComparison.OrdinalIgnoreCase));
+        if (attendees is null) return "notResponded";
+        var self = attendees.FirstOrDefault(a => a.Self == true);
+        if (self is null && accountEmail is not null)
+            self = attendees.FirstOrDefault(a => string.Equals(a.Email, accountEmail, StringComparison.OrdinalIgnoreCase));
         return MapAttendeeStatus(self?.ResponseStatus);
     }
 
