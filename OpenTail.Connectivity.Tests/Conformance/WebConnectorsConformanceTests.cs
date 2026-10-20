@@ -78,7 +78,7 @@ public sealed class WebConnectorsConformanceTests
 
     private sealed class SiteCrawlFixture : IConnectorFixture
     {
-        private bool _removed;
+        private string? _removedPath;
         public IReadOnlyList<string> SecretsGiven => [];
 
         public ISourceConnector Create()
@@ -86,6 +86,8 @@ public sealed class WebConnectorsConformanceTests
             var handler = new StubHandler(req =>
             {
                 var path = req.RequestUri?.AbsolutePath;
+                if (path == _removedPath)
+                    return new HttpResponseMessage(HttpStatusCode.NotFound);
                 if (path == "/robots.txt")
                     return new HttpResponseMessage(HttpStatusCode.NotFound);
                 if (path == "/sitemap.xml")
@@ -97,8 +99,6 @@ public sealed class WebConnectorsConformanceTests
                 }
                 if (path == "/p2")
                 {
-                    if (_removed)
-                        return new HttpResponseMessage(HttpStatusCode.NotFound);
                     var html = "<html><head><title>Page 2</title></head><body>Welcome to page two</body></html>";
                     return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(html, Encoding.UTF8, "text/html") };
                 }
@@ -118,7 +118,7 @@ public sealed class WebConnectorsConformanceTests
 
         public Task RemoveOneItemAsync(string sourceRef)
         {
-            _removed = true;
+            _removedPath = new Uri(sourceRef).AbsolutePath;
             return Task.CompletedTask;
         }
     }

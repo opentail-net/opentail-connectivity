@@ -210,18 +210,21 @@ public sealed class RssFeedConnectorTests
             <rss version="2.0">
               <channel>
                 <item>
+                  <guid>duplicate-guid</guid>
                   <title>First Occurrence</title>
                   <link>https://example.com/duplicate</link>
                   <description>First</description>
                   <pubDate>Mon, 01 Jan 2026 10:00:00 +0000</pubDate>
                 </item>
                 <item>
+                  <guid>unique-guid</guid>
                   <title>Different Item</title>
                   <link>https://example.com/unique</link>
                   <description>Unique</description>
                   <pubDate>Tue, 02 Jan 2026 10:00:00 +0000</pubDate>
                 </item>
                 <item>
+                  <guid>duplicate-guid</guid>
                   <title>Second Occurrence</title>
                   <link>https://example.com/duplicate</link>
                   <description>Duplicate link should be skipped</description>
@@ -235,13 +238,42 @@ public sealed class RssFeedConnectorTests
         var items = new List<SourceItem>();
         await foreach (var item in connector.DiscoverAsync()) items.Add(item);
 
-        // Note: Current implementation uses link as ID, so checking if duplicates are handled
-        // The behavior depends on whether the implementation deduplicates or not
         var uniqueIds = items.Select(i => i.Id).Distinct().ToList();
-        
-        // If duplicates are yielded, this documents current behavior
-        // The cache (_itemCache) will overwrite, so last one wins for fetch
-        Assert.True(items.Count >= 2, "At least the two distinct links should be present");
+
+        Assert.Equal(2, uniqueIds.Count);
+        Assert.Equal(uniqueIds.Count, items.Count);
+        Assert.Contains(items, item => item.DisplayName == "First Occurrence");
+        Assert.DoesNotContain(items, item => item.DisplayName == "Second Occurrence");
+    }
+
+    [Fact]
+    public async Task AtomEntries_SameId_YieldedOnce()
+    {
+        var feedWithDuplicates = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <id>duplicate-id</id><title>First Occurrence</title>
+                <link href="https://example.com/duplicate"/><updated>2026-01-01T10:00:00Z</updated>
+              </entry>
+              <entry>
+                <id>unique-id</id><title>Unique Item</title>
+                <link href="https://example.com/unique"/><updated>2026-01-02T10:00:00Z</updated>
+              </entry>
+              <entry>
+                <id>duplicate-id</id><title>Second Occurrence</title>
+                <link href="https://example.com/duplicate"/><updated>2026-01-03T10:00:00Z</updated>
+              </entry>
+            </feed>
+            """;
+        var connector = new RssFeedConnector(MakeClient(feedWithDuplicates), "http://feed.test/atom", "tenant");
+
+        var items = await connector.DiscoverAsync().ToListAsync();
+
+        Assert.Equal(2, items.Select(item => item.Id).Distinct().Count());
+        Assert.Equal(2, items.Count);
+        Assert.Contains(items, item => item.DisplayName == "First Occurrence");
+        Assert.DoesNotContain(items, item => item.DisplayName == "Second Occurrence");
     }
 
     [Fact]

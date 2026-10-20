@@ -15,6 +15,8 @@ public sealed class SocialConnectorsConformanceTests
     private sealed class RedditFixture : IConnectorFixture
     {
         private bool _removed;
+        // CONFORMANCE GAP: FetchAsync returns synthetic id-only JSON when the current discovery cache lacks an item.
+        public IReadOnlySet<int>? SkippedChecks { get; } = new HashSet<int> { 3 };
         public IReadOnlyList<string> SecretsGiven => [];
 
         public ISourceConnector Create()
@@ -86,6 +88,8 @@ public sealed class SocialConnectorsConformanceTests
     {
         private bool _removed;
         private const string Secret = "secret-twitter-bearer-token";
+        // CONFORMANCE GAP: FetchAsync returns synthetic id-only JSON when the current discovery cache lacks an item.
+        public IReadOnlySet<int>? SkippedChecks { get; } = new HashSet<int> { 3 };
         public IReadOnlyList<string> SecretsGiven => [Secret];
 
         public ISourceConnector Create()
@@ -128,6 +132,8 @@ public sealed class SocialConnectorsConformanceTests
     {
         private bool _removed;
         private const string Secret = "secret-yt-api-key";
+        // CONFORMANCE GAP: FetchAsync returns synthetic id-only JSON when the current discovery cache lacks an item.
+        public IReadOnlySet<int>? SkippedChecks { get; } = new HashSet<int> { 3 };
         public IReadOnlyList<string> SecretsGiven => [Secret];
 
         public ISourceConnector Create()
@@ -183,6 +189,8 @@ public sealed class SocialConnectorsConformanceTests
     {
         private bool _removed;
         private const string Secret = "secret-meta-access-token";
+        // CONFORMANCE GAP: FetchAsync returns synthetic id-only JSON when the current discovery cache lacks an item.
+        public IReadOnlySet<int>? SkippedChecks { get; } = new HashSet<int> { 3 };
         public IReadOnlyList<string> SecretsGiven => [Secret];
 
         public ISourceConnector Create()

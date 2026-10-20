@@ -155,10 +155,12 @@ public static class SourceConnectorConformance
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+            byte[]? removedBytes = null;
+            var fetchThrew = false;
             try
             {
                 var removedConnector = fixture.Create();
-                await removedConnector.FetchAsync(first, timeoutCts.Token).ConfigureAwait(false);
+                removedBytes = await removedConnector.FetchAsync(first, timeoutCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
             {
@@ -166,8 +168,11 @@ public static class SourceConnectorConformance
             }
             catch (Exception ex)
             {
+                fetchThrew = true;
                 removedExceptionMessage = ex.Message;
             }
+
+            Require(fetchThrew || removedBytes is { Length: 0 }, "Check 3 failed: FetchAsync returned content for a removed item.");
         }
 
         // Check 6: Exception messages from 3 and from a deliberately broken fixture contain none of SecretsGiven.

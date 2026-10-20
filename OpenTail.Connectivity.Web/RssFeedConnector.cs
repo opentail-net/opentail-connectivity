@@ -39,9 +39,11 @@ public sealed class RssFeedConnector : ISourceConnector
             : ParseAtom(root);
 
         var count = 0;
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (id, displayName, modified, version, payload) in entries)
         {
             if (count >= _maxItems) break;
+            if (!seenIds.Add(id)) continue;
             if (_since.HasValue && modified < _since.Value) continue;
 
             cancellationToken.ThrowIfCancellationRequested();
