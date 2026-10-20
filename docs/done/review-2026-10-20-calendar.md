@@ -2,8 +2,8 @@
 
 ChatGPT reviewed `main` at `66baf45`, after two commits by the smaller model: `0121d0e` (Gmail RSVP comments, event cap) and
 `66baf45` (safety and SQLite docs). It read the source remotely and ran nothing. Each finding was checked against the code.
-**All five hold, with two narrower than reported.** Checking them turned up five more (marked **new**). Nothing below is
-fixed yet.
+**All five hold, with two narrower than reported.** Checking them turned up five more (marked **new**). **All fixed on 2026-10-20
+(plan section 25).**
 
 **Exposure.** The Host's calendar module exposes create, delete and respond as tools with `ToolRisk.ExternalEffect` or
 `ToolRisk.Destructive`. The Host's policy decides those calls (run, queue for a person, or deny), and a `ReadOnly` option
@@ -12,19 +12,31 @@ removes them. So the write boundary that finding 5 asks for exists in the Host. 
 
 ## Order of work
 
-| # | Item | Severity | Notes |
-|---|------|----------|-------|
-| K1 | Graph: zone-less times parsed as machine-local; writes send an offset *and* a zone | P1 correctness (**raised**) | every Graph event, on any non-UTC server |
-| K2 | Graph: `"calendar"` used as a calendar id | P2 | default route wrong for reads and writes |
-| K3 | Gmail: `Events.Update` replaces the whole event with a partial copy | P2 data loss | recurrence, reminders, conference details lost |
-| K4 | Gmail: RSVP status read for the creator, not the signed-in user | P2 | |
-| K5 | Recurring flag wrong: Gmail series masters, Graph listed occurrences (**new**) | P3 | Gmail half narrower than reported |
-| K6 | Gmail all-day dates and missing times (**new** in part) | P2 | machine-dependent dates; a missing time becomes "now" |
-| K7 | Graph `calendarView` reads only the first page (**new**) | P3 | |
-| K8 | Library has no calendar write boundary | P3 here | Host has one; add a read-only wrapper like `ReadOnlyInboxGuard` |
-| K9 | No Graph calendar tests | — | comes with K1, K2, K5, K7 |
+| # | Item | Severity | Notes | Fixed |
+|---|------|----------|-------|-------|
+| K1 | Graph: zone-less times parsed as machine-local; writes send an offset *and* a zone | P1 correctness (**raised**) | every Graph event, on any non-UTC server | ✅ |
+| K2 | Graph: `"calendar"` used as a calendar id | P2 | default route wrong for reads and writes | ✅ |
+| K3 | Gmail: `Events.Update` replaces the whole event with a partial copy | P2 data loss | recurrence, reminders, conference details lost | ✅ |
+| K4 | Gmail: RSVP status read for the creator, not the signed-in user | P2 | | ✅ |
+| K5 | Recurring flag wrong: Gmail series masters, Graph listed occurrences (**new**) | P3 | Gmail half narrower than reported | ✅ |
+| K6 | Gmail all-day dates and missing times (**new** in part) | P2 | machine-dependent dates; a missing time becomes "now" | ✅ |
+| K7 | Graph `calendarView` reads only the first page (**new**) | P3 | | ✅ |
+| K8 | Library has no calendar write boundary | P3 here | Host has one; add a read-only wrapper like `ReadOnlyInboxGuard` | ✅ |
+| K9 | No Graph calendar tests | — | comes with K1, K2, K5, K7 | ✅ |
 
-## K1. Graph times *(confirmed; worse than reported)*
+### Checklist
+
+- [x] K1: Graph times — shared `CalendarTime` helper; writes send UTC wall-clock time
+- [x] K2: Graph default calendar route fixed
+- [x] K3: Gmail updates use PATCH (not PUT/replace)
+- [x] K4: Gmail RSVP status uses the `Self = true` attendee
+- [x] K5: recurring flag correct for Gmail masters and Graph occurrences
+- [x] K6: Gmail all-day dates parsed in calendar zone; missing times skip the event
+- [x] K7: Graph calendar view follows `@odata.nextLink` pages
+- [x] K8: `ReadOnlyCalendarAdapter` added
+- [x] K9: Graph calendar tests added (with K1, K2, K5, K7)
+
+## K1. Graph times *(confirmed; worse than reported)* ✅
 
 `OpenTail.Connectivity.Inbox.Graph/GraphCalendarMapper.cs:41-45` parses `DateTimeTimeZone.DateTime` with
 `DateTimeOffset.TryParse` and ignores `TimeZone`. Graph returns `dateTime` with **no offset**, in UTC unless a
@@ -53,7 +65,7 @@ change the process zone portably.
 - A DST-gap time maps by the documented rule.
 - `ToGraphEvent` of 09:00Z sends `"2026-10-20T09:00:00.0000000"` with `"UTC"`.
 
-## K2. Graph default calendar *(confirmed)*
+## K2. Graph default calendar *(confirmed)* ✅
 
 `GraphCalendarAdapter.cs:35` defaults `CalendarId` to the string `"calendar"` and calls `.Calendars["calendar"]`, which is
 `/users/{id}/calendars/calendar/...`. The default calendar is `/users/{id}/calendar/...`, a different route. The mapped events
@@ -67,7 +79,7 @@ or keep `null`/`""` and document it. **Tests:** with Graph's request adapter stu
 default route's URL contains `/calendar/calendarView` and not `/calendars/calendar/`, and an explicit id gives
 `/calendars/{id}/calendarView`. Do the same for event get, update and delete.
 
-## K3. Gmail updates replace the whole event *(confirmed)*
+## K3. Gmail updates replace the whole event *(confirmed)* ✅
 
 `GmailCalendarAdapter.UpdateEventAsync` (~88-92) calls `Events.Update(ToGoogleEvent(updated), ...)`. `Update` replaces the
 whole resource, and `ToGoogleEvent` builds a new event from the model's subset: summary, description, location, times and
@@ -78,14 +90,14 @@ attendees. Recurrence rules, reminders, conference data, attachments, visibility
 `Insert`. **Test:** a stubbed Google HTTP handler, as `GmailCalendarAdapterTests` already uses. The update issues a PATCH, and
 its body has no `recurrence`, `reminders` or `conferenceData` keys, so they survive server-side.
 
-## K4. Gmail RSVP status *(confirmed)*
+## K4. Gmail RSVP status *(confirmed)* ✅
 
 `GmailCalendarMapper.cs:31` matches attendees against `e.Creator?.Email`. For an invitation someone else created, that's the
 wrong person. **Fix:** use the attendee with `Self == true` (Google sets it on the calendar owner's entry), falling back to
 the account email when no attendee is marked. **Test:** the creator is someone else, and the `self` attendee has accepted, so
 the mapped status is `accepted`.
 
-## K5. Recurring flag *(Gmail half narrower than reported; Graph half new)*
+## K5. Recurring flag *(Gmail half narrower than reported; Graph half new)* ✅
 
 - **Gmail:** listing uses `SingleEvents = true`, so listed events are occurrences with `RecurringEventId`, and the flag is
   right for them. It is wrong only for `GetEventAsync` on a series master, which has `Recurrence` and no `RecurringEventId`.
@@ -96,7 +108,7 @@ the mapped status is `accepted`.
 
 **Tests:** mapper tests for each case (a Gmail master, a Gmail occurrence, a Graph occurrence, a Graph single instance).
 
-## K6. Gmail dates *(confirmed in part; new in part)*
+## K6. Gmail dates *(confirmed in part; new in part)* ✅
 
 Google normally returns `dateTime` with an offset, so timed Gmail events are usually right. The real Gmail bugs are these:
 - All-day events have only `date` (`2026-10-20`), which `TryParse` reads as **machine-local** midnight. **Fix:** parse it as a
@@ -109,14 +121,14 @@ Google normally returns `dateTime` with an offset, so timed Gmail events are usu
 **Tests:** an all-day event on 2026-10-20 in `Europe/Berlin` maps to 2026-10-19T22:00Z, whatever the machine zone. An event
 with no start is not returned.
 
-## K7. Graph reads one page *(new)*
+## K7. Graph reads one page *(new)* ✅
 
 `GetEventsAsync` calls `CalendarView.GetAsync` once with `$top = MaxEvents`. Graph pages server-side and may return fewer
 items plus an `@odata.nextLink`, which is ignored. **Fix:** follow `OdataNextLink` (through the SDK's `PageIterator` or
 `WithUrl`) until `MaxEvents` is reached. The Graph inbox adapter already reads next links: reuse that pattern. **Test:** a stub
 returning two pages yields both, up to `MaxEvents`.
 
-## K8. Write boundary *(confirmed; covered in the Host)*
+## K8. Write boundary *(confirmed; covered in the Host)* ✅
 
 The library's `ICalendarAdapter` mixes reads and writes. Splitting the interface is a breaking change with little gain, given
 the Host already gates every write tool by risk. Instead:
@@ -134,6 +146,6 @@ the Host already gates every write tool by risk. Instead:
 
 ## Suggested batches
 
-- **Me:** K1 and K6 (the shared time helper and its DST rule), and K3 (PATCH semantics).
+- **Me:** K1 and K6 (the shared time helper and its DST rule), and K3 (PATCH semantics). ✅
 - **Smaller model:** K2, K4, K5, K7, K8. Each is local and fully specified above, and Graph calendar tests come with
-  K2/K5/K7.
+  K2/K5/K7. ✅

@@ -46,19 +46,33 @@ These go at the top of every prompt to the coding model:
 
 ## Order and batches
 
-| Batch | WPs | Who | Size |
-|---|---|---|---|
-| A | WP0, WP1, WP2, WP3 | coding model | medium |
-| B | WP4 | **owner model** | medium |
-| C | WP7a, WP9 | coding model | medium |
-| D | WP6, WP7b, WP8 | coding model | medium |
-| E | WP5 | coding model | small |
+| Batch | WPs | Who | Size | Done |
+|---|---|---|---|---|
+| A | WP0, WP1, WP2, WP3 | coding model | medium | ✅ |
+| B | WP4 | **owner model** | medium | ✅ |
+| C | WP7a, WP9 | coding model | medium | ✅ |
+| D | WP6, WP7b, WP8 | coding model | medium | ✅ |
+| E | WP5 | coding model | small | ✅ |
 
 A before B (WP4 builds on WP1's pipeline path). C can run in parallel with B. D after C (WP7b uses WP7a's suite).
 
+### Checklist
+
+- [x] WP0: bring design docs up to date
+- [x] WP1: deletions through the sync core
+- [x] WP2: JSONL deletion exporter
+- [x] WP3: full-run source refs for deletion by comparison
+- [x] WP4: retry list instead of holding the cursor *(owner model)*
+- [x] WP5: folder connector reports deletions after a complete walk
+- [x] WP6: skip unchanged items by source version
+- [x] WP7a: connector conformance suite + first three connectors
+- [x] WP7b: conformance for remaining connectors
+- [x] WP8: verification labels
+- [x] WP9: RSS and sitemap regression tests
+
 ---
 
-## WP0. Bring the design docs up to date (docs only, small)
+## WP0. Bring the design docs up to date (docs only, small) ✅
 
 Files: `docs/design/sync-and-deletions.md`, `docs/design/testing-and-verification.md`.
 - In `sync-and-deletions.md`, replace the status line ("proposal. Nothing here is implemented") with what's true: the smaller
@@ -69,7 +83,7 @@ Files: `docs/design/sync-and-deletions.md`, `docs/design/testing-and-verificatio
   `docs/ingestion-hardening.md`.
 - No other edits. Commit `WP0: design docs say what is built`.
 
-## WP1. Deletions through the sync core (medium)
+## WP1. Deletions through the sync core (medium) ✅
 
 Goal: a connector can report "this item is gone", and the pipeline passes it to exporters that can apply it, in order with
 upserts, before the next checkpoint commits.
@@ -123,7 +137,7 @@ Tests (`OpenTail.Connectivity.Tests/IncrementalSyncTests.cs`, extend its `Script
 
 Done when the tests pass and the existing incremental and SQLite tests still pass. Commit `WP1: deletions through the sync core`.
 
-## WP2. JSONL deletion exporter (small)
+## WP2. JSONL deletion exporter (small) ✅
 
 File: `Export/JsonlDeletionExporter.cs`, next to `JsonlDocumentExporter.cs` (copy its file handling, flush and disposal pattern).
 - `public sealed class JsonlDeletionExporter : IConnectivityExporter, IDeletionExporter`. `ExportAsync` does nothing (it is
@@ -134,7 +148,7 @@ File: `Export/JsonlDeletionExporter.cs`, next to `JsonlDocumentExporter.cs` (cop
   the other.
 - Commit `WP2: JSONL deletion exporter`.
 
-## WP3. Full-run comparison for connectors without a change feed (medium)
+## WP3. Full-run comparison for connectors without a change feed (medium) ✅
 
 Goal: SQL-like connectors can't see deletions incrementally. After a complete full run, the report lists every source ref seen,
 so a consumer can remove what it holds and the list lacks. The pipeline itself never deletes by absence.
@@ -157,7 +171,7 @@ so a consumer can remove what it holds and the list lacks. The pipeline itself n
 - Also one test through the real SQLite connector: two rows, a full run with `CollectSourceRefs`, both ids listed.
 - Commit `WP3: full-run source refs for deletion by comparison`.
 
-## WP4. Retries instead of holding the cursor (medium) **(owner model)**
+## WP4. Retries instead of holding the cursor (medium) **(owner model)** ✅
 
 Problem: in an incremental run, a failed fetch sets `holdCommits`, so nothing after it commits. An item that always fails (a 403,
 a file removed between listing and fetch, a corrupt object) pins the cursor at that point forever, and every later run re-reads
@@ -178,7 +192,7 @@ with an error. Extraction failures are not retried, as the design says. `SyncOpt
 interface member returning "not supported", which keeps today's hold-the-cursor behaviour for that connector). Tests follow the
 design's list. Kept with the main model.
 
-## WP5. Folder connector reports deletions after a complete walk (small)
+## WP5. Folder connector reports deletions after a complete walk (small) ✅
 
 File: `Connectors/FolderSourceConnector.cs`. It isn't an incremental connector and keeps its own `FolderSyncState`.
 - After `DiscoverAsync` finishes enumerating **completely** (not cancelled, no exception), expose
@@ -191,7 +205,7 @@ File: `Connectors/FolderSourceConnector.cs`. It isn't an incremental connector a
   nothing. A third scan after saving reports nothing.
 - Commit `WP5: folder connector lists files deleted since the last scan`.
 
-## WP6. Skip unchanged items before fetching (medium)
+## WP6. Skip unchanged items before fetching (medium) ✅
 
 Goal: when a source gives a version token (ETag, version id, entry `updated`), the pipeline skips fetch, extraction and export for
 an item whose token matches the one stored after its last successful export.
@@ -233,7 +247,7 @@ an item whose token matches the one stored after its last successful export.
   6. The site crawl sets it from `ETag`.
 - Commit `WP6: skip unchanged items by source version`.
 
-## WP7a. Connector conformance suite, plus the first three connectors (medium)
+## WP7a. Connector conformance suite, plus the first three connectors (medium) ✅
 
 Model: `OpenTail.Connectivity.Memory/Conformance/MemoryBackendConformance.cs`, a public class that runs named checks against
 any backend and fails with a clear message. Do the same for connectors.
@@ -274,13 +288,13 @@ any backend and fails with a clear message. Do the same for connectors.
   your report.
 - Commit `WP7a: connector conformance suite`.
 
-## WP7b. Conformance for the remaining connectors (medium)
+## WP7b. Conformance for the remaining connectors (medium) ✅
 
 After WP7a, apply the suite to `EmlFileConnector`, `MboxConnector` (temp files), `RssFeedConnector` and `SiteCrawlConnector` (stub
 `HttpMessageHandler`, as their existing tests do), and the four social connectors (stub handlers; reuse what `SocialTests` does).
 Same gap rule. Commit `WP7b: conformance for every connector`.
 
-## WP8. Verification labels (docs, small)
+## WP8. Verification labels (docs, small) ✅
 
 Files: `README.md` (the package table) and the `<Description>` of each packable project (in its `.csproj`, or via
 `Directory.Build.props` if that's where descriptions live).
@@ -295,7 +309,7 @@ Files: `README.md` (the package table) and the `<Description>` of each packable 
 - Append " Verification: <label>." to each package description.
 - Commit `WP8: verification labels`.
 
-## WP9. Web regression gaps (small)
+## WP9. Web regression gaps (small) ✅
 
 Files: tests for `RssFeedConnector` and `SitemapParser` (extend the existing test files).
 Add cases only where they're missing (check first):

@@ -4,24 +4,41 @@ ChatGPT reviewed `main` again at `1cc3b40`, reading the source without running a
 [first review](review-2026-10-20.md) hold: memory scope, redaction, missing ACL, vector upsert and delete, folder state,
 Reddit, SQLite read-only and the direct-send rate limit. It reported seven issues. Each one was checked against the code.
 **All seven hold.** Two of them are still-open parts of E2 from the first review. One is a mistake in my own first-review fix
-(S6). All seven were fixed on 2026-10-20 (plan section 23).
+(S6). All seven were fixed on 2026-10-20 (plan section 23). Third-pass items T1–T4 were also applied.
+**All findings are fixed.**
 
 None of these classes is used by the Host yet, so this remains library-level exposure.
 
 ## Order of work
 
-| # | Item | Severity | Notes |
-|---|------|----------|-------|
-| S1 | SQLite incremental cursor can stop making progress | P1 integrity (**raised** from P2) | livelock, not just repeated work |
-| S2 | Approval: double send, swallowed persistence, no rate slot or policy re-check at send | P2 | this is E2 from the first review, unchanged |
-| S3 | File symlinks escape the folder root | P2 boundary | the gap the first review accepted |
-| S4 | Crawler redirect boundary is checked after the request | P2 boundary | documented, not enforced |
-| S5 | Memory request filters don't really narrow | P3 correctness | my comment claims they do |
-| S6 | SQLite discovery advertises null-id rows that fetch can't read | P3 | my B7 advice caused it |
+| # | Item | Severity | Notes | Fixed |
+|---|------|----------|-------|-------|
+| S1 | SQLite incremental cursor can stop making progress | P1 integrity (**raised** from P2) | livelock, not just repeated work | ✅ |
+| S2 | Approval: double send, swallowed persistence, no rate slot or policy re-check at send | P2 | this is E2 from the first review, unchanged | ✅ |
+| S3 | File symlinks escape the folder root | P2 boundary | the gap the first review accepted | ✅ |
+| S4 | Crawler redirect boundary is checked after the request | P2 boundary | documented, not enforced | ✅ |
+| S5 | Memory request filters don't really narrow | P3 correctness | my comment claims they do | ✅ |
+| S6 | SQLite discovery advertises null-id rows that fetch can't read | P3 | my B7 advice caused it | ✅ |
+
+### Checklist
+
+- [x] S1: SQLite incremental cursor livelock — store both modified and id in the cursor
+- [x] S2: email approval double send, swallowed persistence, no rate slot *(E2)*
+- [x] S3: file symlinks escape the folder root
+- [x] S4: crawler redirect boundary enforced before the request
+- [x] S5: memory request filters now take the stricter bound
+- [x] S6: SQLite discovery skips null-id rows (discovery and incremental)
+
+**Third-pass items (T1–T4):**
+
+- [x] T1: `PolicyEnforcingEmailSender.CreateApprovalService()` is the documented production wiring path
+- [x] T2: path-prefix check applied to page-fetch redirects
+- [x] T3: empty-string ids excluded from incremental queries
+- [x] T4: redacted hits use an allowlist; summarised hits keep their metadata
 
 Each fix starts with its regression test, which must fail first, as before.
 
-## S1. SQLite incremental cursor can stop making progress *(confirmed; worse than reported)*
+## S1. SQLite incremental cursor can stop making progress *(confirmed; worse than reported)* ✅
 
 `OpenTail.Connectivity.Sql/SqliteSourceConnector.cs`: the checkpoint holds only the last modified value (`KeysetCursor` stores
 `lastMod`). A resumed run starts at `modified >= @m`, so it re-reads every row that shares the checkpointed value. The comment
@@ -50,7 +67,7 @@ a bulk import.
 Five consecutive pipeline runs reach all five rows, each exactly once. An old-format cursor still resumes, and is rewritten in
 the new form.
 
-## S2. Email approval *(confirmed; this is E2)*
+## S2. Email approval *(confirmed; this is E2)* ✅
 
 Everything the review reports is already in [E2](review-2026-10-20.md#e2-double-send-on-approval-silent-persistence):
 - `ApproveAsync` checks `pending`, sends, then updates the status, so it can send twice.
@@ -70,7 +87,7 @@ One addition: `EmailSendApprovalService` takes an `IEmailRateLimiter` and an `Em
 calls still compile. Approvals and direct sends must share one limiter instance for the cap to mean anything. Say so in both
 classes' docs.
 
-## S3. File symlinks escape the folder root *(confirmed)*
+## S3. File symlinks escape the folder root *(confirmed)* ✅
 
 `FolderSourceConnector.cs`: directory links are skipped, but `Directory.GetFiles` still returns file symlinks. `FetchAsync`
 checks the link's own path, which is inside the root, and `File.ReadAllBytesAsync` then follows the link outside it. The first
@@ -84,7 +101,7 @@ in the remarks.
 **Test:** a supported file inside the root that is a symlink to a file outside it. It isn't discovered, and `FetchAsync` on
 it throws `UnauthorizedAccessException`. Skip the test when the OS refuses to create the symlink, as the B4 test does.
 
-## S4. Crawler redirect boundary is checked after the request *(confirmed)*
+## S4. Crawler redirect boundary is checked after the request *(confirmed)* ✅
 
 `SiteCrawlConnector.cs` checks `response.RequestMessage.RequestUri` after `GetAsync`. If the `HttpClient`'s handler follows
 redirects (the default), the off-origin request has already been sent, possibly to an internal address. The class remarks
@@ -106,7 +123,7 @@ The connector can't change a handler it was given, and .NET has no per-request s
 The recorded URIs never include `internal`, for page fetch, sitemap and robots. A same-origin 302 is followed. A chain longer
 than 5 hops stops.
 
-## S5. Memory request filters don't really narrow *(confirmed)*
+## S5. Memory request filters don't really narrow *(confirmed)* ✅
 
 `MemoryRetriever.BuildFilter`: `FromUtc`, `ToUtc`, `Workspace`, `ProjectScope` and `RepositoryScope` use
 `filter.X ?? request.X`. If the access filter has a value, the request's value is ignored. A request for a narrower time
@@ -126,7 +143,7 @@ the caller only gets what the access filter allows. But it breaks the contract, 
 - Access workspace `a` with a request for `b`: none, and `scope-conflict` is counted.
 - Access with no workspace and a request for `b`: only `b`.
 
-## S6. SQLite discovery advertises null-id rows that fetch can't read *(confirmed; my advice caused it)*
+## S6. SQLite discovery advertises null-id rows that fetch can't read *(confirmed; my advice caused it)* ✅
 
 B7 gave null-id rows the id `row:<n>`, copying the CSV connector. But `FetchAsync` reads the row back with
 `WHERE IdField = @id`, which can never match a NULL id. The row is discovered, fetched as empty bytes, and never ingested. The
@@ -162,14 +179,14 @@ The first review document's release note said `NotApplicable`. The shipped name 
 
 ChatGPT checked the fixes again. Each point was weighed against the code rather than applied as written.
 
-| # | Finding | Verdict | What to do |
-|---|---------|---------|------------|
-| T1 | Approval service runs without policy or limiter when constructed with two arguments | **Valid** | Make wiring hard to get wrong (below), not just fail construction |
-| T2 | Redirects can leave `AllowedPathPrefixes` | **Valid, P3** | Check page redirects against the prefixes too |
-| T3 | Empty-string ids skipped by discovery, read by incremental sync | **Valid, P3** | One rule in both modes: `AND id <> ''` |
-| T4 | Redacted records keep source metadata (URL, actor, labels) | **Partly valid** | Allowlist for *Redacted* hits only, not *Summarized* ones |
-| T5 | The cursor can miss late rows with coarse timestamps | Already documented | One line in the docs: an integer change counter works best |
-| T6 | CI status for `af4da2d` unverified | **Not an issue** | CI passed on Windows and Ubuntu (checked after the push) |
+| # | Finding | Verdict | What to do | Fixed |
+|---|---------|---------|------------|-------|
+| T1 | Approval service runs without policy or limiter when constructed with two arguments | **Valid** | Make wiring hard to get wrong (below), not just fail construction | ✅ |
+| T2 | Redirects can leave `AllowedPathPrefixes` | **Valid, P3** | Check page redirects against the prefixes too | ✅ |
+| T3 | Empty-string ids skipped by discovery, read by incremental sync | **Valid, P3** | One rule in both modes: `AND id <> ''` | ✅ |
+| T4 | Redacted records keep source metadata (URL, actor, labels) | **Partly valid** | Allowlist for *Redacted* hits only, not *Summarized* ones | ✅ |
+| T5 | The cursor can miss late rows with coarse timestamps | Already documented | One line in the docs: an integer change counter works best | — |
+| T6 | CI status for `af4da2d` unverified | **Not an issue** | CI passed on Windows and Ubuntu (checked after the push) | — |
 
 **T1.** The point stands: `new EmailSendApprovalService(store, sender)` keeps the double-send fix but skips the recipient rules
 and the cap. Failing construction when the policy has caps (the suggestion) still allows a *separate* limiter, which splits the
