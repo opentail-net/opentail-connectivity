@@ -173,6 +173,9 @@ public sealed class ConnectivityPipeline
         }
 
         // Items that failed in earlier runs go first: the cursor has already moved past them.
+        // An item that failed after the last committed checkpoint is on the list and will also come again from the stream; it is
+        // fetched once per run, by whichever reaches it first.
+        var retriedThisRun = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in retries.ToList())
         {
             if (run.CapReached)
@@ -181,6 +184,7 @@ public sealed class ConnectivityPipeline
                 goto stop;
             }
 
+            retriedThisRun.Add(entry.Item.Id);
             var retried = await ProcessAsync(entry.Item, run, exporterFailuresStop: true, ct);
             unflushed |= retried == Outcome.Exported;
             if (retried == Outcome.FetchFailed)
@@ -202,6 +206,12 @@ public sealed class ConnectivityPipeline
                     run.Discovered++;
                     sinceCommit++;
                     if (run.FullRun) sourceRefs?.Add(upsert.Item.Id);
+                    if (retriedThisRun.Contains(upsert.Item.Id))
+                    {
+                        run.Skipped++; // the retry pass already fetched its current content this run
+                        break;
+                    }
+
                     var outcome = await ProcessAsync(upsert.Item, run, exporterFailuresStop: true, ct);
                     unflushed |= outcome == Outcome.Exported;
                     if (outcome == Outcome.FetchFailed)

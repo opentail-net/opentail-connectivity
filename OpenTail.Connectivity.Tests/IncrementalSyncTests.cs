@@ -222,6 +222,24 @@ public sealed class IncrementalSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task An_item_failed_after_the_last_checkpoint_is_fetched_once_next_run_not_twice()
+    {
+        // b fails after checkpoint 1 with no checkpoint after it: it is on the retry list, and the stream from 1 brings it again.
+        await Run(new Scripted(["U:a", "C:1", "U:b"], failFetch: "b"));
+        _log.Clear();
+
+        var succeeds = await Run(new Scripted(["U:b", "U:c", "C:2"]));
+        Assert.Single(_log, l => l == "export b");
+        Assert.Equal(0, succeeds.RetriesPending);
+
+        await Run(new Scripted(["U:a", "C:3", "U:x"], failFetch: "x"));
+        var stillFailing = new Scripted(["U:x", "C:4"], failFetch: "x");
+        var failing = await Run(stillFailing);
+        Assert.Contains(failing.Errors, e => e.Contains("attempt 2 of 5")); // one attempt for this run, not two
+        Assert.DoesNotContain(failing.Errors, e => e.Contains("attempt 3 of 5"));
+    }
+
+    [Fact]
     public async Task An_item_that_always_fails_is_dropped_after_the_attempt_limit_and_never_blocks_the_cursor()
     {
         var sync = new SyncOptions(CheckpointEveryItems: 1, MaxItemAttempts: 3);
