@@ -790,7 +790,7 @@ All findings confirmed (two narrower than reported), five more found; plan in
 - [x] **[C]** K5: recurring flag wrong (Gmail masters, Graph listed occurrences).
 - [x] **[C]** K6: Gmail all-day dates machine-dependent; missing times become "now" (both adapters).
 - [x] **[C]** K7: Graph `calendarView` reads one page.
-- [x] **[C]** K8: `ReadOnlyCalendarAdapter`. *Host test that `ReadOnly` removes the write tools still to add.*
+- [x] **[C]** K8: `ReadOnlyCalendarAdapter`; Host test that write tools carry their risk and `ReadOnly` removes them.
 
 ## Background, no action planned
 
