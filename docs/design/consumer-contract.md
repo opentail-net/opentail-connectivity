@@ -45,6 +45,10 @@ consumer guesses differently, and guessing wrong on permissions leaks data.
 
 ## What a consumer should do
 
+> **Shared-indexing status:** this library transports ACL metadata but does not enforce tenant isolation or provide complete
+> permission capture for Graph, Google Drive or generic object storage. Follow the staged [source permissions and isolation
+> plan](source-permissions-and-isolation.md) before using these connectors for per-user shared search.
+
 1. **Upsert by `Id`.** Replace the stored document when `ContentHash` differs; ignore it when it matches.
 2. **Keep `SourceRef` and `TenantContext`** alongside the `Id`, so records can be traced back to the source and removed per tenant.
 3. **Apply deletions deliberately.** Remove documents only on an explicit deletion list, or after a full run whose

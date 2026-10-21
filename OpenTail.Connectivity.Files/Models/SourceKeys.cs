@@ -21,6 +21,9 @@ public static class SourceKeys
     /// <summary><c>true</c> only when the connector read the permissions from the source.</summary>
     public const string AclCaptured = "source.acl.captured";
 
+    /// <summary>UTC timestamp at which the connector captured the ACL.</summary>
+    public const string AclCapturedAt = "source.acl.capturedAt";
+
     /// <summary><c>true</c> when the principal list was cut at its cap; the item is then marked restricted.</summary>
     public const string AclTruncated = "source.acl.truncated";
 
@@ -30,7 +33,7 @@ public static class SourceKeys
 
 /// <summary>
 /// Permissions as metadata. <b>Absence is not permission:</b> unless <see cref="SourceKeys.AclCaptured"/> is <c>true</c>, a
-/// consumer must treat the item as restricted. Permissions describe the source when the item was fetched; re-ingest to refresh.
+/// consumer must treat the item as restricted. Captured ACLs include a capture timestamp; permissions still require refresh.
 /// </summary>
 public static class SourceAcl
 {
@@ -43,6 +46,7 @@ public static class SourceAcl
         {
             [SourceKeys.AclCaptured] = "true",
             [SourceKeys.AclVisibility] = visibility,
+            [SourceKeys.AclCapturedAt] = DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
         };
         if (principals is null) return meta;
 
