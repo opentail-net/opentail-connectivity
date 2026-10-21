@@ -6,12 +6,13 @@ namespace OpenTail.Connectivity.Files.Security;
 
 /// <summary>
 /// Trusted identity information supplied by the host, not by a search request. Principal IDs include the authenticated user
-/// and verified group memberships.
+/// and verified group memberships. The host sets <see cref="PrincipalResolutionComplete"/> only after identity resolution succeeds.
 /// </summary>
 public sealed record SourceAccessContext(
     string TenantContext,
     IReadOnlySet<string> EffectivePrincipalIds,
-    TimeSpan MaxAclAge);
+    TimeSpan MaxAclAge,
+    bool PrincipalResolutionComplete);
 
 public enum DocumentAccessStatus
 {
@@ -43,7 +44,7 @@ public static class DocumentAccessPolicy
         ArgumentNullException.ThrowIfNull(context);
 
         if (string.IsNullOrWhiteSpace(context.TenantContext) || context.EffectivePrincipalIds is null ||
-            context.MaxAclAge <= TimeSpan.Zero)
+            context.MaxAclAge <= TimeSpan.Zero || !context.PrincipalResolutionComplete)
             return Deny(DocumentAccessStatus.DeniedInvalidContext);
 
         if (!string.Equals(document.TenantContext, context.TenantContext, StringComparison.Ordinal))
@@ -83,7 +84,12 @@ public static class DocumentAccessPolicy
         foreach (var principal in principals)
         {
             if (string.Equals(principal, PublicPrincipal, StringComparison.Ordinal))
+            {
+                if (!TryRead(metadata, SourceKeys.AclVisibility, out var visibility) ||
+                    !string.Equals(visibility, "public", StringComparison.OrdinalIgnoreCase))
+                    return Deny(DocumentAccessStatus.DeniedInvalidAcl);
                 return new DocumentAccessDecision(true, DocumentAccessStatus.AllowedPublic);
+            }
 
             if (context.EffectivePrincipalIds.Any(id => string.Equals(id, principal, StringComparison.Ordinal)))
                 return new DocumentAccessDecision(true, DocumentAccessStatus.AllowedPrincipal);

@@ -9,8 +9,9 @@ public sealed class DocumentAccessPolicyTests
         new("doc-1", "Payroll", "Confidential content", "hash", "source-1", "graph", tenant,
             DateTimeOffset.UnixEpoch, DateTimeOffset.UtcNow, metadata ?? new Dictionary<string, string>());
 
-    private static SourceAccessContext Context(string tenant = "acme", string[]? principals = null, int maxAclAgeMinutes = 15) =>
-        new(tenant, new HashSet<string>(principals ?? [], StringComparer.Ordinal), TimeSpan.FromMinutes(maxAclAgeMinutes));
+    private static SourceAccessContext Context(string tenant = "acme", string[]? principals = null, int maxAclAgeMinutes = 15,
+        bool principalResolutionComplete = true) =>
+        new(tenant, new HashSet<string>(principals ?? [], StringComparer.Ordinal), TimeSpan.FromMinutes(maxAclAgeMinutes), principalResolutionComplete);
 
     private static Dictionary<string, string> CapturedAcl(params string[] principals) => SourceAcl.Captured("private", principals);
 
@@ -38,6 +39,15 @@ public sealed class DocumentAccessPolicyTests
             Context(principals: ["entra:user:alice"]));
         Assert.True(result.Allowed);
         Assert.Equal(DocumentAccessStatus.AllowedPrincipal, result.Status);
+    }
+
+    [Fact]
+    public void Incomplete_principal_resolution_is_denied_even_with_matching_principal()
+    {
+        var result = DocumentAccessPolicy.Evaluate(Document(metadata: CapturedAcl("entra:user:alice")),
+            Context(principals: ["entra:user:alice"], principalResolutionComplete: false));
+        Assert.False(result.Allowed);
+        Assert.Equal(DocumentAccessStatus.DeniedInvalidContext, result.Status);
     }
 
     [Fact]
@@ -160,8 +170,18 @@ public sealed class DocumentAccessPolicyTests
     [Fact]
     public void Explicit_anonymous_public_grant_is_allowed()
     {
-        var result = DocumentAccessPolicy.Evaluate(Document(metadata: CapturedAcl(DocumentAccessPolicy.PublicPrincipal)), Context());
+        var metadata = SourceAcl.Captured("public", [DocumentAccessPolicy.PublicPrincipal]);
+        var result = DocumentAccessPolicy.Evaluate(Document(metadata: metadata), Context());
         Assert.True(result.Allowed);
         Assert.Equal(DocumentAccessStatus.AllowedPublic, result.Status);
+    }
+
+    [Fact]
+    public void Public_principal_with_private_visibility_is_denied()
+    {
+        var result = DocumentAccessPolicy.Evaluate(
+            Document(metadata: SourceAcl.Captured("private", [DocumentAccessPolicy.PublicPrincipal])), Context());
+        Assert.False(result.Allowed);
+        Assert.Equal(DocumentAccessStatus.DeniedInvalidAcl, result.Status);
     }
 }
