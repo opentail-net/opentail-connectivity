@@ -331,6 +331,17 @@ public sealed class ConnectivityPipeline
     /// <summary>One item, from fetch to export. Counts it in <paramref name="run"/>. Adds an archive's child ids to <paramref name="sourceRefs"/>.</summary>
     private async Task<Outcome> ProcessAsync(SourceItem item, Run run, bool exporterFailuresStop, SourceRefCollector? sourceRefs, CancellationToken ct)
     {
+        var configuredExpander = _options.Expander;
+        if (configuredExpander?.ValidateSourceId(item) is { } sourceIdError)
+        {
+            run.Failed++;
+            run.Errors.Add($"{item.DisplayName}: {sourceIdError}");
+            run.Issues.Add(new ValidationIssue(ValidationSeverity.Error, "SOURCE_ID_RESERVED", sourceIdError, item.Id));
+            sourceRefs?.Remove(item.Id);
+            sourceRefs?.MarkIncomplete(item.Id, "A source item was rejected because its ID conflicts with the expander's child-ID namespace.");
+            return Outcome.Rejected;
+        }
+
         if (run.TenantContext.Length == 0) run.TenantContext = item.TenantContext;
 
         string? itemVersion = null;
@@ -338,7 +349,7 @@ public sealed class ConnectivityPipeline
             itemVersion = v;
 
         var docId = DocumentId(_sourceType, item.TenantContext, item.Id);
-        var expander = _options.Expander is { } e && e.CanExpand(item) ? e : null;
+        var expander = configuredExpander is { } e && e.CanExpand(item) ? e : null;
 
         var ingestedWhole = false; // a version but no child list: an archive exported as one document before expansion was set
         if (_options.VersionStore is { } versionStore && itemVersion is not null)
@@ -403,7 +414,7 @@ public sealed class ConnectivityPipeline
         var manifest = _options.VersionStore is { } store ? ReadManifestOrNull(await store.GetAsync(ManifestKey(docId), ct)) : null;
         run.ExpandedChildren[item.Id] = null;
         if (sourceRefs is null) return;
-        if (manifest is null) sourceRefs.MarkIncomplete(item.Id);
+        if (manifest is null) sourceRefs.MarkIncomplete(item.Id, "The archive could not be read and its entries are not known.");
         else foreach (var child in manifest) sourceRefs.Add(child); // the archive's own ref stays: it may still be an old document
     }
 
@@ -635,11 +646,11 @@ public sealed class ConnectivityPipeline
         }
 
         /// <summary>Some items' refs are unknown this run, so absence proves nothing: reported like a truncated list.</summary>
-        public void MarkIncomplete(string because)
+        public void MarkIncomplete(string because, string reason)
         {
             Truncated = true;
             issues.Add(new ValidationIssue(ValidationSeverity.Warning, "SOURCE_REFS_INCOMPLETE",
-                "An archive could not be read and its entries are not known, so the list of seen source refs must not be used for deletions.", because));
+                $"{reason} The list of seen source refs must not be used for deletions.", because));
         }
 
         public void Reset()

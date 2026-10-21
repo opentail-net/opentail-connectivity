@@ -7,6 +7,9 @@ namespace OpenTail.Connectivity.Files.Contracts;
 /// </summary>
 public interface IItemExpander
 {
+    /// <summary>Returns an error when a root source id conflicts with this expander's child-id namespace.</summary>
+    string? ValidateSourceId(SourceItem item) => null;
+
     /// <summary>Whether <paramref name="item"/> should be expanded rather than extracted. Decided from the item alone, without content.</summary>
     bool CanExpand(SourceItem item);
 

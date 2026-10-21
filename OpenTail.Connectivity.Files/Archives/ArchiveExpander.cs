@@ -45,10 +45,16 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
 
     private const long RatioFloorBytes = 1024 * 1024;
     private const int MaxPathLength = 1024;
+    private const string ChildIdDelimiter = "!/";
 
     private readonly ArchiveOptions _options = options ?? new ArchiveOptions();
 
     private enum Kind { None, Zip, Tar, TarGz }
+
+    public string? ValidateSourceId(SourceItem item) =>
+        item.Id.Contains(ChildIdDelimiter, StringComparison.Ordinal)
+            ? $"The source item id contains '{ChildIdDelimiter}', which is reserved to separate archive levels in child ids."
+            : null;
 
     public bool CanExpand(SourceItem item) => KindOf(item.DisplayName) != Kind.None || KindOf("x." + item.Extension) != Kind.None;
 
@@ -57,8 +63,8 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
         var kind = KindOf(item.DisplayName);
         if (kind == Kind.None) kind = KindOf("x." + item.Extension);
         if (kind == Kind.None) throw new InvalidDataException($"'{item.DisplayName}' is not an archive this expander reads.");
-        if (item.Id.Contains("!/", StringComparison.Ordinal))
-            throw new InvalidDataException("The source item id contains '!/', which is reserved to separate archive levels in child ids.");
+        if (ValidateSourceId(item) is { } sourceIdError)
+            throw new InvalidDataException(sourceIdError);
 
         var run = new Expansion(item, cancellationToken);
         try

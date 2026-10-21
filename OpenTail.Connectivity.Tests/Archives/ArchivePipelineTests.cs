@@ -108,6 +108,26 @@ public sealed class ArchivePipelineTests : IDisposable
     }
 
     [Fact]
+    public async Task A_plain_source_id_cannot_collide_with_an_archive_child_id()
+    {
+        var source = new Source();
+        source.Items["a.zip"] = (Zip(("report.txt", Text("from archive"))), "v1");
+        source.Items["a.zip!/report.txt"] = (Encoding.UTF8.GetBytes(Text("from source")), "v1");
+        var exporter = new Exporter();
+        var options = new PipelineOptions(Expander: new ArchiveExpander(), Sync: new SyncOptions(CollectSourceRefs: true));
+
+        var report = await Pipeline(source, exporter, options).RunAsync();
+
+        var exported = Assert.Single(exporter.Exported);
+        Assert.Equal("s3://bucket/a.zip!/report.txt", exported.SourceRef);
+        Assert.Equal(1, report.ItemsFailed);
+        Assert.Contains(report.Errors, e => e.Contains("reserved"));
+        Assert.Contains(report.ValidationIssues, i => i.Code == "SOURCE_ID_RESERVED");
+        Assert.Contains(report.ValidationIssues, i => i.Code == "SOURCE_REFS_INCOMPLETE");
+        Assert.True(report.SourceRefsTruncated);
+    }
+
+    [Fact]
     public async Task A_refused_archive_fails_with_its_reason_and_exports_nothing()
     {
         var source = new Source();
