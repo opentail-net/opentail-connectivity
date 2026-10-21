@@ -20,6 +20,7 @@ public sealed class ArchivePipelineTests : IDisposable
         public List<string> Fetched { get; } = [];
         public HashSet<string> FailFetch { get; } = [];
         public bool ReportsDeletions { get; init; }
+        public bool EmitReset { get; set; }
         public string SyncScope => "test:acme:archives";
 
         public async IAsyncEnumerable<SourceItem> DiscoverAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -31,6 +32,7 @@ public sealed class ArchivePipelineTests : IDisposable
 
         public async IAsyncEnumerable<SourceChange> GetChangesAsync(string? cursor, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            if (EmitReset) yield return new SourceChange.Reset("test reset");
             await foreach (var item in DiscoverAsync(cancellationToken)) yield return new SourceChange.Upsert(item);
             foreach (var name in Deleted) yield return new SourceChange.Delete(Item(name).Id, DeletionReason.Deleted, "acme");
             yield return new SourceChange.Checkpoint("c" + Guid.NewGuid().ToString("N"));
@@ -316,6 +318,31 @@ public sealed class ArchivePipelineTests : IDisposable
             SyncStore: new FileSyncCursorStore(_cursorFile), Sync: new SyncOptions(CollectSourceRefs: true))).RunAsync();
 
         Assert.True(report.FullRun);
+        Assert.True(report.SourceRefsTruncated);
+    }
+
+    [Fact]
+    public async Task A_retried_invalid_id_stays_incomplete_after_a_full_reset()
+    {
+        var source = new Source();
+        source.Items["a.zip!/report.txt"] = (Encoding.UTF8.GetBytes(Text("payload")), "v1");
+        source.FailFetch.Add("a.zip!/report.txt");
+        var syncStore = new FileSyncCursorStore(_cursorFile);
+        var initialOptions = new PipelineOptions(SyncStore: syncStore);
+
+        var initial = await Pipeline(source, new Exporter(), initialOptions).RunAsync();
+
+        Assert.Equal(1, initial.RetriesPending);
+        source.EmitReset = true;
+        var migratedOptions = new PipelineOptions(Expander: new ArchiveExpander(), SyncStore: syncStore,
+            Sync: new SyncOptions(CollectSourceRefs: true));
+
+        var report = await Pipeline(source, new Exporter(), migratedOptions).RunAsync();
+
+        Assert.True(report.FullRun);
+        Assert.Contains(report.ValidationIssues, i => i.Code == "SOURCE_ID_RESERVED");
+        Assert.Contains(report.ValidationIssues, i => i.Code == "SOURCE_REFS_INCOMPLETE");
+        Assert.DoesNotContain("s3://bucket/a.zip!/report.txt", report.SeenSourceRefs!);
         Assert.True(report.SourceRefsTruncated);
     }
 }

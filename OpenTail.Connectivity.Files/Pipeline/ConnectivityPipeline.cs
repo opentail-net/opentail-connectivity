@@ -213,11 +213,18 @@ public sealed class ConnectivityPipeline
                     if (retriedThisRun.Contains(upsert.Item.Id))
                     {
                         run.Skipped++; // the retry pass already fetched its current content this run
-                        if (run.FullRun && sourceRefs is not null && run.ExpandedChildren.TryGetValue(upsert.Item.Id, out var children))
+                        if (run.FullRun && sourceRefs is not null)
                         {
-                            if (children is not null)
+                            // The retry pass ran without a source-ref collector, so revalidate before treating the item as accounted for.
+                            if (_options.Expander?.ValidateSourceId(upsert.Item) is { } sourceIdError)
+                            {
+                                sourceRefs.Remove(upsert.Item.Id);
+                                sourceRefs.MarkIncomplete(upsert.Item.Id,
+                                    "A previously retried source item was rejected because its ID conflicts with the expander's child-ID namespace.");
+                            }
+                            else if (run.ExpandedChildren.TryGetValue(upsert.Item.Id, out var children) && children is not null)
                                 ArchiveRefs(upsert.Item.Id, children, sourceRefs);
-                            else
+                            else if (run.ExpandedChildren.ContainsKey(upsert.Item.Id))
                                 await ArchiveFailedAsync(upsert.Item, DocumentId(_sourceType, upsert.Item.TenantContext, upsert.Item.Id), run, sourceRefs, ct);
                         }
                         break;
