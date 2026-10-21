@@ -9,6 +9,13 @@ public sealed class SiteCrawlConnectorTests
         return new HttpClient(handler);
     }
 
+    private static async Task<List<SourceItem>> CollectAsync(IAsyncEnumerable<SourceItem> items)
+    {
+        var result = new List<SourceItem>();
+        await foreach (var item in items) result.Add(item);
+        return result;
+    }
+
     [Fact]
     public async Task DiscoverAsync_stays_on_same_domain()
     {
@@ -190,6 +197,35 @@ public sealed class SiteCrawlConnectorTests
         Assert.Equal(beforeFetch, afterFetch); // no additional network hit
     }
 
+    [Fact]
+    public async Task DiscoverAsync_respects_declared_legacy_charset_for_discovery_and_fetch()
+    {
+        var encoding = CodePagesEncodingProvider.Instance.GetEncoding("windows-1252")!;
+        var body = encoding.GetBytes("<html><title>Café</title><body>Crème brûlée</body></html>");
+        var connector = new SiteCrawlConnector(new HttpClient(new ByteArrayHtmlHandler(body, "windows-1252")),
+            "http://example.com/", "tenant", new WebCrawlOptions(RespectRobotsTxt: false, MaxRetries: 0));
+
+        var item = Assert.Single(await CollectAsync(connector.DiscoverAsync()));
+
+        Assert.Equal("Café", item.DisplayName);
+        Assert.Contains("Crème brûlée", Encoding.UTF8.GetString(await connector.FetchAsync(item))); // discovery cache
+        Assert.Contains("Crème brûlée", Encoding.UTF8.GetString(await connector.FetchAsync(item))); // uncached HTTP path
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("not-a-real-charset")]
+    public async Task DiscoverAsync_falls_back_to_utf8_for_missing_or_invalid_charset(string? charset)
+    {
+        var body = Encoding.UTF8.GetBytes("<html><title>Café</title><body>Crème brûlée</body></html>");
+        var connector = new SiteCrawlConnector(new HttpClient(new ByteArrayHtmlHandler(body, charset)),
+            "http://example.com/", "tenant", new WebCrawlOptions(RespectRobotsTxt: false, MaxRetries: 0));
+
+        var item = Assert.Single(await CollectAsync(connector.DiscoverAsync()));
+
+        Assert.Equal("Café", item.DisplayName);
+    }
+
     private sealed class CountingFakeHandler : HttpMessageHandler
     {
         private readonly Dictionary<string, string> _pages;
@@ -244,5 +280,17 @@ public sealed class SiteCrawlConnectorTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
             => Task.FromResult(_responseFactory());
+    }
+
+    private sealed class ByteArrayHtmlHandler(byte[] body, string? charset) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var content = new ByteArrayContent(body);
+            var contentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/html");
+            if (charset is not null) contentType.CharSet = charset;
+            content.Headers.ContentType = contentType;
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = content });
+        }
     }
 }

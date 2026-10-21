@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 
 namespace OpenTail.Connectivity.Web;
 
@@ -175,7 +176,7 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
         var bytes = await WebContentReader.ReadBoundedAsync(response.Content, MaxResponseBytes, cancellationToken);
         if (bytes is null)
             throw new InvalidOperationException("The requested page exceeds the configured response size limit.");
-        return bytes;
+        return Encoding.UTF8.GetBytes(DecodeHtml(bytes, response.Content.Headers.ContentType?.CharSet));
     }
 
     private async Task<(string? Html, string? ETag)> FetchHtmlWithRetryAsync(Uri uri, CancellationToken cancellationToken)
@@ -195,7 +196,7 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
                         return (null, null);
                     var bytes = await WebContentReader.ReadBoundedAsync(response.Content, MaxResponseBytes, cancellationToken);
                     var etag = response.Headers.ETag?.Tag ?? (response.Headers.TryGetValues("ETag", out var etags) ? etags.FirstOrDefault() : null);
-                    return (bytes is null ? null : System.Text.Encoding.UTF8.GetString(bytes), etag);
+                    return (bytes is null ? null : DecodeHtml(bytes, response.Content.Headers.ContentType?.CharSet), etag);
                 }
 
                 if (!IsTransient(response.StatusCode) || attempt >= _options.MaxRetries)
@@ -227,6 +228,39 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
         return statusCode == System.Net.HttpStatusCode.RequestTimeout ||
                statusCode == (System.Net.HttpStatusCode)429 ||
                code >= 500;
+    }
+
+    /// <summary>Uses the declared charset; missing or unsupported declarations fall back to UTF-8.</summary>
+    private static Encoding GetResponseEncoding(string? charset)
+    {
+        if (string.IsNullOrWhiteSpace(charset))
+            return Encoding.UTF8;
+
+        charset = charset.Trim().Trim('"', '\'');
+        if (charset.Length == 0)
+            return Encoding.UTF8;
+
+        try
+        {
+            return Encoding.GetEncoding(charset);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
+        {
+            try
+            {
+                return CodePagesEncodingProvider.Instance.GetEncoding(charset) ?? Encoding.UTF8;
+            }
+            catch (Exception providerException) when (providerException is ArgumentException or NotSupportedException)
+            {
+                return Encoding.UTF8;
+            }
+        }
+    }
+
+    private static string DecodeHtml(byte[] bytes, string? charset)
+    {
+        var html = GetResponseEncoding(charset).GetString(bytes);
+        return html.Length > 0 && html[0] == '\uFEFF' ? html[1..] : html;
     }
 
     private IEnumerable<Uri> ExtractLinks(string html, Uri baseUri)
