@@ -180,6 +180,50 @@ public sealed class ObjectStorageConnectorTests
     }
 
     [Fact]
+    public async Task Fetch_rejects_key_outside_configured_prefix_without_reading_it()
+    {
+        var client = new InMemoryObjectStoreClient("bucket")
+            .Put("reports/summary.txt", "summary")
+            .Put("private/secret.txt", "secret");
+        var connector = new ObjectStorageConnector(client, "tenant", new ObjectStorageOptions(Prefix: "reports/"));
+        var item = new SourceItem("memory://bucket/private/secret.txt", "secret.txt", "txt", 6,
+            DateTimeOffset.UnixEpoch.AddDays(1), "tenant");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => connector.FetchAsync(item));
+
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Fetch_rejects_item_from_another_tenant_without_reading_it()
+    {
+        var client = new InMemoryObjectStoreClient("bucket").Put("reports/summary.txt", "summary");
+        var connector = new ObjectStorageConnector(client, "tenant-a", new ObjectStorageOptions(Prefix: "reports/"));
+        var item = new SourceItem("memory://bucket/reports/summary.txt", "summary.txt", "txt", 7,
+            DateTimeOffset.UnixEpoch.AddDays(1), "tenant-b");
+
+        await Assert.ThrowsAsync<ArgumentException>(() => connector.FetchAsync(item));
+
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Fetch_allows_item_within_configured_prefix()
+    {
+        var client = new InMemoryObjectStoreClient("bucket")
+            .Put("reports/summary.txt", "summary")
+            .Put("private/secret.txt", "secret");
+        var connector = new ObjectStorageConnector(client, "tenant", new ObjectStorageOptions(Prefix: "reports/"));
+        var item = Assert.Single(await CollectAsync(connector.DiscoverAsync()));
+
+        var bytes = await connector.FetchAsync(item);
+
+        Assert.Equal("summary", Encoding.UTF8.GetString(bytes));
+        Assert.Contains("read:reports/summary.txt", client.Calls);
+        Assert.DoesNotContain("read:private/secret.txt", client.Calls);
+    }
+
+    [Fact]
     public async Task Fetch_decompresses_gzip_and_rejects_expansion_over_the_size_cap()
     {
         var compressed = Gzip(Encoding.UTF8.GetBytes("hello from gzip"));

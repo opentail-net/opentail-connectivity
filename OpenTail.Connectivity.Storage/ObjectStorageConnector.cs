@@ -112,9 +112,14 @@ public sealed class ObjectStorageConnector : IIncrementalSourceConnector
     public async Task<byte[]> FetchAsync(SourceItem item, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(item);
+        if (!string.Equals(item.TenantContext, _tenantContext, StringComparison.Ordinal))
+            throw new ArgumentException("The source item does not belong to this tenant.", nameof(item));
         if (!item.Id.StartsWith(_idPrefix, StringComparison.Ordinal))
             throw new ArgumentException("The source item does not belong to this object store.", nameof(item));
         var key = item.Id[_idPrefix.Length..];
+        if (key.Length == 0 || !key.StartsWith(_options.Prefix, StringComparison.Ordinal))
+            throw new ArgumentException("The source item is outside the configured object-storage prefix.", nameof(item));
+
         var maxFileSize = _filter.Options.MaxFileSizeBytes ?? DefaultMaxFileSizeBytes;
         var content = await _client.ReadAsync(key, maxFileSize, cancellationToken).ConfigureAwait(false);
         if (content.Truncated)
