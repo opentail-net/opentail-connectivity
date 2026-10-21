@@ -184,6 +184,20 @@ public sealed class ArchiveExpanderTests
     }
 
     [Fact]
+    public void Source_ids_cannot_use_the_archive_level_delimiter()
+    {
+        var firstRoot = Item("a.zip");
+        var nested = Zip(("report.txt", "report"));
+        var first = new ArchiveExpander(new ArchiveOptions(MaxDepth: 2))
+            .Expand(firstRoot, Zip(("inner.zip", nested)));
+        var collidingRoot = new SourceItem(firstRoot.Id + "!/inner.zip", "inner.zip", "zip", 1, Modified, "acme");
+
+        Assert.Equal(first.Items[0].Item.Id, collidingRoot.Id + "!/report.txt");
+        var ex = Assert.Throws<InvalidDataException>(() => new ArchiveExpander().Expand(collidingRoot, Zip(("report.txt", "report"))));
+        Assert.Contains("reserved", ex.Message);
+    }
+
+    [Fact]
     public void A_corrupt_nested_archive_is_one_refused_entry()
     {
         var outer = Zip(("inner.zip", Encoding.UTF8.GetBytes("garbage")), ("top.txt", Encoding.UTF8.GetBytes("top")));
@@ -230,6 +244,20 @@ public sealed class ArchiveExpanderTests
         Assert.Equal(["a.txt"], Paths(new ArchiveExpander().Expand(Item("x.tgz"), Gzip(tar))));
         // Object storage decompresses .gz on fetch, so the same name can arrive as a plain tar.
         Assert.Equal(["a.txt"], Paths(new ArchiveExpander().Expand(Item("x.tar.gz"), tar)));
+    }
+
+    [Fact]
+    public void Nested_tar_gzip_output_and_extracted_files_share_the_total_byte_limit()
+    {
+        var tar = Tar(w => TarFile(w, "payload.txt", new string('x', 100)));
+        var gzip = Gzip(tar);
+        var limit = gzip.Length + tar.Length + 50;
+        var outer = Zip(("inner.tar.gz", gzip));
+
+        var ex = Assert.Throws<InvalidDataException>(() => new ArchiveExpander(new ArchiveOptions(MaxDepth: 2, MaxTotalBytes: limit))
+            .Expand(Item("outer.zip"), outer));
+
+        Assert.Contains($"{limit} bytes", ex.Message);
     }
 
     [Fact]

@@ -6,7 +6,7 @@ namespace OpenTail.Connectivity.Files.Archives;
 
 /// <param name="MaxEntries">Entries in one archive, counted before any is read (zip) or as they come (tar). More and the item is refused.</param>
 /// <param name="MaxEntryBytes">A larger entry is refused. At most this much (plus one read) is decompressed for it.</param>
-/// <param name="MaxTotalBytes">Bytes decompressed for one fetched item, nested archives included. More and the item is refused.</param>
+/// <param name="MaxTotalBytes">Bytes decompressed for one fetched item, nested archives included. Intermediate archive layers and extracted content are each counted, so nested content can be counted more than once. More and the item is refused.</param>
 /// <param name="MaxCompressionRatio">
 /// An entry, or a whole <c>.tar.gz</c>, expanding beyond this many times its compressed size is taken for an archive bomb and the
 /// item is refused. Checked once the output passes 1 MB, so small, very compressible files go through.
@@ -57,6 +57,8 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
         var kind = KindOf(item.DisplayName);
         if (kind == Kind.None) kind = KindOf("x." + item.Extension);
         if (kind == Kind.None) throw new InvalidDataException($"'{item.DisplayName}' is not an archive this expander reads.");
+        if (item.Id.Contains("!/", StringComparison.Ordinal))
+            throw new InvalidDataException("The source item id contains '!/', which is reserved to separate archive levels in child ids.");
 
         var run = new Expansion(item, cancellationToken);
         try
@@ -272,9 +274,10 @@ public sealed class ArchiveExpander(ArchiveOptions? options = null) : IItemExpan
         while ((n = gzip.Read(buffer)) > 0)
         {
             run.Ct.ThrowIfCancellationRequested();
+            run.TotalBytes += n;
+            if (run.TotalBytes > _options.MaxTotalBytes)
+                throw new LimitException($"More than {_options.MaxTotalBytes.ToString(CultureInfo.InvariantCulture)} bytes would be decompressed; the archive is refused.");
             output.Write(buffer, 0, n);
-            if (output.Length > _options.MaxTotalBytes)
-                throw new LimitException($"'{Printable(name)}' decompresses to more than {_options.MaxTotalBytes.ToString(CultureInfo.InvariantCulture)} bytes; the archive is refused.");
             if (output.Length > RatioFloorBytes && output.Length > (double)_options.MaxCompressionRatio * content.Length)
                 throw new LimitException($"'{Printable(name)}' expands more than {_options.MaxCompressionRatio}:1, like an archive bomb; the archive is refused.");
         }
