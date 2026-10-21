@@ -50,13 +50,24 @@ public static class DocumentAccessPolicy
             return Deny(DocumentAccessStatus.DeniedTenantMismatch);
 
         var metadata = document.Metadata;
-        if (!TryRead(metadata, SourceKeys.AclCaptured, out var captured) ||
-            !string.Equals(captured, "true", StringComparison.OrdinalIgnoreCase))
+        var capturedEntries = Find(metadata, SourceKeys.AclCaptured);
+        if (capturedEntries.Length == 0)
+            return Deny(DocumentAccessStatus.DeniedAclNotCaptured);
+        if (capturedEntries.Length != 1 || !bool.TryParse(capturedEntries[0], out var isCaptured))
+            return Deny(DocumentAccessStatus.DeniedInvalidAcl);
+        if (!isCaptured)
             return Deny(DocumentAccessStatus.DeniedAclNotCaptured);
 
-        if (TryRead(metadata, SourceKeys.AclTruncated, out var truncated) &&
-            string.Equals(truncated, "true", StringComparison.OrdinalIgnoreCase))
-            return Deny(DocumentAccessStatus.DeniedAclTruncated);
+        var truncatedEntries = Find(metadata, SourceKeys.AclTruncated);
+        if (truncatedEntries.Length > 1)
+            return Deny(DocumentAccessStatus.DeniedInvalidAcl);
+        if (truncatedEntries.Length == 1)
+        {
+            if (!bool.TryParse(truncatedEntries[0], out var isTruncated))
+                return Deny(DocumentAccessStatus.DeniedInvalidAcl);
+            if (isTruncated)
+                return Deny(DocumentAccessStatus.DeniedAclTruncated);
+        }
 
         if (!TryRead(metadata, SourceKeys.AclCapturedAt, out var capturedAtText) ||
             !DateTimeOffset.TryParse(capturedAtText, CultureInfo.InvariantCulture, DateTimeStyles.None, out var capturedAt))
@@ -102,6 +113,10 @@ public static class DocumentAccessPolicy
         }
         return found;
     }
+
+    private static string[] Find(IReadOnlyDictionary<string, string>? metadata, string key) =>
+        metadata?.Where(pair => string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
+            .Select(pair => pair.Value).ToArray() ?? [];
 
     private static bool TryParsePrincipals(string json, out List<string> principals)
     {

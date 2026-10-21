@@ -59,6 +59,85 @@ public sealed class DocumentAccessPolicyTests
     }
 
     [Fact]
+    public void Malformed_truncated_flag_is_denied()
+    {
+        var metadata = CapturedAcl("entra:user:alice");
+        metadata[SourceKeys.AclTruncated] = "maybe";
+        var result = DocumentAccessPolicy.Evaluate(Document(metadata: metadata), Context(principals: ["entra:user:alice"]));
+        Assert.False(result.Allowed);
+        Assert.Equal(DocumentAccessStatus.DeniedInvalidAcl, result.Status);
+    }
+
+    [Fact]
+    public void Duplicate_truncated_flags_are_denied()
+    {
+        var metadata = new Dictionary<string, string>(CapturedAcl("entra:user:alice"), StringComparer.Ordinal)
+        {
+            ["SOURCE.ACL.TRUNCATED"] = "false",
+            [SourceKeys.AclTruncated] = "false",
+        };
+        var result = DocumentAccessPolicy.Evaluate(Document(metadata: metadata), Context(principals: ["entra:user:alice"]));
+        Assert.False(result.Allowed);
+        Assert.Equal(DocumentAccessStatus.DeniedInvalidAcl, result.Status);
+    }
+
+    [Fact]
+    public void Uncaptured_acl_is_denied_even_with_matching_principal()
+    {
+        var metadata = CapturedAcl("entra:user:alice");
+        metadata[SourceKeys.AclCaptured] = "false";
+        var result = DocumentAccessPolicy.Evaluate(Document(metadata: metadata), Context(principals: ["entra:user:alice"]));
+        Assert.False(result.Allowed);
+        Assert.Equal(DocumentAccessStatus.DeniedAclNotCaptured, result.Status);
+    }
+
+    [Fact]
+    public void Future_acl_timestamp_is_denied()
+    {
+        var metadata = CapturedAcl("entra:user:alice");
+        metadata[SourceKeys.AclCapturedAt] = DateTimeOffset.UtcNow.AddMinutes(1).ToString("O");
+        var result = DocumentAccessPolicy.Evaluate(Document(metadata: metadata), Context(principals: ["entra:user:alice"]));
+        Assert.False(result.Allowed);
+        Assert.Equal(DocumentAccessStatus.DeniedAclStale, result.Status);
+    }
+
+    [Fact]
+    public void Public_visibility_without_explicit_public_principal_is_denied()
+    {
+        var result = DocumentAccessPolicy.Evaluate(Document(metadata: SourceAcl.Captured("public", [])), Context());
+        Assert.False(result.Allowed);
+        Assert.Equal(DocumentAccessStatus.DeniedNoMatchingPrincipal, result.Status);
+    }
+
+    [Fact]
+    public void Missing_principal_list_is_denied()
+    {
+        var metadata = CapturedAcl("entra:user:alice");
+        metadata.Remove(SourceKeys.AclPrincipals);
+        var result = DocumentAccessPolicy.Evaluate(Document(metadata: metadata), Context(principals: ["entra:user:alice"]));
+        Assert.False(result.Allowed);
+        Assert.Equal(DocumentAccessStatus.DeniedInvalidAcl, result.Status);
+    }
+
+    [Fact]
+    public void Invalid_or_duplicate_captured_flags_are_denied_as_invalid_acl()
+    {
+        var invalid = CapturedAcl("entra:user:alice");
+        invalid[SourceKeys.AclCaptured] = "maybe";
+        var duplicate = new Dictionary<string, string>(CapturedAcl("entra:user:alice"), StringComparer.Ordinal)
+        {
+            ["SOURCE.ACL.CAPTURED"] = "false",
+        };
+
+        foreach (var metadata in new[] { invalid, duplicate })
+        {
+            var result = DocumentAccessPolicy.Evaluate(Document(metadata: metadata), Context(principals: ["entra:user:alice"]));
+            Assert.False(result.Allowed);
+            Assert.Equal(DocumentAccessStatus.DeniedInvalidAcl, result.Status);
+        }
+    }
+
+    [Fact]
     public void Malformed_principal_json_is_denied()
     {
         var metadata = CapturedAcl("entra:user:alice");
