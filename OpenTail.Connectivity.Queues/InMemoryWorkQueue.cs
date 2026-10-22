@@ -19,13 +19,14 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         var now = _time.GetUtcNow();
         lock (_gate)
         {
-            _entries.RemoveAll(e => e.State == State.Done && e.FinishedAt + _options.KeyRetentionOrDefault <= now);
+            _entries.RemoveAll(e => e.State is State.Done or State.Cancelled && e.FinishedAt + _options.KeyRetentionOrDefault <= now);
             if (request.Key is { } key && _entries.FirstOrDefault(e => e.Queue == request.Queue && e.Key == key) is { } existing)
                 return Task.FromResult(new EnqueueResult(existing.Id, Duplicate: true));
             var entry = new Entry(request.Queue, Guid.NewGuid().ToString("N"), request.Tenant, request.Body, request.Key,
                 new Dictionary<string, string>(request.Headers ?? new Dictionary<string, string>(), StringComparer.Ordinal), now, ++_sequence)
             {
                 NotBefore = request.NotBefore ?? now,
+                Source = request.Source,
             };
             _entries.Add(entry);
             return Task.FromResult(new EnqueueResult(entry.Id, Duplicate: false));
@@ -58,7 +59,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
                 e.Attempts++;
                 e.LeasedUntil = now + lease;
                 e.LeaseToken = Guid.NewGuid().ToString("N");
-                leased.Add(new LeasedJob(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, e.Attempts, e.EnqueuedAt, e.LeasedUntil, e.LeaseToken));
+                leased.Add(new LeasedJob(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, e.Attempts, e.EnqueuedAt, e.LeasedUntil, e.LeaseToken, e.Source));
             }
         }
 
@@ -98,7 +99,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
                 .Where(e => e.Queue == queue && e.State == State.Dead)
                 .OrderBy(e => e.FinishedAt).ThenBy(e => e.Sequence)
                 .Take(max)
-                .Select(e => new DeadLetter(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, e.Attempts, e.EnqueuedAt, e.FinishedAt, e.DeadReason!, e.LastError))
+                .Select(e => new DeadLetter(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, e.Attempts, e.EnqueuedAt, e.FinishedAt, e.DeadReason!, e.LastError, e.Source))
                 .ToList());
         }
     }
@@ -111,8 +112,60 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
             if (_entries.FirstOrDefault(e => e.Queue == queue && e.Id == id && e.State == State.Dead) is not { } e)
                 return Task.FromResult(false);
             _entries.Remove(e);
-            _entries.Add(new Entry(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, now, ++_sequence) { NotBefore = now });
+            _entries.Add(new Entry(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, now, ++_sequence) { NotBefore = now, Source = e.Source });
             return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> DeleteDeadLetterAsync(string queue, string id, CancellationToken ct = default)
+    {
+        lock (_gate)
+            return Task.FromResult(_entries.RemoveAll(e => e.Queue == queue && e.Id == id && e.State == State.Dead) == 1);
+    }
+
+    public Task<bool> CancelAsync(string queue, string id, string reason, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        var now = _time.GetUtcNow();
+        lock (_gate)
+        {
+            if (_entries.FirstOrDefault(e => e.Queue == queue && e.Id == id && e.State is State.Ready or State.Leased) is not { } e)
+                return Task.FromResult(false);
+            e.State = State.Cancelled;
+            e.DeadReason = reason;
+            e.FinishedAt = now;
+            e.LeaseToken = null; // a running worker's lease is void from here
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<bool> RunNowAsync(string queue, string id, CancellationToken ct = default)
+    {
+        var now = _time.GetUtcNow();
+        lock (_gate)
+        {
+            if (_entries.FirstOrDefault(e => e.Queue == queue && e.Id == id && e.State == State.Ready) is not { } e)
+                return Task.FromResult(false);
+            if (e.NotBefore > now) e.NotBefore = now;
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<IReadOnlyList<PendingJob>> PendingAsync(string queue, int max = 100, CancellationToken ct = default)
+    {
+        var now = _time.GetUtcNow();
+        lock (_gate)
+        {
+            return Task.FromResult<IReadOnlyList<PendingJob>>(_entries
+                .Where(e => e.Queue == queue && e.State is State.Ready or State.Leased)
+                .OrderBy(e => e.EnqueuedAt).ThenBy(e => e.Sequence)
+                .Take(max)
+                .Select(e => new PendingJob(e.Queue, e.Id, e.Tenant, e.Key, e.Source, e.Headers,
+                    e.State == State.Leased && e.LeasedUntil > now ? PendingState.Running : e.NotBefore > now ? PendingState.Delayed : PendingState.Waiting,
+                    e.Attempts, e.EnqueuedAt,
+                    e.State == State.Leased && e.LeasedUntil > now ? e.LeasedUntil : e.NotBefore > now ? e.NotBefore : null,
+                    e.LastError, System.Text.Encoding.UTF8.GetByteCount(e.Body)))
+                .ToList());
         }
     }
 
@@ -131,7 +184,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         }
     }
 
-    private enum State { Ready, Leased, Done, Dead }
+    private enum State { Ready, Leased, Done, Dead, Cancelled }
 
     private sealed class Entry(
         string queue, string id, string tenant, string body, string? key, IReadOnlyDictionary<string, string> headers, DateTimeOffset enqueuedAt, long sequence)
@@ -152,6 +205,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         public DateTimeOffset FinishedAt { get; set; }
         public string? DeadReason { get; set; }
         public string? LastError { get; set; }
+        public string? Source { get; init; }
 
         public void Kill(string reason, DateTimeOffset now)
         {

@@ -51,6 +51,13 @@ public static class WorkQueueConformance
             Check("concurrent workers never share a job", true, ConcurrentWorkersAsync),
             Check("jobs survive closing and reopening the queue", capabilities.Durable, SurvivesReopenAsync),
             Check("invalid requests are refused", true, InvalidRefusedAsync),
+            Check("a cancelled waiting or delayed job never runs", capabilities.Cancellation, CancelWaitingAsync),
+            Check("cancelling a running job revokes its lease", capabilities.Cancellation, CancelRunningAsync),
+            Check("a cancelled job's key still deduplicates", capabilities.Cancellation && capabilities.DeduplicatesKeys, CancelKeepsKeyAsync),
+            Check("run now makes a delayed job due", capabilities.DelayedDelivery, RunNowAsync),
+            Check("pending lists waiting and delayed jobs, with source, without bodies, without using up attempts", true, PendingAsync),
+            Check("pending lists running jobs", capabilities.ListsRunningJobs, PendingRunningAsync),
+            Check("a dead letter can be deleted", true, DeleteDeadLetterAsync),
         ];
     }
 
@@ -80,9 +87,10 @@ public static class WorkQueueConformance
     {
         await using var q = open(clock, new WorkQueueOptions());
         var headers = new Dictionary<string, string> { ["requester"] = "rule:7", ["trace"] = "t-1" };
-        await q.EnqueueAsync(new EnqueueRequest(Q, "tenant-b", """{"n":"ünï"}""", "k-1", Headers: headers));
+        await q.EnqueueAsync(new EnqueueRequest(Q, "tenant-b", """{"n":"ünï"}""", "k-1", Headers: headers, Source: "rule:7"));
         var job = Single(await q.LeaseAsync(Q, 1, Lease));
         Ensure(job.Tenant == "tenant-b" && job.Body == """{"n":"ünï"}""" && job.Key == "k-1", "tenant, body or key changed");
+        Ensure(job.Source == "rule:7", "the source was lost");
         Ensure(job.Headers.Count == 2 && job.Headers["requester"] == "rule:7" && job.Headers["trace"] == "t-1", "headers changed");
     }
 
@@ -265,6 +273,84 @@ public static class WorkQueueConformance
         await Refused(() => q.EnqueueAsync(Job(queue: "bad name!")), "a queue name with a space");
         await Refused(() => q.EnqueueAsync(new EnqueueRequest(Q, " ", "{}")), "a blank tenant");
         await Refused(() => q.LeaseAsync(Q, 0, Lease), "leasing zero jobs");
+    }
+
+    private static async Task CancelWaitingAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        var waiting = (await q.EnqueueAsync(Job("waiting"))).Id;
+        var delayed = (await q.EnqueueAsync(Job("delayed", notBefore: clock.GetUtcNow() + TimeSpan.FromSeconds(4)))).Id;
+        Ensure(await q.CancelAsync(Q, waiting, "operator") && await q.CancelAsync(Q, delayed, "operator"), "cancelling an unfinished job failed");
+        Ensure((await q.LeaseAsync(Q, 10, Lease)).Count == 0, "a cancelled job ran");
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(5));
+        Ensure((await q.LeaseAsync(Q, 10, Lease)).Count == 0, "a cancelled delayed job ran once due");
+        Ensure((await q.DeadLettersAsync(Q)).Count == 0, "a cancelled job went to the dead letters");
+    }
+
+    private static async Task CancelRunningAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        await q.EnqueueAsync(Job());
+        var job = Single(await q.LeaseAsync(Q, 1, Lease));
+        Ensure(await q.CancelAsync(Q, job.Id, "operator"), "cancelling a running job failed");
+        Ensure(!await q.ExtendAsync(job, Lease), "the worker could still extend a cancelled job's lease");
+        Ensure(!await q.CompleteAsync(job), "the worker could still complete a cancelled job");
+        await clock.AdvanceAsync(Lease + TimeSpan.FromSeconds(1));
+        Ensure((await q.LeaseAsync(Q, 10, Lease)).Count == 0, "a cancelled running job came back after its lease");
+    }
+
+    private static async Task CancelKeepsKeyAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        var first = await q.EnqueueAsync(Job(key: "nightly@2026-10-22"));
+        Ensure(await q.CancelAsync(Q, first.Id, "operator"), "cancelling failed");
+        Ensure((await q.EnqueueAsync(Job(key: "nightly@2026-10-22"))).Duplicate, "a cancelled job's key let the same job in again");
+    }
+
+    private static async Task RunNowAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        var id = (await q.EnqueueAsync(Job(notBefore: clock.GetUtcNow() + TimeSpan.FromMinutes(1)))).Id;
+        Ensure((await q.LeaseAsync(Q, 1, Lease)).Count == 0, "a delayed job ran early");
+        Ensure(await q.RunNowAsync(Q, id), "run now did not find the delayed job");
+        Ensure(Single(await q.LeaseAsync(Q, 1, Lease)).Id == id, "the job did not become due");
+        Ensure(!await q.RunNowAsync(Q, "no-such-job"), "run now found a job that does not exist");
+    }
+
+    private static async Task PendingAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        var waiting = (await q.EnqueueAsync(new EnqueueRequest(Q, "acme", "12345", "k", Source: "schedule:nightly"))).Id;
+        await clock.AdvanceAsync(TimeSpan.FromMilliseconds(20));
+        var delayed = (await q.EnqueueAsync(Job(notBefore: clock.GetUtcNow() + TimeSpan.FromMinutes(1)))).Id;
+        var pending = await q.PendingAsync(Q);
+        Ensure(pending.Count == 2, $"pending listed {pending.Count} jobs, not 2");
+        var w = pending.Single(p => p.Id == waiting);
+        Ensure(w.State == PendingState.Waiting && w.Source == "schedule:nightly" && w.Key == "k" && w.BodyBytes == 5 && w.Tenant == "acme",
+            "the waiting job was listed wrongly");
+        Ensure(pending.Single(p => p.Id == delayed).State == PendingState.Delayed, "the delayed job was not listed as delayed");
+        Ensure(Single(await q.LeaseAsync(Q, 1, Lease)).Attempt == 1, "listing used up an attempt");
+    }
+
+    private static async Task PendingRunningAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        await q.EnqueueAsync(Job());
+        var job = Single(await q.LeaseAsync(Q, 1, Lease));
+        var row = (await q.PendingAsync(Q)).SingleOrDefault(p => p.Id == job.Id);
+        Ensure(row is { State: PendingState.Running, Attempts: 1 }, "the running job was not listed as running");
+    }
+
+    private static async Task DeleteDeadLetterAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        await q.EnqueueAsync(Job());
+        Ensure(await q.DeadLetterAsync(Single(await q.LeaseAsync(Q, 1, Lease)), "bad"), "dead-lettering failed");
+        var id = Single(await q.DeadLettersAsync(Q)).Id;
+        Ensure(await q.DeleteDeadLetterAsync(Q, id), "deleting the dead letter failed");
+        Ensure((await q.DeadLettersAsync(Q)).Count == 0, "the deleted dead letter is still listed");
+        Ensure(!await q.DeleteDeadLetterAsync(Q, id), "a dead letter was deleted twice");
+        Ensure((await q.LeaseAsync(Q, 1, Lease)).Count == 0, "a deleted dead letter ran");
     }
 
     private static async Task Refused(Func<Task> act, string what)

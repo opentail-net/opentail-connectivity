@@ -180,6 +180,10 @@ public sealed class WorkQueueWorkerTests
         public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, CancellationToken ct = default) => Task.FromResult(false);
         public Task<IReadOnlyList<DeadLetter>> DeadLettersAsync(string queue, int max = 100, CancellationToken ct = default) => inner.DeadLettersAsync(queue, max, ct);
         public Task<bool> RedriveAsync(string queue, string id, CancellationToken ct = default) => inner.RedriveAsync(queue, id, ct);
+        public Task<bool> DeleteDeadLetterAsync(string queue, string id, CancellationToken ct = default) => inner.DeleteDeadLetterAsync(queue, id, ct);
+        public Task<bool> CancelAsync(string queue, string id, string reason, CancellationToken ct = default) => inner.CancelAsync(queue, id, reason, ct);
+        public Task<bool> RunNowAsync(string queue, string id, CancellationToken ct = default) => inner.RunNowAsync(queue, id, ct);
+        public Task<IReadOnlyList<PendingJob>> PendingAsync(string queue, int max = 100, CancellationToken ct = default) => inner.PendingAsync(queue, max, ct);
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 }

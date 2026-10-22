@@ -41,6 +41,24 @@ public interface IWorkQueue : IAsyncDisposable
 
     /// <summary>Puts a dead letter back as a fresh job (attempts reset, age counted from now). False when there is no such dead letter.</summary>
     Task<bool> RedriveAsync(string queue, string id, CancellationToken ct = default);
+
+    /// <summary>Removes a dead letter for good. False when there is no such dead letter.</summary>
+    Task<bool> DeleteDeadLetterAsync(string queue, string id, CancellationToken ct = default);
+
+    /// <summary>
+    /// Stops a job that has not finished: a waiting or delayed job never runs, and a running job's lease is revoked, so its worker
+    /// cannot complete, retry or extend it (a <see cref="WorkQueueWorker"/> then cancels the handler). The job's key keeps
+    /// deduplicating. False when the job is unknown or already finished (when <see cref="WorkQueueCapabilities.Cancellation"/>;
+    /// otherwise <see cref="NotSupportedException"/>).
+    /// </summary>
+    Task<bool> CancelAsync(string queue, string id, string reason, CancellationToken ct = default);
+
+    /// <summary>Makes a delayed job (a <see cref="EnqueueRequest.NotBefore"/> or a retry's wait) due now. False when no such job is waiting.</summary>
+    Task<bool> RunNowAsync(string queue, string id, CancellationToken ct = default);
+
+    /// <summary>Unfinished jobs, oldest first, without their bodies (they may hold content an operator should not see). Lists
+    /// running jobs too when <see cref="WorkQueueCapabilities.ListsRunningJobs"/>.</summary>
+    Task<IReadOnlyList<PendingJob>> PendingAsync(string queue, int max = 100, CancellationToken ct = default);
 }
 
 /// <param name="Queue">The queue's name: letters, digits, <c>.</c>, <c>-</c> and <c>_</c>.</param>
@@ -49,14 +67,17 @@ public interface IWorkQueue : IAsyncDisposable
 /// governance that applies to the document (labels, flow rules, audit).</param>
 /// <param name="Key">Idempotency key: the same key in the same queue is one job.</param>
 /// <param name="NotBefore">The job is not handed out before this instant.</param>
-/// <param name="Headers">Small metadata (requester, trace id, rule id).</param>
+/// <param name="Headers">Small metadata (requester, trace id).</param>
+/// <param name="Source">What created the job, as <c>kind:id</c> (<c>rule:7</c>, <c>schedule:daily-report</c>,
+/// <c>continuation:c-4410</c>, <c>person:ann</c>). An operator stopping a job that keeps coming back needs to know what to turn off.</param>
 public sealed record EnqueueRequest(
     string Queue,
     string Tenant,
     string Body,
     string? Key = null,
     DateTimeOffset? NotBefore = null,
-    IReadOnlyDictionary<string, string>? Headers = null);
+    IReadOnlyDictionary<string, string>? Headers = null,
+    string? Source = null);
 
 /// <param name="Duplicate">True when the key was already used and nothing was added; <see cref="Id"/> is the first job's.</param>
 public sealed record EnqueueResult(string Id, bool Duplicate);
@@ -73,7 +94,8 @@ public sealed record LeasedJob(
     int Attempt,
     DateTimeOffset EnqueuedAt,
     DateTimeOffset LeasedUntil,
-    string LeaseToken);
+    string LeaseToken,
+    string? Source = null);
 
 /// <param name="Reason">Why: given to <see cref="IWorkQueue.DeadLetterAsync"/>, or the attempts or age limit.</param>
 /// <param name="LastError">The last error passed to <see cref="IWorkQueue.RetryAsync"/>.</param>
@@ -88,14 +110,45 @@ public sealed record DeadLetter(
     DateTimeOffset EnqueuedAt,
     DateTimeOffset DeadAt,
     string Reason,
-    string? LastError);
+    string? LastError,
+    string? Source = null);
+
+public enum PendingState
+{
+    /// <summary>Due, waiting for a worker.</summary>
+    Waiting,
+    /// <summary>Not due yet: a not-before time or a retry's wait.</summary>
+    Delayed,
+    /// <summary>Leased to a worker.</summary>
+    Running,
+}
+
+/// <summary>An unfinished job as an operator sees it: everything but the body.</summary>
+/// <param name="BodyBytes">The body's size in UTF-8 bytes.</param>
+/// <param name="Until">For <see cref="PendingState.Delayed"/>, when it becomes due; for <see cref="PendingState.Running"/>, when the lease ends.</param>
+public sealed record PendingJob(
+    string Queue,
+    string Id,
+    string Tenant,
+    string? Key,
+    string? Source,
+    IReadOnlyDictionary<string, string> Headers,
+    PendingState State,
+    int Attempts,
+    DateTimeOffset EnqueuedAt,
+    DateTimeOffset? Until,
+    string? LastError,
+    int BodyBytes);
 
 /// <summary>What an implementation guarantees beyond at-least-once delivery. The conformance suite checks each one declared.</summary>
 /// <param name="Durable">Jobs survive the process ending (and, where stated, a power cut).</param>
 /// <param name="DelayedDelivery">Honours <see cref="EnqueueRequest.NotBefore"/> and retry delays exactly (never early).</param>
 /// <param name="LeaseExpiry">A lease not completed in time hands the job to another worker without the first one disconnecting.</param>
 /// <param name="DeduplicatesKeys">Enqueueing a key twice adds one job, for at least <see cref="WorkQueueOptions.KeyRetention"/>.</param>
-public sealed record WorkQueueCapabilities(bool Durable, bool DelayedDelivery, bool LeaseExpiry, bool DeduplicatesKeys);
+/// <param name="Cancellation"><see cref="IWorkQueue.CancelAsync"/> works (a broker may need a shared store for it).</param>
+/// <param name="ListsRunningJobs"><see cref="IWorkQueue.PendingAsync"/> includes leased jobs, not only waiting and delayed ones.</param>
+public sealed record WorkQueueCapabilities(
+    bool Durable, bool DelayedDelivery, bool LeaseExpiry, bool DeduplicatesKeys, bool Cancellation = true, bool ListsRunningJobs = true);
 
 /// <param name="MaxAttempts">Leases a job gets before it goes to the dead letters. Default 5.</param>
 /// <param name="MaxAge">Age (from enqueue) after which a job goes to the dead letters instead of running late. Default 24 hours.</param>
@@ -122,6 +175,8 @@ public sealed record WorkQueueOptions(
             throw new ArgumentException($"The job body is larger than {MaxBodyBytes} bytes; store the content elsewhere and enqueue a reference.", nameof(request));
         if (request.Key is { Length: 0 or > 200 })
             throw new ArgumentException("A key must be 1 to 200 characters.", nameof(request));
+        if (request.Source is { Length: 0 or > 200 })
+            throw new ArgumentException("A source must be 1 to 200 characters.", nameof(request));
     }
 
     public static void ValidateQueueName(string queue)

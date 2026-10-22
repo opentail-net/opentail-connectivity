@@ -15,11 +15,12 @@ public sealed class RabbitMqWorkQueueTests
     private static WorkQueueOpener NewStorage()
     {
         var prefix = $"ot-test-{Guid.NewGuid():N}.";
-        return (time, options) => new RabbitMqWorkQueue(new Uri(Uri!), options, new RabbitMqWorkQueueOptions(QueuePrefix: prefix), time);
+        var cancelled = new InMemoryCancelledJobs(); // shared by every worker opened on this storage, as production needs
+        return (time, options) => new RabbitMqWorkQueue(new Uri(Uri!), options, new RabbitMqWorkQueueOptions(QueuePrefix: prefix, CancelledJobs: cancelled), time);
     }
 
     private static IReadOnlyList<WorkQueueConformanceCheck> Checks()
-        => WorkQueueConformance.Checks(NewStorage, realTime: true, capabilities: RabbitMqWorkQueue.SupportedCapabilities);
+        => WorkQueueConformance.Checks(NewStorage, realTime: true, capabilities: RabbitMqWorkQueue.CapabilitiesWithCancellation);
 
     public static TheoryData<string> Cases()
     {
