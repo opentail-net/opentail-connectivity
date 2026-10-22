@@ -777,9 +777,10 @@ part of it. Plug and play (scheduler, event sources, store, sink, each with a co
   the queue into the dead letters; (4) metrics and health thresholds (oldest waiting job, dead letters per hour); (5) job
   type/version convention, dead-letter retention, drain time on shutdown, one retry layer; plus bringing dead jobs back after
   an outage. *Built 2026-10-22 (connectivity 147a4f0; Host Jobs view: resources, health, stuck, bring back dead jobs).*
-- [ ] **[Owner]** Queue research ([queue-research-2026-10-22](design/queue-research-2026-10-22.md)): two defects found and fixed
-  (74b427c); ten recommendations to choose from: handler heartbeats, rate limits per key, uniqueness scope, trace context, a
-  Postgres queue (SKIP LOCKED, transactional enqueue), ratio circuit, redrive pacing, grouped dead letters, full jitter, later items.
+- [x] **[C]** **[H]** Queue research ([queue-research-2026-10-22](design/queue-research-2026-10-22.md)): two defects fixed
+  (74b427c); built 1 to 4 and 7 (066b95b, d70d7fa; Host Jobs view): heartbeats, rate limits, key scopes, trace context, redrive
+  pacing, grouped dead jobs, equal jitter.
+- [ ] **[Owner]** Still open from the research: a Postgres queue (SKIP LOCKED, transactional enqueue), a ratio circuit, later items.
 - [ ] **[C]** **[H]** Not now (owner, 2026-10-22): queue pause/resume with resume-at, and Postpone for one job; pausing sources
   waits for triggers.
 - [ ] **[H]** Optional `CallTimeout` for in-process Host modules, matching isolated ones.

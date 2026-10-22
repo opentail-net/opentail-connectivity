@@ -73,6 +73,22 @@ Less common, and worth keeping: a conformance suite every backend must pass, and
 10. Later, if needed: **priorities** (most libraries), **workflows** (Oban Pro, BullMQ flows, Hangfire continuations; the Host's
     continuations cover part), and an **idempotent-consumer store** (the inbox pattern) so handlers can record processed job ids.
 
+## Built (2026-10-22, owner chose 1 to 4 and 7)
+
+- **Heartbeats:** `JobContext.Current.Heartbeat(progress)` from anywhere in a handler; `WorkQueueWorkerOptions.HeartbeatTimeout`
+  treats a silent handler as hung (same path as the run-time limit). Progress and the last heartbeat go with lease renewals
+  (`ExtendAsync` overload) and show on `PendingJob` and the Host's Jobs page. RabbitMQ does not keep them (it cannot list running jobs).
+- **Rate limits:** `WorkQueueOptions.RateLimits` (key or prefix to `JobRateLimit(count, per)`, a sliding window of starts),
+  beside concurrency limits. In-memory and SQLite exact; RabbitMQ through `IQueueControl.TryTakeStartAsync`.
+- **Key scopes:** `EnqueueRequest.KeyScope`: `Retention` (as before), `UntilFinished`, `WhilePending` (debounce).
+- **Trace context:** `traceparent` and `tracestate` stored at enqueue; the worker's `process {queue}` consumer activity on source
+  `OpenTail.Connectivity.Queues` continues the trace, with `messaging.*` attributes.
+- **Smaller:** `RedriveAsync(..., notBefore)` and bulk redrive spread over a window; dead jobs grouped by where, resource and
+  reason on the Jobs page with "Bring back this group"; equal jitter (half fixed, half random) instead of ±20%.
+- **Conformance:** 42 checks. RabbitMQ passes all 35 that apply on `rabbitmq:4.1` (36 tests with the lease cap; 7 skipped by design).
+
+Not built (owner's choice): the Postgres queue, the ratio circuit, later items.
+
 ## Suggested order
 
 Heartbeats, rate limits, uniqueness scope and trace context are each about half a session and change no existing behaviour.
