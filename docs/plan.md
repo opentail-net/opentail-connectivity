@@ -769,7 +769,11 @@ part of it. Plug and play (scheduler, event sources, store, sink, each with a co
 - [x] **[C]** Worker loop helper: `WorkQueueWorker`. *Built 2026-10-22: concurrency, lease renewal at half time (a lost lease
   cancels the handler), retries with exponential backoff and jitter, `PermanentJobFailureException` to dead-letter, tenant
   check, graceful stop that hands running jobs back, `WorkerEvent` callback.*
-- [ ] **[C]** Later: triggers' scheduler enqueues jobs; the Host's work items on `IWorkQueue` (owner decides).
+- [ ] **[C]** Later: triggers' scheduler enqueues jobs.
+- [ ] **[Owner]** Host work items on `IWorkQueue`: not moved (2026-10-22); work items are records that are read by id, listed and
+  claimed with filters, and a queue cannot do that. The reasoning and two alternatives (queue the Host's webhook deliveries and
+  external-wait polling now; a "delivery hint" queue when the Host goes multi-node) are in the Host's
+  [work design](https://github.com/opentail-net/opentail-host/blob/main/docs/design/work-and-continuations.md).
 
 ## 22. External review, 2026-10-20
 
