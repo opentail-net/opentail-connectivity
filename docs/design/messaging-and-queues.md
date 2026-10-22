@@ -1,6 +1,6 @@
 # Ideas: messaging, queues and the scheduler
 
-**Status:** steps 1 and 2 built 2026-10-22 (see [Built](#built)); RabbitMQ is the first broker (step 3, next). The owner's reason:
+**Status:** steps 1 to 3 built 2026-10-22 (see [Built](#built)), RabbitMQ as the first broker. The owner's reason:
 the next project is unknown, and a resilient queue is reasonably likely to be needed, so it is groundwork worth having ready. Related: [triggers](triggers.md) (the *when*), the Host's work items and continuations (plan section 17).
 
 ## The suggestion
@@ -92,6 +92,13 @@ IEventSink    publish an event                      (new) tell an outside bus wh
   (a plugin, or TTL and dead-letter exchanges), no lease that expires while the consumer stays connected (unacknowledged messages
   return when the channel closes, or after `consumer_timeout`), and no deduplication on publish. Which of these the adapter can
   offer, and how, is step 3's first question. *To verify against RabbitMQ's documentation before building.*
+- **`OpenTail.Connectivity.Queues.RabbitMQ`:** quorum queues (work and `.dead`), publisher confirms with `mandatory`, and a
+  replacement is confirmed before the original is acknowledged (a crash duplicates, never loses). Delays: quorum "wait" queues
+  with one TTL each (powers of 4 seconds, 1 second to about 3 days) dead-lettering back at-least-once; a job back early waits
+  again, so never early and at most about a second late. Leases: unacknowledged deliveries; this instance returns expired ones
+  (every second and before each lease), the broker returns them if the process dies; capped at 25 minutes, below the default
+  `consumer_timeout`. Keys are carried, not deduplicated (`DeduplicatesKeys` false). Listing dead letters takes them on a channel
+  of its own and closes it to put them back. Passed the suite against `rabbitmq:4.1` in `queues-rabbitmq.yml`, real time.
 - Not built yet: a worker loop helper (lease, run, complete or retry with backoff), the scheduler enqueueing jobs, the Host's
   work items on the queue.
 

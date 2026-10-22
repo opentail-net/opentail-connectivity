@@ -36,6 +36,7 @@ They are used by the OpenTail Host's modules and by OpenTail itself.
 | `OpenTail.Connectivity.Memory.VectorData` | Memory backend over any `Microsoft.Extensions.VectorData` collection (Postgres with pgvector, Qdrant, Azure AI Search ...), the caller's embedding model. | Verified |
 | `OpenTail.Connectivity.Queues` | Work queues: the `IWorkQueue` contract (at-least-once, leases, delays, idempotency keys, dead letters), an in-memory queue and a conformance suite every implementation must pass. | Tested |
 | `OpenTail.Connectivity.Queues.Sqlite` | Work queue in one SQLite file: survives crashes and power cuts (WAL, `synchronous=FULL`), safe for several workers and processes on one machine. | Tested |
+| `OpenTail.Connectivity.Queues.RabbitMQ` | Work queue on RabbitMQ quorum queues: publisher confirms, delays through wait queues, leases that expire; keys are carried, not deduplicated. Passes the conformance suite against a real broker in CI. | Tested |
 
 **Verification legend:**
 - **Verified**: Exercised against the real thing in CI (local filesystem, real SQLite, pgvector in CI containers).

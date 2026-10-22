@@ -763,7 +763,9 @@ part of it. Plug and play (scheduler, event sources, store, sink, each with a co
 
 - [x] **[C]** Work queues, steps 1-2: `IWorkQueue`, in-memory queue, conformance suite (17 checks), SQLite queue
   ([messaging and queues](design/messaging-and-queues.md)). *Built 2026-10-22; owner: groundwork for an unknown next project.*
-- [ ] **[C]** Work queues, step 3: RabbitMQ adapter passing the suite (owner chose RabbitMQ first). Container in CI.
+- [x] **[C]** Work queues, step 3: `OpenTail.Connectivity.Queues.RabbitMQ`. *Built 2026-10-22: quorum queues, publisher confirms,
+  TTL wait queues for delays, local lease expiry capped below `consumer_timeout`, no key deduplication. `queues-rabbitmq.yml`
+  passes 15 of 15 applicable checks on `rabbitmq:4.1` (plus the lease-cap test; the two key checks are skipped by design).*
 - [ ] **[C]** Later: worker loop helper; triggers' scheduler enqueues jobs; the Host's work items on `IWorkQueue` (owner decides).
 
 ## 22. External review, 2026-10-20

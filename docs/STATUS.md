@@ -226,7 +226,7 @@ The consumer contract is **stable and implemented**. Downstream stores can rely 
 
 **Verified packages:** Files, Csv, Email, Sql, Memory, Memory.Sqlite, Memory.VectorData, Calendar.Ics
 
-**Tested packages:** Web, Social, Inbox.Imap, Inbox.Graph, Inbox.Gmail, RichText, Storage, Storage.S3, Storage.AzureBlob, Queues, Queues.Sqlite
+**Tested packages:** Web, Social, Inbox.Imap, Inbox.Graph, Inbox.Gmail, RichText, Storage, Storage.S3, Storage.AzureBlob, Queues, Queues.Sqlite, Queues.RabbitMQ
 
 ### Test Coverage
 
