@@ -896,6 +896,9 @@ except where noted. Breaking changes for 0.3.0 are marked **B**.
 
 ## Background, no action planned
 
+- Messaging, queues and the scheduler: ideas written down for a later talk with the owner, nothing planned
+  ([messaging and queues](design/messaging-and-queues.md), 2026-10-22).
+
 These are kept for the day their content needs indexing. Read them, but nothing above depends on them.
 
 - [CRM](design/crm.md) and [finance](design/finance.md): planned as Host integration profiles.
