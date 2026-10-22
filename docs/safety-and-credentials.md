@@ -32,8 +32,10 @@ Limits to be aware of:
 
 - A policy that sets only `SendingEnabled = true` and `RequireHumanApproval = false` therefore sends anything to anyone. Set the
   recipient lists and limits explicitly.
-- Rate-limit counters live in memory, per `PolicyEnforcingEmailSender` instance. They reset on restart and are not shared between
-  processes.
+- The default limiter, `InProcessEmailRateLimiter`, counts in memory: per limiter instance (share one between senders in a
+  process), reset on restart, not shared between processes or machines. For a deployment-wide cap, pass your own
+  `IEmailRateLimiter` backed by shared storage with atomic reserve and release; when that store cannot be reached, throw from
+  `Reserve` so sending fails closed. Approval state follows the same rule through `IPendingSendStore`.
 - With approval on, recipients are checked both when a send is queued and again when it is approved. Approval also reserves a
   rate-limit slot before sending. Build the service with `PolicyEnforcingEmailSender.CreateApprovalService()` so queued and
   approved sends use the same policy and limiter; a separately constructed service can split the rate cap.
@@ -62,6 +64,21 @@ For Microsoft Graph, the adapters use the client-credentials flow with the `.def
 application permissions decide what the client can do. Grant read-only ones (for example `Mail.Read`, `Calendars.Read`) unless
 you need more. Application permissions apply to every mailbox in the tenant, not just `userEmail`; an Exchange administrator can
 limit the app to specific mailboxes (RBAC for Applications, or the older application access policies).
+
+## Tenant isolation
+
+`TenantContext` labels documents; it does not keep tenants apart by itself. What this library does:
+
+- Document ids include the tenant (`ConnectivityPipeline.DocumentId`), so the same source ref in two tenants gives two ids.
+- Content-hash deduplication is per tenant, and the sync scopes of the object-storage, Drive and SQLite connectors include the
+  tenant, so one tenant's cursor or duplicate never hides another's documents.
+- `DocumentAccessPolicy` denies a document whose tenant differs from the caller's (`DeniedTenantMismatch`).
+
+What it does not do, and the host must: the JSONL and Markdown exporters write every tenant's documents to the same place; a
+cursor store, version store or pending-send store is shared by whoever is given it; nothing filters search or retrieval by
+tenant. Run one pipeline per tenant with stores and output locations per tenant, or put tenant predicates in the store and query
+layer before results are read. Without such a host layer, do not share one deployment between tenants that must not see each
+other's data.
 
 ## Credentials
 

@@ -98,6 +98,11 @@ dotnet nuget add source https://nuget.pkg.github.com/opentail-net/index.json --n
   --username <github user> --password <token> --store-password-in-clear-text
 ```
 
+`--store-password-in-clear-text` writes the token unencrypted into your user-level `NuGet.Config` (it is needed on Linux and macOS,
+where NuGet cannot encrypt it). Use a token with only `read:packages`, keep that file readable by you alone, and never commit a
+`NuGet.Config` that holds it. On Windows you can leave the flag out and NuGet encrypts the token. In CI, prefer the environment
+job token described below over a token written to a config file.
+
 In GitHub Actions, give the consuming repository read access to the packages (package settings > Manage Actions access) and
 authenticate with `GITHUB_TOKEN`, or use a secret holding such a token.
 
