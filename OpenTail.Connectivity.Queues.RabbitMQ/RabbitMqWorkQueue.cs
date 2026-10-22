@@ -91,7 +91,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         _options.Validate(request);
         var now = Now;
         var job = new Message(Guid.NewGuid().ToString("N"), request.Tenant, request.Body, request.Key,
-            new Dictionary<string, string>(request.Headers ?? new Dictionary<string, string>(), StringComparer.Ordinal),
+            WorkQueueOptions.HeadersWithTrace(request),
             Attempts: 0, EnqueuedAt: now, NotBefore: request.NotBefore?.ToUnixTimeMilliseconds() ?? now, LastError: null, Source: request.Source,
             ConcurrencyKey: request.ConcurrencyKey, MaxRunMs: request.MaxRunTime is { } run ? (long)run.TotalMilliseconds : null);
         if (request.ConcurrencyKey is not null && _rabbit.Control is null)
@@ -151,6 +151,11 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                     // A slot first, then the circuit; either refusing means the job waits a while, using no attempt.
                     var release = !skipConcurrencyKeys.Contains(ck)
                                   && await control.TryTakeSlotAsync(queue, ck, _options.LimitFor(ck) ?? int.MaxValue, token, At(until), ct).ConfigureAwait(false);
+                    if (release && _options.RateFor(ck) is { } rate && !await control.TryTakeStartAsync(queue, ck, rate, At(now), ct).ConfigureAwait(false))
+                    {
+                        await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
+                        release = false;
+                    }
                     if (release)
                     {
                         var allowed = false;
@@ -231,6 +236,10 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         }, ct);
     }
 
+    /// <summary>The progress note is not kept: RabbitMQ cannot list running jobs, so nothing would show it.</summary>
+    public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, string? progress, DateTimeOffset? lastHeartbeat, CancellationToken ct = default)
+        => ExtendAsync(job, lease, ct);
+
     public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
@@ -269,7 +278,10 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         return dead;
     }
 
-    public async Task<bool> RedriveAsync(string queue, string id, CancellationToken ct = default)
+    public Task<bool> RedriveAsync(string queue, string id, CancellationToken ct = default)
+        => RedriveAsync(queue, id, _time.GetUtcNow(), ct);
+
+    public async Task<bool> RedriveAsync(string queue, string id, DateTimeOffset notBefore, CancellationToken ct = default)
     {
         WorkQueueOptions.ValidateQueueName(queue);
         var connection = await ConnectionAsync(ct).ConfigureAwait(false);
@@ -286,8 +298,8 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             if (m.Id != id)
                 continue; // left unacknowledged: closing the channel puts it back
             var now = Now;
-            await PublishAsync(search, Name(queue), m with { Attempts = 0, EnqueuedAt = now, NotBefore = now, LastError = null }, extra: null, ct)
-                .ConfigureAwait(false);
+            await PublishDueOrWaitingAsync(search, queue, m with { Attempts = 0, EnqueuedAt = now, NotBefore = Math.Max(now, notBefore.ToUnixTimeMilliseconds()), LastError = null },
+                now, ct).ConfigureAwait(false);
             await search.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
             found = true;
             break;
@@ -409,7 +421,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         {
             var state = Circuits.State(k.Circuit, now, _options);
             return new ConcurrencyKeyState(queue, k.Key, k.Running, 0, _options.LimitFor(k.Key), state,
-                state == CircuitState.Open ? At(k.Circuit!.OpenUntilMs) : null, k.Circuit?.Failures ?? 0);
+                state == CircuitState.Open ? At(k.Circuit!.OpenUntilMs) : null, k.Circuit?.Failures ?? 0, _options.RateFor(k.Key), k.Starts);
         }).ToList();
     }
 

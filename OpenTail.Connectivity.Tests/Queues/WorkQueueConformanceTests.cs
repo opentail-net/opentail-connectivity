@@ -91,6 +91,8 @@ public sealed class WorkQueueConformanceTests
         public Task<IReadOnlyList<LeasedJob>> LeaseAsync(string queue, int max, TimeSpan lease, IReadOnlyCollection<string> skip, CancellationToken ct = default) => inner.LeaseAsync(queue, max, lease, skip, ct);
         public Task<bool> RetryAsync(LeasedJob job, TimeSpan delay, string? error, bool resourceFailure, CancellationToken ct = default) => inner.RetryAsync(job, delay, error, resourceFailure, ct);
         public Task<IReadOnlyList<ConcurrencyKeyState>> ConcurrencyKeysAsync(string queue, CancellationToken ct = default) => inner.ConcurrencyKeysAsync(queue, ct);
+        public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, string? progress, DateTimeOffset? lastHeartbeat, CancellationToken ct = default) => inner.ExtendAsync(job, lease, progress, lastHeartbeat, ct);
+        public Task<bool> RedriveAsync(string queue, string id, DateTimeOffset notBefore, CancellationToken ct = default) => inner.RedriveAsync(queue, id, notBefore, ct);
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 }

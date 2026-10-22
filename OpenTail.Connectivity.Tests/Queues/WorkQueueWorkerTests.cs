@@ -38,7 +38,7 @@ public sealed class WorkQueueWorkerTests
 
         var retried = Assert.Single(events, e => e.Kind == WorkerEventKind.Retried);
         Assert.Equal("IOException: disk full", retried.Detail);
-        Assert.InRange(retried.Delay!.Value, TimeSpan.FromMilliseconds(80), TimeSpan.FromMilliseconds(120));
+        Assert.InRange(retried.Delay!.Value, TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(100));
         Assert.Equal(2, Assert.Single(events, e => e.Kind == WorkerEventKind.Completed).Attempt);
     }
 
@@ -226,7 +226,7 @@ public sealed class WorkQueueWorkerTests
         Assert.Equal(7, (await queue.DeadLettersAsync(Q, ct: TestContext.Current.CancellationToken)).Count);
 
         var filter = new DeadLetterFilter(ConcurrencyKey: "db:*", ReasonContains: "attempts");
-        Assert.Equal(6, await WorkQueueOperations.RedriveMatchingAsync(queue, Q, filter, dryRun: true, TestContext.Current.CancellationToken));
+        Assert.Equal(6, await WorkQueueOperations.RedriveMatchingAsync(queue, Q, filter, dryRun: true, ct: TestContext.Current.CancellationToken));
         Assert.Equal(6, await WorkQueueOperations.RedriveMatchingAsync(queue, Q, filter, ct: TestContext.Current.CancellationToken));
 
         Assert.Single(await queue.DeadLettersAsync(Q, ct: TestContext.Current.CancellationToken)); // the erp job stays dead
@@ -255,6 +255,77 @@ public sealed class WorkQueueWorkerTests
         Assert.Contains(health.Reasons, r => r.Contains("db:a", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task A_handler_that_keeps_sending_heartbeats_runs_on_and_one_that_stops_is_treated_as_hung()
+    {
+        var queue = new InMemoryWorkQueue();
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "beating"), TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "silent"), TestContext.Current.CancellationToken);
+        var options = Options(concurrency: 2, retryBase: TimeSpan.FromSeconds(30)) with { HeartbeatTimeout = TimeSpan.FromMilliseconds(200) };
+
+        var events = await RunUntilAsync(queue, options, async (job, ct) =>
+        {
+            if (job.Body == "silent")
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10), ct); // never reports progress
+                return;
+            }
+
+            for (var i = 0; i < 8; i++)
+            {
+                await Task.Delay(80, ct);
+                JobContext.Current!.Heartbeat($"step {i}");
+            }
+        }, e => e.Any(x => x.Kind == WorkerEventKind.Completed) && e.Any(x => x.Kind == WorkerEventKind.TimedOut));
+
+        Assert.StartsWith("no heartbeat for", Assert.Single(events, e => e.Kind == WorkerEventKind.TimedOut).Detail);
+        Assert.Single(events, e => e.Kind == WorkerEventKind.Completed);
+    }
+
+    [Fact]
+    public async Task The_handler_runs_inside_the_enqueuers_trace()
+    {
+        var started = new ConcurrentBag<System.Diagnostics.Activity>();
+        using var listener = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = s => s.Name == JobTrace.SourceName,
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) => System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStarted = started.Add,
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(listener);
+        var queue = new InMemoryWorkQueue();
+        System.Diagnostics.ActivityTraceId trace;
+        using (var enqueuer = new System.Diagnostics.Activity("enqueue").SetIdFormat(System.Diagnostics.ActivityIdFormat.W3C).Start())
+        {
+            trace = enqueuer.TraceId;
+            await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "{}"), TestContext.Current.CancellationToken);
+        }
+
+        await RunUntilAsync(queue, Options(), (_, _) => Task.CompletedTask, e => e.Any(x => x.Kind == WorkerEventKind.Completed));
+
+        var processing = Assert.Single(started, a => a.OperationName == "process " + Q);
+        Assert.Equal(trace, processing.TraceId);
+        Assert.Equal(System.Diagnostics.ActivityKind.Consumer, processing.Kind);
+        Assert.Equal(Q, processing.GetTagItem("messaging.destination.name"));
+    }
+
+    [Fact]
+    public async Task Bulk_redrive_can_spread_jobs_without_a_key_over_a_window()
+    {
+        var queue = new InMemoryWorkQueue();
+        for (var i = 0; i < 5; i++)
+            await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "job " + i), TestContext.Current.CancellationToken);
+        foreach (var j in await queue.LeaseAsync(Q, 10, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken))
+            await queue.DeadLetterAsync(j, "downstream refused", TestContext.Current.CancellationToken);
+
+        Assert.Equal(5, await WorkQueueOperations.RedriveMatchingAsync(queue, Q, new DeadLetterFilter(), spreadOver: TimeSpan.FromHours(1),
+            ct: TestContext.Current.CancellationToken));
+
+        var pending = await queue.PendingAsync(Q, ct: TestContext.Current.CancellationToken);
+        Assert.Single(pending, p => p.State == PendingState.Waiting); // the first is due now; the rest follow over the hour
+        Assert.Equal(4, pending.Count(p => p.State == PendingState.Delayed));
+    }
+
     private sealed class ManualClock(DateTimeOffset start) : TimeProvider
     {
         private DateTimeOffset _now = start;
@@ -267,12 +338,12 @@ public sealed class WorkQueueWorkerTests
     [InlineData(2, 4_000)]
     [InlineData(4, 16_000)]
     [InlineData(20, 300_000)]
-    public void Backoff_doubles_up_to_the_cap_within_twenty_percent(int attempt, int expectedMs)
+    public void Backoff_doubles_up_to_the_cap_with_half_of_it_random(int attempt, int expectedMs)
     {
         for (var i = 0; i < 50; i++)
         {
             var delay = WorkQueueWorker.Backoff(attempt, TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(5));
-            Assert.InRange(delay.TotalMilliseconds, expectedMs * 0.8, expectedMs * 1.2);
+            Assert.InRange(delay.TotalMilliseconds, expectedMs * 0.5, expectedMs * 1.0);
         }
     }
 
@@ -320,6 +391,8 @@ public sealed class WorkQueueWorkerTests
         public Task<IReadOnlyList<LeasedJob>> LeaseAsync(string queue, int max, TimeSpan lease, IReadOnlyCollection<string> skip, CancellationToken ct = default) => inner.LeaseAsync(queue, max, lease, skip, ct);
         public Task<bool> RetryAsync(LeasedJob job, TimeSpan delay, string? error, bool resourceFailure, CancellationToken ct = default) => inner.RetryAsync(job, delay, error, resourceFailure, ct);
         public Task<IReadOnlyList<ConcurrencyKeyState>> ConcurrencyKeysAsync(string queue, CancellationToken ct = default) => inner.ConcurrencyKeysAsync(queue, ct);
+        public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, string? progress, DateTimeOffset? lastHeartbeat, CancellationToken ct = default) => Task.FromResult(false);
+        public Task<bool> RedriveAsync(string queue, string id, DateTimeOffset notBefore, CancellationToken ct = default) => inner.RedriveAsync(queue, id, notBefore, ct);
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 }

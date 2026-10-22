@@ -52,6 +52,6 @@ jobs:
           dotnet test --project OpenTail.Connectivity.Tests.RabbitMQ -c Release --no-build 2>&1 | tee test.log
           status=${PIPESTATUS[0]}
           skipped=$(grep -Eo "skipped: [0-9]+" test.log | grep -Eo "[0-9]+" | tail -1)
-          # Skipped by design: the three key-deduplication checks (no DeduplicatesKeys) and listing running jobs (no ListsRunningJobs).
-          if [ "${skipped:-0}" != "4" ]; then echo "::error::Expected exactly 4 skipped tests, got ${skipped:-0}"; exit 1; fi
+          # Skipped by design: the five key-deduplication checks (no DeduplicatesKeys) and the two that list running jobs (no ListsRunningJobs).
+          if [ "${skipped:-0}" != "7" ]; then echo "::error::Expected exactly 7 skipped tests, got ${skipped:-0}"; exit 1; fi
           exit $status

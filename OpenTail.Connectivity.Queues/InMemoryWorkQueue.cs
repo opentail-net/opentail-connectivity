@@ -10,6 +10,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
     private readonly Lock _gate = new();
     private readonly List<Entry> _entries = [];
     private readonly Dictionary<(string Queue, string Key), CircuitRecord> _circuits = [];
+    private readonly Dictionary<(string Queue, string Key), Queue<DateTimeOffset>> _starts = [];
     private long _sequence;
 
     public WorkQueueCapabilities Capabilities { get; } = new(Durable: false, DelayedDelivery: true, LeaseExpiry: true, DeduplicatesKeys: true);
@@ -22,9 +23,14 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         {
             Purge(now);
             if (request.Key is { } key && _entries.FirstOrDefault(e => e.Queue == request.Queue && e.Key == key) is { } existing)
-                return Task.FromResult(new EnqueueResult(existing.Id, Duplicate: true));
+            {
+                if (WorkQueueRules.KeyBlocks(request.KeyScope, existing.State == State.Ready, existing.State == State.Leased))
+                    return Task.FromResult(new EnqueueResult(existing.Id, Duplicate: true));
+                existing.Key = null; // the scope lets the key go: the earlier job keeps running or stays finished, without it
+            }
+
             var entry = new Entry(request.Queue, Guid.NewGuid().ToString("N"), request.Tenant, request.Body, request.Key,
-                new Dictionary<string, string>(request.Headers ?? new Dictionary<string, string>(), StringComparer.Ordinal), now, ++_sequence)
+                WorkQueueOptions.HeadersWithTrace(request), now, ++_sequence)
             {
                 NotBefore = request.NotBefore ?? now,
                 Source = request.Source,
@@ -67,6 +73,8 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
                 {
                     if (skipConcurrencyKeys.Contains(ck) || running.GetValueOrDefault(ck) >= (_options.LimitFor(ck) ?? int.MaxValue))
                         continue;
+                    if (_options.RateFor(ck) is { } rate && Started(queue, ck, rate, now).Count >= rate.Count)
+                        continue;
                     (var allowed, probe) = Circuits.MayRelease(_circuits.GetValueOrDefault((queue, ck)), nowMs, _options);
                     if (!allowed)
                         continue; // not released: no attempt used
@@ -83,9 +91,13 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
                 e.LeasedAt = now;
                 e.LeasedUntil = now + lease;
                 e.LeaseToken = Guid.NewGuid().ToString("N");
+                e.Progress = null;
+                e.LastHeartbeat = null;
                 if (e.ConcurrencyKey is { } key)
                 {
                     running[key] = running.GetValueOrDefault(key) + 1;
+                    if (_options.RateFor(key) is { } rate)
+                        Started(queue, key, rate, now).Enqueue(now);
                     if (probe)
                         _circuits[(queue, key)] = Circuits.ProbeReleased(_circuits[(queue, key)], e.LeaseToken, e.LeasedUntil.ToUnixTimeMilliseconds());
                 }
@@ -136,9 +148,17 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         });
 
     public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, CancellationToken ct = default)
+        => ExtendAsync(job, lease, progress: null, lastHeartbeat: null, ct);
+
+    public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, string? progress, DateTimeOffset? lastHeartbeat, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
-        return WithLease(job, e => e.LeasedUntil = _time.GetUtcNow() + lease);
+        return WithLease(job, e =>
+        {
+            e.LeasedUntil = _time.GetUtcNow() + lease;
+            if (progress is not null) e.Progress = progress.Length <= 200 ? progress : progress[..200];
+            if (lastHeartbeat is not null) e.LastHeartbeat = lastHeartbeat;
+        });
     }
 
     public Task<IReadOnlyList<DeadLetter>> DeadLettersAsync(string queue, int max = 100, CancellationToken ct = default)
@@ -157,6 +177,9 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
     }
 
     public Task<bool> RedriveAsync(string queue, string id, CancellationToken ct = default)
+        => RedriveAsync(queue, id, _time.GetUtcNow(), ct);
+
+    public Task<bool> RedriveAsync(string queue, string id, DateTimeOffset notBefore, CancellationToken ct = default)
     {
         var now = _time.GetUtcNow();
         lock (_gate)
@@ -166,7 +189,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
             _entries.Remove(e);
             _entries.Add(new Entry(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, now, ++_sequence)
             {
-                NotBefore = now, Source = e.Source, ConcurrencyKey = e.ConcurrencyKey, MaxRunTime = e.MaxRunTime,
+                NotBefore = notBefore > now ? notBefore : now, Source = e.Source, ConcurrencyKey = e.ConcurrencyKey, MaxRunTime = e.MaxRunTime,
             });
             return Task.FromResult(true);
         }
@@ -224,7 +247,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
                         running ? PendingState.Running : e.NotBefore > now ? PendingState.Delayed : PendingState.Waiting,
                         e.Attempts, e.EnqueuedAt, running ? e.LeasedUntil : e.NotBefore > now ? e.NotBefore : null,
                         e.LastError, System.Text.Encoding.UTF8.GetByteCount(e.Body), e.ConcurrencyKey, e.MaxRunTime ?? _options.DefaultMaxRunTime,
-                        running ? e.LeasedAt : null);
+                        running ? e.LeasedAt : null, running ? e.Progress : null, running ? e.LastHeartbeat : null);
                 })
                 .ToList());
         }
@@ -239,6 +262,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
             var keys = _entries.Where(e => e.Queue == queue && e.ConcurrencyKey is not null && e.State is State.Ready or State.Leased)
                 .Select(e => e.ConcurrencyKey!)
                 .Concat(_circuits.Keys.Where(k => k.Queue == queue).Select(k => k.Key))
+                .Concat(_starts.Where(k => k.Key.Queue == queue && k.Value.Count > 0).Select(k => k.Key.Key))
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal);
             return Task.FromResult<IReadOnlyList<ConcurrencyKeyState>>(keys.Select(k =>
@@ -250,12 +274,22 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
                     jobs.Count(e => e.State == State.Leased && e.LeasedUntil > now),
                     jobs.Count(e => e.State == State.Ready || (e.State == State.Leased && e.LeasedUntil <= now)),
                     _options.LimitFor(k), state, state == CircuitState.Open ? DateTimeOffset.FromUnixTimeMilliseconds(circuit!.OpenUntilMs) : null,
-                    circuit?.Failures ?? 0);
+                    circuit?.Failures ?? 0, _options.RateFor(k), _options.RateFor(k) is { } rate ? Started(queue, k, rate, now).Count : 0);
             }).ToList());
         }
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    /// <summary>The key's start times within the rate window (older ones dropped).</summary>
+    private Queue<DateTimeOffset> Started(string queue, string key, RateLimit rate, DateTimeOffset now)
+    {
+        if (!_starts.TryGetValue((queue, key), out var starts))
+            _starts[(queue, key)] = starts = new Queue<DateTimeOffset>();
+        while (starts.Count > 0 && starts.Peek() <= now - rate.Per)
+            starts.Dequeue();
+        return starts;
+    }
 
     private void FreeProbe(Entry e, string token)
     {
@@ -291,7 +325,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         public string Id { get; } = id;
         public string Tenant { get; } = tenant;
         public string Body { get; } = body;
-        public string? Key { get; } = key;
+        public string? Key { get; set; } = key;
         public IReadOnlyDictionary<string, string> Headers { get; } = headers;
         public DateTimeOffset EnqueuedAt { get; } = enqueuedAt;
         public long Sequence { get; } = sequence;
@@ -305,6 +339,8 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         public string? DeadReason { get; set; }
         public string? LastError { get; set; }
         public string? Source { get; init; }
+        public string? Progress { get; set; }
+        public DateTimeOffset? LastHeartbeat { get; set; }
         public string? ConcurrencyKey { get; init; }
         public TimeSpan? MaxRunTime { get; init; }
 
@@ -322,6 +358,14 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
 public static class WorkQueueRules
 {
     /// <summary>Why a job about to be leased goes to the dead letters instead, or null when it may run.</summary>
+    /// <summary>Whether an existing job with the same key keeps a new one out, under the new request's scope.</summary>
+    public static bool KeyBlocks(KeyScope scope, bool existingWaiting, bool existingRunning) => scope switch
+    {
+        KeyScope.UntilFinished => existingWaiting || existingRunning,
+        KeyScope.WhilePending => existingWaiting,
+        _ => true,
+    };
+
     public static string? DeadReason(int attemptsSoFar, DateTimeOffset enqueuedAt, DateTimeOffset now, WorkQueueOptions options)
     {
         if (attemptsSoFar >= options.MaxAttempts)

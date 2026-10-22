@@ -51,6 +51,10 @@ public interface IWorkQueue : IAsyncDisposable
     /// <summary>Keeps a long job's lease for <paramref name="lease"/> from now. False when the lease was already lost.</summary>
     Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, CancellationToken ct = default);
 
+    /// <summary>As <see cref="ExtendAsync(LeasedJob, TimeSpan, CancellationToken)"/>, recording the handler's latest heartbeat and
+    /// progress note (shown in <see cref="PendingJob.Progress"/>; at most 200 characters kept).</summary>
+    Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, string? progress, DateTimeOffset? lastHeartbeat, CancellationToken ct = default);
+
     /// <summary>The queue's dead letters, oldest first. Dead letters older than <see cref="WorkQueueOptions.DeadLetterRetention"/>
     /// are deleted.</summary>
     Task<IReadOnlyList<DeadLetter>> DeadLettersAsync(string queue, int max = 100, CancellationToken ct = default);
@@ -59,6 +63,10 @@ public interface IWorkQueue : IAsyncDisposable
     /// letter. It is released through its concurrency key's limit and circuit like any job. For many at once, see
     /// <see cref="WorkQueueOperations.RedriveMatchingAsync"/>.</summary>
     Task<bool> RedriveAsync(string queue, string id, CancellationToken ct = default);
+
+    /// <summary>As <see cref="RedriveAsync(string, string, CancellationToken)"/>, not due before <paramref name="notBefore"/>
+    /// (bulk redrive spreads jobs out this way).</summary>
+    Task<bool> RedriveAsync(string queue, string id, DateTimeOffset notBefore, CancellationToken ct = default);
 
     /// <summary>Removes a dead letter for good. False when there is no such dead letter.</summary>
     Task<bool> DeleteDeadLetterAsync(string queue, string id, CancellationToken ct = default);
@@ -97,6 +105,7 @@ public interface IWorkQueue : IAsyncDisposable
 /// Jobs with the same key run no more than its limit at once, across all workers.</param>
 /// <param name="MaxRunTime">How long the handler may run before a <see cref="WorkQueueWorker"/> gives up on it; overrides
 /// <see cref="WorkQueueOptions.DefaultMaxRunTime"/>.</param>
+/// <param name="KeyScope">How long <paramref name="Key"/> keeps out a second job with the same key.</param>
 public sealed record EnqueueRequest(
     string Queue,
     string Tenant,
@@ -106,7 +115,21 @@ public sealed record EnqueueRequest(
     IReadOnlyDictionary<string, string>? Headers = null,
     string? Source = null,
     string? ConcurrencyKey = null,
-    TimeSpan? MaxRunTime = null);
+    TimeSpan? MaxRunTime = null,
+    KeyScope KeyScope = KeyScope.Retention);
+
+/// <summary>How long an idempotency key keeps out a second job with the same key (when <see cref="WorkQueueCapabilities.DeduplicatesKeys"/>).</summary>
+public enum KeyScope
+{
+    /// <summary>While the job waits or runs, and for <see cref="WorkQueueOptions.KeyRetention"/> after it finished: "this exact job,
+    /// once" (a firing of a schedule, a payment).</summary>
+    Retention,
+    /// <summary>While the job waits or runs; once it finished (or was cancelled or died), the key may be used again: "one at a time".</summary>
+    UntilFinished,
+    /// <summary>Only while the job waits; once it has started, a new one may queue behind it: "debounce" (refresh the index for X
+    /// once, however many changes asked for it, without missing a change made during a run).</summary>
+    WhilePending,
+}
 
 /// <summary>Header names with an agreed meaning.</summary>
 public static class JobHeaders
@@ -116,6 +139,11 @@ public static class JobHeaders
 
     /// <summary>The body's format version (<c>2</c>). A handler that does not know it throws <see cref="PermanentJobFailureException"/>.</summary>
     public const string Version = "v";
+
+    /// <summary>W3C trace context of whatever enqueued the job, set by the queue; the worker continues the trace from it.</summary>
+    public const string TraceParent = "traceparent";
+
+    public const string TraceState = "tracestate";
 }
 
 /// <param name="Duplicate">True when the key was already used and nothing was added; <see cref="Id"/> is the first job's.</param>
@@ -185,7 +213,9 @@ public sealed record PendingJob(
     int BodyBytes,
     string? ConcurrencyKey = null,
     TimeSpan? MaxRunTime = null,
-    DateTimeOffset? RunningSince = null);
+    DateTimeOffset? RunningSince = null,
+    string? Progress = null,
+    DateTimeOffset? LastHeartbeat = null);
 
 public enum CircuitState
 {
@@ -199,6 +229,8 @@ public enum CircuitState
 
 /// <param name="Limit">Null when the key has no limit.</param>
 /// <param name="Failures">Resource failures in a row.</param>
+/// <param name="Rate">The key's rate limit, if any.</param>
+/// <param name="StartedInWindow">Jobs started within the rate limit's window.</param>
 public sealed record ConcurrencyKeyState(
     string Queue,
     string ConcurrencyKey,
@@ -207,7 +239,12 @@ public sealed record ConcurrencyKeyState(
     int? Limit,
     CircuitState Circuit,
     DateTimeOffset? OpenUntil,
-    int Failures);
+    int Failures,
+    RateLimit? Rate = null,
+    int StartedInWindow = 0);
+
+/// <summary>At most <paramref name="Count"/> jobs with a key start within any <paramref name="Per"/> (a sliding window): "100 a minute".</summary>
+public sealed record RateLimit(int Count, TimeSpan Per);
 
 /// <summary>What an implementation guarantees beyond at-least-once delivery. The conformance suite checks each one declared.</summary>
 /// <param name="Durable">Jobs survive the process ending (and, where stated, a power cut).</param>
@@ -234,6 +271,8 @@ public sealed record WorkQueueCapabilities(
 /// <paramref name="CircuitMaxCooldown"/>. Default 1 minute.</param>
 /// <param name="CircuitMaxCooldown">Default 15 minutes.</param>
 /// <param name="DeadLetterRetention">Dead letters older than this are deleted. Default 30 days.</param>
+/// <param name="RateLimits">Concurrency key or prefix (<c>api:*</c>) to how many jobs with it may start per window, across all
+/// workers; matched like <paramref name="ConcurrencyLimits"/>. Applies beside the concurrency limit.</param>
 public sealed record WorkQueueOptions(
     int MaxAttempts = 5,
     TimeSpan? MaxAge = null,
@@ -245,7 +284,8 @@ public sealed record WorkQueueOptions(
     int CircuitFailures = 5,
     TimeSpan? CircuitCooldown = null,
     TimeSpan? CircuitMaxCooldown = null,
-    TimeSpan? DeadLetterRetention = null)
+    TimeSpan? DeadLetterRetention = null,
+    IReadOnlyDictionary<string, RateLimit>? RateLimits = null)
 {
     public TimeSpan MaxAgeOrDefault => MaxAge ?? TimeSpan.FromHours(24);
 
@@ -259,20 +299,38 @@ public sealed record WorkQueueOptions(
 
     /// <summary>The limit for a concurrency key: exact entry, then the longest matching prefix, then the default.</summary>
     public int? LimitFor(string? concurrencyKey)
+        => concurrencyKey is null ? null : Match(ConcurrencyLimits, concurrencyKey, out var limit) ? limit : DefaultConcurrencyLimit;
+
+    /// <summary>The rate limit for a concurrency key (exact entry, then the longest matching prefix), or null.</summary>
+    public RateLimit? RateFor(string? concurrencyKey)
+        => concurrencyKey is not null && Match(RateLimits, concurrencyKey, out var rate) ? rate : null;
+
+    private static bool Match<T>(IReadOnlyDictionary<string, T>? table, string key, out T value)
     {
-        if (concurrencyKey is null) return null;
-        if (ConcurrencyLimits is { } limits)
+        value = default!;
+        if (table is null) return false;
+        if (table.TryGetValue(key, out value!)) return true;
+        foreach (var entry in table.Where(l => l.Key.EndsWith('*') && key.StartsWith(l.Key[..^1], StringComparison.Ordinal)).OrderByDescending(l => l.Key.Length))
         {
-            if (limits.TryGetValue(concurrencyKey, out var exact)) return exact;
-            var prefix = limits
-                .Where(l => l.Key.EndsWith('*') && concurrencyKey.StartsWith(l.Key[..^1], StringComparison.Ordinal))
-                .OrderByDescending(l => l.Key.Length)
-                .Select(l => (int?)l.Value)
-                .FirstOrDefault();
-            if (prefix is not null) return prefix;
+            value = entry.Value;
+            return true;
         }
 
-        return DefaultConcurrencyLimit;
+        return false;
+    }
+
+    /// <summary>The request's headers with the current trace context added (<see cref="JobHeaders.TraceParent"/>), unless the caller
+    /// set one. Implementations store these instead of the request's own.</summary>
+    public static Dictionary<string, string> HeadersWithTrace(EnqueueRequest request)
+    {
+        var headers = new Dictionary<string, string>(request.Headers ?? new Dictionary<string, string>(), StringComparer.Ordinal);
+        if (System.Diagnostics.Activity.Current is { } current && !headers.ContainsKey(JobHeaders.TraceParent))
+        {
+            headers[JobHeaders.TraceParent] = current.Id!;
+            if (current.TraceStateString is { Length: > 0 } state) headers[JobHeaders.TraceState] = state;
+        }
+
+        return headers;
     }
 
     /// <summary>Checks a request against the shared rules; implementations call it first.</summary>

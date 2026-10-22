@@ -56,10 +56,11 @@ public static class WorkQueueOperations
     /// <summary>
     /// Redrives every dead letter that matches, oldest first, and returns how many. Use it when a resource is back after an
     /// outage: the jobs are released through their concurrency keys' limits and circuits, so they trickle back rather than
-    /// stampede. With <paramref name="dryRun"/>, only counts.
+    /// stampede. Jobs without a key come back all at once unless <paramref name="spreadOver"/> spaces them out evenly. With
+    /// <paramref name="dryRun"/>, only counts.
     /// </summary>
     public static async Task<int> RedriveMatchingAsync(IWorkQueue queue, string name, DeadLetterFilter filter, bool dryRun = false,
-        CancellationToken ct = default)
+        TimeSpan? spreadOver = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(queue);
         ArgumentNullException.ThrowIfNull(filter);
@@ -67,9 +68,14 @@ public static class WorkQueueOperations
         if (dryRun)
             return matching.Count;
         var redriven = 0;
-        foreach (var dead in matching)
-            if (await queue.RedriveAsync(name, dead.Id, ct).ConfigureAwait(false))
+        var start = DateTimeOffset.UtcNow;
+        for (var i = 0; i < matching.Count; i++)
+        {
+            var at = spreadOver is { } spread && matching.Count > 1 ? start + spread * i / (matching.Count - 1) : start;
+            if (await queue.RedriveAsync(name, matching[i].Id, at, ct).ConfigureAwait(false))
                 redriven++;
+        }
+
         return redriven;
     }
 }

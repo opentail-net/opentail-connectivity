@@ -63,9 +63,11 @@ public sealed class SqliteWorkQueue : IWorkQueue
                 probe_token TEXT NULL,
                 probe_until INTEGER NOT NULL,
                 PRIMARY KEY (queue, conc_key));
+            CREATE TABLE IF NOT EXISTS key_starts (queue TEXT NOT NULL, conc_key TEXT NOT NULL, at INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS key_starts_at ON key_starts (queue, conc_key, at);
             """);
         // Columns added after the first 0.0.1; files made before get them here.
-        foreach (var (column, type) in new[] { ("source", "TEXT"), ("conc_key", "TEXT"), ("max_run_ms", "INTEGER"), ("leased_at", "INTEGER") })
+        foreach (var (column, type) in new[] { ("source", "TEXT"), ("conc_key", "TEXT"), ("max_run_ms", "INTEGER"), ("leased_at", "INTEGER"), ("progress", "TEXT"), ("heartbeat_at", "INTEGER") })
         {
             using var exists = Command(connection, null, "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = $c", ("$c", column));
             if ((long)exists.ExecuteScalar()! == 0)
@@ -84,13 +86,32 @@ public sealed class SqliteWorkQueue : IWorkQueue
         using var connection = Open();
         using var tx = connection.BeginTransaction(deferred: false);
         Purge(connection, tx, now);
+        if (request.Key is { } key)
+        {
+            // The new request's scope decides whether the earlier job with this key keeps it out, or lets the key go.
+            using var find = Command(connection, tx, "SELECT id, state FROM jobs WHERE queue = $queue AND key = $key", ("$queue", request.Queue), ("$key", key));
+            using var reader = find.ExecuteReader();
+            if (reader.Read())
+            {
+                var (existingId, state) = (reader.GetString(0), reader.GetInt32(1));
+                reader.Close();
+                if (WorkQueueRules.KeyBlocks(request.KeyScope, state == Ready, state == Leased))
+                {
+                    tx.Commit();
+                    return Task.FromResult(new EnqueueResult(existingId, Duplicate: true));
+                }
+
+                Execute(connection, tx, "UPDATE jobs SET key = NULL WHERE id = $id", ("$id", existingId));
+            }
+        }
+
         var id = Guid.NewGuid().ToString("N");
         var added = Execute(connection, tx, """
             INSERT OR IGNORE INTO jobs (id, queue, tenant, body, key, headers, enqueued_at, not_before, state, source, conc_key, max_run_ms)
             VALUES ($id, $queue, $tenant, $body, $key, $headers, $now, $notBefore, $ready, $source, $conc, $maxRun)
             """,
             ("$id", id), ("$queue", request.Queue), ("$tenant", request.Tenant), ("$body", request.Body), ("$key", request.Key),
-            ("$headers", JsonSerializer.Serialize(request.Headers ?? new Dictionary<string, string>())), ("$now", now),
+            ("$headers", JsonSerializer.Serialize(WorkQueueOptions.HeadersWithTrace(request))), ("$now", now),
             ("$notBefore", request.NotBefore is { } nb ? nb.ToUnixTimeMilliseconds() : now), ("$ready", Ready), ("$source", request.Source),
             ("$conc", request.ConcurrencyKey), ("$maxRun", request.MaxRunTime is { } m ? (long)m.TotalMilliseconds : null));
         EnqueueResult result;
@@ -139,8 +160,27 @@ public sealed class SqliteWorkQueue : IWorkQueue
         using (var reader = select.ExecuteReader())
             while (reader.Read())
                 circuits[reader.GetString(0)] = new CircuitRecord(reader.GetInt32(1), reader.GetInt64(2), reader.GetInt64(3), NullableString(reader, 4), reader.GetInt64(5));
+        // Starts within each rate window. Purged past the longest window.
+        var started = new Dictionary<string, List<long>>(StringComparer.Ordinal);
+        var longest = _options.RateLimits is { Count: > 0 } rates ? (long)rates.Values.Max(r => r.Per.TotalMilliseconds) : 0;
+        if (longest > 0)
+        {
+            Execute(connection, tx, "DELETE FROM key_starts WHERE queue = $queue AND at <= $cut", ("$queue", queue), ("$cut", now - longest));
+            using var select = Command(connection, tx, "SELECT conc_key, at FROM key_starts WHERE queue = $queue", ("$queue", queue));
+            using var reader = select.ExecuteReader();
+            while (reader.Read())
+            {
+                var k = reader.GetString(0);
+                if (_options.RateFor(k) is { } rate && reader.GetInt64(1) > now - (long)rate.Per.TotalMilliseconds)
+                    (started.TryGetValue(k, out var list) ? list : started[k] = []).Add(reader.GetInt64(1));
+            }
+        }
+
+        bool RateFull(string k) => _options.RateFor(k) is { } r && started.GetValueOrDefault(k)?.Count >= r.Count;
+
         var excluded = skipConcurrencyKeys
             .Concat(running.Where(r => r.Value >= (_options.LimitFor(r.Key) ?? int.MaxValue)).Select(r => r.Key))
+            .Concat(started.Keys.Where(RateFull))
             .Concat(circuits.Where(c => !Circuits.MayRelease(c.Value, now, _options).Allowed).Select(c => c.Key))
             .Distinct(StringComparer.Ordinal)
             .ToList();
@@ -164,7 +204,7 @@ public sealed class SqliteWorkQueue : IWorkQueue
             var probe = false;
             if (row.ConcurrencyKey is { } ck)
             {
-                if (skipConcurrencyKeys.Contains(ck) || running.GetValueOrDefault(ck) >= (_options.LimitFor(ck) ?? int.MaxValue))
+                if (skipConcurrencyKeys.Contains(ck) || running.GetValueOrDefault(ck) >= (_options.LimitFor(ck) ?? int.MaxValue) || RateFull(ck))
                     continue;
                 if (!circuits.TryGetValue(ck, out var circuit))
                     circuits[ck] = circuit = ReadCircuit(connection, tx, queue, ck);
@@ -182,11 +222,19 @@ public sealed class SqliteWorkQueue : IWorkQueue
             }
 
             var token = Guid.NewGuid().ToString("N");
-            Execute(connection, tx, "UPDATE jobs SET state = $leased, attempts = attempts + 1, leased_at = $now, leased_until = $until, lease_token = $token WHERE id = $id",
-                ("$leased", Leased), ("$now", now), ("$until", until), ("$token", token), ("$id", row.Id));
+            Execute(connection, tx, """
+                UPDATE jobs SET state = $leased, attempts = attempts + 1, leased_at = $now, leased_until = $until, lease_token = $token,
+                    progress = NULL, heartbeat_at = NULL
+                WHERE id = $id
+                """, ("$leased", Leased), ("$now", now), ("$until", until), ("$token", token), ("$id", row.Id));
             if (row.ConcurrencyKey is { } key)
             {
                 running[key] = running.GetValueOrDefault(key) + 1;
+                if (_options.RateFor(key) is not null)
+                {
+                    Execute(connection, tx, "INSERT INTO key_starts (queue, conc_key, at) VALUES ($queue, $key, $now)", ("$queue", queue), ("$key", key), ("$now", now));
+                    (started.TryGetValue(key, out var list) ? list : started[key] = []).Add(now);
+                }
                 if (probe)
                 {
                     circuits[key] = Circuits.ProbeReleased(circuits[key]!, token, until);
@@ -228,9 +276,14 @@ public sealed class SqliteWorkQueue : IWorkQueue
     }
 
     public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, CancellationToken ct = default)
+        => ExtendAsync(job, lease, progress: null, lastHeartbeat: null, ct);
+
+    public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, string? progress, DateTimeOffset? lastHeartbeat, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
-        return WithLease(job, "leased_until = $until", null, ("$until", Now + (long)lease.TotalMilliseconds));
+        return WithLease(job, "leased_until = $until, progress = COALESCE($progress, progress), heartbeat_at = COALESCE($beat, heartbeat_at)", null,
+            ("$until", Now + (long)lease.TotalMilliseconds), ("$progress", progress is { Length: > 200 } ? progress[..200] : progress),
+            ("$beat", lastHeartbeat?.ToUnixTimeMilliseconds()));
     }
 
     public Task<IReadOnlyList<DeadLetter>> DeadLettersAsync(string queue, int max = 100, CancellationToken ct = default)
@@ -253,15 +306,18 @@ public sealed class SqliteWorkQueue : IWorkQueue
     }
 
     public Task<bool> RedriveAsync(string queue, string id, CancellationToken ct = default)
+        => RedriveAsync(queue, id, _time.GetUtcNow(), ct);
+
+    public Task<bool> RedriveAsync(string queue, string id, DateTimeOffset notBefore, CancellationToken ct = default)
     {
         WorkQueueOptions.ValidateQueueName(queue);
         var now = Now;
         using var connection = Open();
         var changed = Execute(connection, null, """
-            UPDATE jobs SET state = $ready, attempts = 0, enqueued_at = $now, not_before = $now, finished_at = NULL,
+            UPDATE jobs SET state = $ready, attempts = 0, enqueued_at = $now, not_before = MAX($now, $notBefore), finished_at = NULL,
                 dead_reason = NULL, last_error = NULL, lease_token = NULL, leased_until = NULL
             WHERE queue = $queue AND id = $id AND state = $dead
-            """, ("$ready", Ready), ("$now", now), ("$queue", queue), ("$id", id), ("$dead", Dead));
+            """, ("$ready", Ready), ("$now", now), ("$notBefore", notBefore.ToUnixTimeMilliseconds()), ("$queue", queue), ("$id", id), ("$dead", Dead));
         return Task.FromResult(changed == 1);
     }
 
@@ -310,7 +366,7 @@ public sealed class SqliteWorkQueue : IWorkQueue
         using var connection = Open();
         using var select = Command(connection, null, """
             SELECT id, tenant, key, source, headers, state, attempts, enqueued_at, not_before, leased_until, last_error, length(CAST(body AS BLOB)),
-                conc_key, max_run_ms, leased_at
+                conc_key, max_run_ms, leased_at, progress, heartbeat_at
             FROM jobs WHERE queue = $queue AND state IN ($ready, $leased) ORDER BY enqueued_at, seq LIMIT $max
             """, ("$queue", queue), ("$ready", Ready), ("$leased", Leased), ("$max", max));
         using var reader = select.ExecuteReader();
@@ -325,7 +381,9 @@ public sealed class SqliteWorkQueue : IWorkQueue
                 Headers(reader.GetString(4)), state, reader.GetInt32(6), DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(7)),
                 until is { } u ? DateTimeOffset.FromUnixTimeMilliseconds(u) : null, NullableString(reader, 10), reader.GetInt32(11),
                 NullableString(reader, 12), RunTime(reader.IsDBNull(13) ? null : reader.GetInt64(13)),
-                running && !reader.IsDBNull(14) ? DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(14)) : null));
+                running && !reader.IsDBNull(14) ? DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(14)) : null,
+                running ? NullableString(reader, 15) : null,
+                running && !reader.IsDBNull(16) ? DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(16)) : null));
         }
 
         return Task.FromResult<IReadOnlyList<PendingJob>>(pending);
@@ -353,13 +411,21 @@ public sealed class SqliteWorkQueue : IWorkQueue
             while (reader.Read())
                 circuits[reader.GetString(0)] = new CircuitRecord(reader.GetInt32(1), reader.GetInt64(2), reader.GetInt64(3), NullableString(reader, 4), reader.GetInt64(5));
 
-        return Task.FromResult<IReadOnlyList<ConcurrencyKeyState>>(counts.Keys.Union(circuits.Keys).Order(StringComparer.Ordinal).Select(k =>
+        var starts = new Dictionary<string, int>(StringComparer.Ordinal);
+        using (var select = Command(connection, null, "SELECT conc_key, at FROM key_starts WHERE queue = $queue", ("$queue", queue)))
+        using (var reader = select.ExecuteReader())
+            while (reader.Read())
+                if (_options.RateFor(reader.GetString(0)) is { } rate && reader.GetInt64(1) > now - (long)rate.Per.TotalMilliseconds)
+                    starts[reader.GetString(0)] = starts.GetValueOrDefault(reader.GetString(0)) + 1;
+
+        return Task.FromResult<IReadOnlyList<ConcurrencyKeyState>>(counts.Keys.Union(circuits.Keys).Union(starts.Keys).Order(StringComparer.Ordinal).Select(k =>
         {
             var c = circuits.GetValueOrDefault(k);
             var state = Circuits.State(c, now, _options);
             var (r, w) = counts.GetValueOrDefault(k);
             return new ConcurrencyKeyState(queue, k, r, w, _options.LimitFor(k), state,
-                state == CircuitState.Open ? DateTimeOffset.FromUnixTimeMilliseconds(c!.OpenUntilMs) : null, c?.Failures ?? 0);
+                state == CircuitState.Open ? DateTimeOffset.FromUnixTimeMilliseconds(c!.OpenUntilMs) : null, c?.Failures ?? 0,
+                _options.RateFor(k), starts.GetValueOrDefault(k));
         }).ToList());
     }
 

@@ -41,6 +41,9 @@ public enum WorkerEventKind
 /// <param name="MaxRunTime">For jobs that carry none (<see cref="LeasedJob.MaxRunTime"/>); null for no limit.</param>
 /// <param name="ZombieGrace">How long a timed-out handler gets to stop after being cancelled before it counts as a zombie. Default 5 seconds.</param>
 /// <param name="DrainTime">On stop, how long running handlers may finish before they are cancelled. Default 10 seconds.</param>
+/// <param name="HeartbeatTimeout">When set, a handler must call <see cref="JobContext.Heartbeat"/> (through
+/// <see cref="JobContext.Current"/>) at least this often; one that stops is treated as hung, like one past its maximum run time.
+/// Catches a handler stuck on a lock long before a generous run-time limit would.</param>
 public sealed record WorkQueueWorkerOptions(
     string Queue,
     IReadOnlySet<string> Tenants,
@@ -51,7 +54,8 @@ public sealed record WorkQueueWorkerOptions(
     TimeSpan? RetryMaxDelay = null,
     TimeSpan? MaxRunTime = null,
     TimeSpan? ZombieGrace = null,
-    TimeSpan? DrainTime = null)
+    TimeSpan? DrainTime = null,
+    TimeSpan? HeartbeatTimeout = null)
 {
     internal TimeSpan LeaseOrDefault => Lease ?? TimeSpan.FromMinutes(1);
     internal TimeSpan IdleWaitOrDefault => IdleWait ?? TimeSpan.FromSeconds(1);
@@ -147,13 +151,16 @@ public sealed class WorkQueueWorker(
         await all.ConfigureAwait(false);
     }
 
-    /// <summary>The retry delay before attempt <paramref name="attempt"/> + 1: base × 2^(attempt−1), capped, ±20% jitter.</summary>
+    /// <summary>
+    /// The retry delay before attempt <paramref name="attempt"/> + 1: base × 2^(attempt−1), capped, then "equal jitter" (half of it
+    /// fixed, half random). After a mass failure the retries spread over the whole second half rather than bunching near the same
+    /// moment, and none comes back sooner than half the delay.
+    /// </summary>
     public static TimeSpan Backoff(int attempt, TimeSpan baseDelay, TimeSpan maxDelay, Random? random = null)
     {
         var exponent = Math.Clamp(attempt - 1, 0, 30);
         var raw = Math.Min(baseDelay.TotalMilliseconds * Math.Pow(2, exponent), maxDelay.TotalMilliseconds);
-        var jitter = 0.8 + (random ?? Random.Shared).NextDouble() * 0.4;
-        return TimeSpan.FromMilliseconds(raw * jitter);
+        return TimeSpan.FromMilliseconds(raw / 2 + (random ?? Random.Shared).NextDouble() * raw / 2);
     }
 
     /// <summary>Whether a handler's exception means the resource failed rather than the job.</summary>
@@ -169,68 +176,79 @@ public sealed class WorkQueueWorker(
             return;
         }
 
+        using var activity = JobTrace.StartProcessing(job);
+        var context = new JobContext(job, _time);
         var maxRun = job.MaxRunTime ?? _options.MaxRunTime;
+        string? stopReason = null;
         using var lost = new CancellationTokenSource();
-        using var timedOut = maxRun is { } limit ? new CancellationTokenSource(limit, _time) : new CancellationTokenSource();
-        using var both = CancellationTokenSource.CreateLinkedTokenSource(handlersStop, lost.Token, timedOut.Token);
+        using var gaveUp = new CancellationTokenSource(); // the run-time limit or a missed heartbeat
+        if (maxRun is { } limit)
+        {
+            gaveUp.CancelAfter(limit);
+            stopReason = $"timed out after {limit}";
+        }
+
+        using var both = CancellationTokenSource.CreateLinkedTokenSource(handlersStop, lost.Token, gaveUp.Token);
         using var renewing = new CancellationTokenSource();
-        using var renewingOrTimedOut = CancellationTokenSource.CreateLinkedTokenSource(renewing.Token, timedOut.Token);
-        var renewal = RenewAsync(job, lost, renewingOrTimedOut.Token);
-        var handlerTask = Task.Run(() => _handler(job, both.Token), CancellationToken.None);
-
-        if (maxRun is { } max)
+        using var renewingOrGaveUp = CancellationTokenSource.CreateLinkedTokenSource(renewing.Token, gaveUp.Token);
+        var renewal = RenewAsync(job, context, lost, renewingOrGaveUp.Token);
+        var heartbeats = _options.HeartbeatTimeout is { } beat
+            ? WatchHeartbeatsAsync(context, beat, () => { stopReason = $"no heartbeat for {beat}"; gaveUp.Cancel(); }, renewingOrGaveUp.Token)
+            : Task.CompletedTask;
+        var handlerTask = Task.Run(async () =>
         {
-            using var waitCancel = new CancellationTokenSource();
-            var deadline = Task.Delay(max + _options.ZombieGraceOrDefault, _time, waitCancel.Token);
-            var first = await Task.WhenAny(handlerTask, deadline).ConfigureAwait(false);
-            await waitCancel.CancelAsync().ConfigureAwait(false);
-            if (first != handlerTask)
+            JobContext.CurrentContext.Value = context;
+            await _handler(job, both.Token).ConfigureAwait(false);
+        }, CancellationToken.None);
+
+        // Wait for the handler, or for the worker to give up on it (run-time limit, missed heartbeat).
+        await Task.WhenAny(handlerTask, Cancelled(gaveUp.Token)).ConfigureAwait(false);
+        if (!handlerTask.IsCompleted)
+        {
+            // Cancelled; give it the grace period to stop.
+            using var graceCancel = new CancellationTokenSource();
+            await Task.WhenAny(handlerTask, Task.Delay(_options.ZombieGraceOrDefault, _time, graceCancel.Token)).ConfigureAwait(false);
+            await graceCancel.CancelAsync().ConfigureAwait(false);
+        }
+
+        await renewing.CancelAsync().ConfigureAwait(false);
+        await renewal.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        await heartbeats.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+
+        if (!handlerTask.IsCompleted)
+        {
+            // Still running after the grace: give the job back now and keep its resource's slot in this process until it really ends.
+            // Mark the key first: once the job is given back its slot is free, and this worker must not lease into it.
+            var key = job.ConcurrencyKey ?? "";
+            _zombies.AddOrUpdate(key, 1, (_, n) => n + 1);
+            await GiveBackAsync(job, stopReason!).ConfigureAwait(false);
+            JobTrace.Failed(activity, stopReason!);
+            Observe(WorkerEventKind.Zombie, job.Id, job.Attempt, $"the handler did not stop within {_options.ZombieGraceOrDefault.TotalSeconds:0} s of being cancelled");
+            _ = handlerTask.ContinueWith(_ =>
             {
-                // Cancelled at the deadline and still running after the grace: give the job back now and keep its resource's slot
-                // in this process until the handler really ends.
-                await renewing.CancelAsync().ConfigureAwait(false);
-                await renewal.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-                // Mark the key first: once the job is given back its slot is free, and this worker must not lease into it.
-                var key = job.ConcurrencyKey ?? "";
-                _zombies.AddOrUpdate(key, 1, (_, n) => n + 1);
-                await GiveBackAfterTimeoutAsync(job, max).ConfigureAwait(false);
-                Observe(WorkerEventKind.Zombie, job.Id, job.Attempt, $"the handler did not stop within {_options.ZombieGraceOrDefault.TotalSeconds:0} s of being cancelled");
-                _ = handlerTask.ContinueWith(_ =>
-                {
-                    _zombies.AddOrUpdate(key, 0, (_, n) => Math.Max(0, n - 1));
-                    Observe(WorkerEventKind.Zombie, job.Id, job.Attempt, "ended");
-                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-                return;
-            }
+                _zombies.AddOrUpdate(key, 0, (_, n) => Math.Max(0, n - 1));
+                Observe(WorkerEventKind.Zombie, job.Id, job.Attempt, "ended");
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            return;
         }
 
-        Exception? failure = null;
-        try
-        {
-            await handlerTask.ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            failure = ex;
-        }
-        finally
-        {
-            await renewing.CancelAsync().ConfigureAwait(false);
-            await renewal.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-        }
-
+        var failure = handlerTask.Exception?.InnerException ?? (handlerTask.IsCanceled ? new OperationCanceledException() : null);
         if (lost.IsCancellationRequested)
         {
+            JobTrace.Failed(activity, "lease lost");
             Observe(WorkerEventKind.LeaseLost, job.Id, job.Attempt, "the lease was lost while the handler ran; its result is ignored");
             return;
         }
 
-        if (timedOut.IsCancellationRequested && failure is not null && maxRun is { } ran)
+        if (gaveUp.IsCancellationRequested && failure is not null)
         {
-            await GiveBackAfterTimeoutAsync(job, ran).ConfigureAwait(false);
+            JobTrace.Failed(activity, stopReason!);
+            await GiveBackAsync(job, stopReason!).ConfigureAwait(false);
             return;
         }
 
+        if (failure is not null)
+            JobTrace.Failed(activity, Describe(failure));
         switch (failure)
         {
             case null:
@@ -254,16 +272,33 @@ public sealed class WorkQueueWorker(
         }
     }
 
-    /// <summary>A timeout is the resource's failure: retried after a backoff, and counted towards its key's circuit.</summary>
-    private Task GiveBackAfterTimeoutAsync(LeasedJob job, TimeSpan limit)
+    private static Task Cancelled(CancellationToken token) => Task.Delay(Timeout.Infinite, token).ContinueWith(_ => { }, TaskScheduler.Default);
+
+    /// <summary>Calls <paramref name="missed"/> once when the handler has not called <see cref="JobContext.Heartbeat"/> for
+    /// <paramref name="timeout"/>.</summary>
+    private async Task WatchHeartbeatsAsync(JobContext context, TimeSpan timeout, Action missed, CancellationToken done)
+    {
+        var check = TimeSpan.FromMilliseconds(Math.Clamp(timeout.TotalMilliseconds / 4, 10, 1000));
+        while (!done.IsCancellationRequested)
+        {
+            await Task.Delay(check, _time, done).ConfigureAwait(false);
+            if (_time.GetUtcNow() - context.LastHeartbeat > timeout)
+            {
+                missed();
+                return;
+            }
+        }
+    }
+
+    /// <summary>A timeout or a missed heartbeat is the resource's failure: retried after a backoff, counted towards its key's circuit.</summary>
+    private Task GiveBackAsync(LeasedJob job, string reason)
     {
         var delay = Backoff(job.Attempt, _options.RetryBaseOrDefault, _options.RetryMaxOrDefault);
-        var detail = $"timed out after {limit}";
-        return SettleAsync(job, q => q.RetryAsync(job, delay, detail, resourceFailure: true), WorkerEventKind.TimedOut, detail, delay);
+        return SettleAsync(job, q => q.RetryAsync(job, delay, reason, resourceFailure: true), WorkerEventKind.TimedOut, reason, delay);
     }
 
     /// <summary>Extends the lease at half time until <paramref name="done"/>; when that fails, cancels the handler through <paramref name="lost"/>.</summary>
-    private async Task RenewAsync(LeasedJob job, CancellationTokenSource lost, CancellationToken done)
+    private async Task RenewAsync(LeasedJob job, JobContext context, CancellationTokenSource lost, CancellationToken done)
     {
         var lease = _options.LeaseOrDefault;
         while (!done.IsCancellationRequested)
@@ -273,7 +308,8 @@ public sealed class WorkQueueWorker(
             try
             {
                 // Not cancelled by `done`: an extension under way must finish, or the lease could lapse just as the handler ends.
-                kept = await _queue.ExtendAsync(job, lease, CancellationToken.None).ConfigureAwait(false);
+                kept = await _queue.ExtendAsync(job, lease, context.Progress, context.HeartbeatReported ? context.LastHeartbeat : null, CancellationToken.None)
+                    .ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

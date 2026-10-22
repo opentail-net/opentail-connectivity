@@ -22,8 +22,13 @@ public interface IQueueControl
     /// <summary>Applies <paramref name="change"/> to the key's circuit atomically (null removes it) and returns the new value.</summary>
     Task<CircuitRecord?> UpdateCircuitAsync(string queue, string key, Func<CircuitRecord?, CircuitRecord?> change, CancellationToken ct = default);
 
-    /// <summary>Keys with unexpired slots or a circuit: how many slots each holds, and its circuit.</summary>
-    Task<IReadOnlyList<(string Key, int Running, CircuitRecord? Circuit)>> KeysAsync(string queue, CancellationToken ct = default);
+    /// <summary>Records a start for <paramref name="key"/> when fewer than <see cref="RateLimit.Count"/> started within the last
+    /// <see cref="RateLimit.Per"/> (a sliding window); false, recording nothing, when the window is full.</summary>
+    Task<bool> TryTakeStartAsync(string queue, string key, RateLimit rate, DateTimeOffset now, CancellationToken ct = default);
+
+    /// <summary>Keys with unexpired slots, a circuit or recent starts: how many slots each holds, its circuit, and its starts within
+    /// the last hour (rate windows longer than that are counted up to an hour).</summary>
+    Task<IReadOnlyList<(string Key, int Running, CircuitRecord? Circuit, int Starts)>> KeysAsync(string queue, CancellationToken ct = default);
 }
 
 /// <summary>Queue control in process memory: for one process, or tests.</summary>
@@ -34,6 +39,7 @@ public sealed class InMemoryQueueControl(TimeProvider? time = null) : IQueueCont
     private readonly HashSet<(string Queue, string Id)> _cancelled = [];
     private readonly Dictionary<(string Queue, string Key), Dictionary<string, DateTimeOffset>> _slots = [];
     private readonly Dictionary<(string Queue, string Key), CircuitRecord> _circuits = [];
+    private readonly Dictionary<(string Queue, string Key), List<DateTimeOffset>> _starts = [];
 
     public Task MarkCancelledAsync(string queue, string id, string reason, CancellationToken ct = default)
     {
@@ -85,15 +91,31 @@ public sealed class InMemoryQueueControl(TimeProvider? time = null) : IQueueCont
         }
     }
 
-    public Task<IReadOnlyList<(string Key, int Running, CircuitRecord? Circuit)>> KeysAsync(string queue, CancellationToken ct = default)
+    public Task<bool> TryTakeStartAsync(string queue, string key, RateLimit rate, DateTimeOffset now, CancellationToken ct = default)
     {
         lock (_gate)
         {
+            if (!_starts.TryGetValue((queue, key), out var starts))
+                _starts[(queue, key)] = starts = [];
+            starts.RemoveAll(t => t <= now - rate.Per);
+            if (starts.Count >= rate.Count) return Task.FromResult(false);
+            starts.Add(now);
+            return Task.FromResult(true);
+        }
+    }
+
+    public Task<IReadOnlyList<(string Key, int Running, CircuitRecord? Circuit, int Starts)>> KeysAsync(string queue, CancellationToken ct = default)
+    {
+        lock (_gate)
+        {
+            var hourAgo = _time.GetUtcNow().AddHours(-1);
             var keys = _slots.Keys.Where(k => k.Queue == queue).Select(k => k.Key)
                 .Concat(_circuits.Keys.Where(k => k.Queue == queue).Select(k => k.Key))
+                .Concat(_starts.Keys.Where(k => k.Queue == queue).Select(k => k.Key))
                 .Distinct(StringComparer.Ordinal);
-            return Task.FromResult<IReadOnlyList<(string, int, CircuitRecord?)>>(
-                keys.Select(k => (k, Live(queue, k).Count, _circuits.GetValueOrDefault((queue, k)))).Where(k => k.Item2 > 0 || k.Item3 is not null).ToList());
+            return Task.FromResult<IReadOnlyList<(string, int, CircuitRecord?, int)>>(keys
+                .Select(k => (k, Live(queue, k).Count, _circuits.GetValueOrDefault((queue, k)), _starts.GetValueOrDefault((queue, k))?.Count(t => t > hourAgo) ?? 0))
+                .Where(k => k.Item2 > 0 || k.Item3 is not null || k.Item4 > 0).ToList());
         }
     }
 

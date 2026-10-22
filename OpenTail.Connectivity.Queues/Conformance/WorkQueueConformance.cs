@@ -70,6 +70,12 @@ public static class WorkQueueConformance
             Check("looking at dead letters and pending jobs many times destroys nothing", true, LookingDestroysNothingAsync),
             Check("a job that keeps crashing its worker ends in the dead letters", capabilities.Durable && capabilities.LeaseExpiry, CrashLoopAsync),
             Check("a long run of jobs for one full resource does not hide other resources", capabilities.ConcurrencyLimits, NoStarvationAsync),
+            Check("a key scoped until finished can be used again once the job finished", capabilities.DeduplicatesKeys, UntilFinishedAsync),
+            Check("a key scoped while pending lets a new job queue while the first runs", capabilities.DeduplicatesKeys, WhilePendingAsync),
+            Check("a rate limit caps how many start per window", capabilities.ConcurrencyLimits, RateLimitAsync),
+            Check("the enqueuer's trace context travels with the job", true, TraceContextAsync),
+            Check("a redrive can be delayed", capabilities.DelayedDelivery, DelayedRedriveAsync),
+            Check("a running job's heartbeat progress is kept", capabilities.ListsRunningJobs, ProgressAsync),
         ];
     }
 
@@ -529,6 +535,76 @@ public static class WorkQueueConformance
         }
 
         Ensure(found, "a job for a free resource stayed hidden behind 600 jobs for a full one");
+    }
+
+    private static async Task UntilFinishedAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        var once = new EnqueueRequest(Q, "acme", "{}", Key: "refresh:acme", KeyScope: KeyScope.UntilFinished);
+        Ensure(!(await q.EnqueueAsync(once)).Duplicate, "the first job was refused");
+        Ensure((await q.EnqueueAsync(once)).Duplicate, "a second job got in while the first waited");
+        Ensure(await q.CompleteAsync(Single(await q.LeaseAsync(Q, 1, Lease))), "completing failed");
+        Ensure(!(await q.EnqueueAsync(once)).Duplicate, "the key stayed blocked after the job finished");
+        Ensure((await q.EnqueueAsync(once with { KeyScope = KeyScope.Retention })).Duplicate, "a retention-scoped request ignored a waiting job");
+    }
+
+    private static async Task WhilePendingAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        var debounce = new EnqueueRequest(Q, "acme", "{}", Key: "index:acme", KeyScope: KeyScope.WhilePending);
+        await q.EnqueueAsync(debounce);
+        Ensure((await q.EnqueueAsync(debounce)).Duplicate, "two pending jobs for the same key");
+        var running = Single(await q.LeaseAsync(Q, 1, TimeSpan.FromMinutes(5)));
+        Ensure(!(await q.EnqueueAsync(debounce)).Duplicate, "a change made during the run was not queued behind it");
+        Ensure((await q.EnqueueAsync(debounce)).Duplicate, "a third job got in while the second waited");
+        Ensure(await q.CompleteAsync(running), "the first job could not complete after its key moved on");
+    }
+
+    private static async Task RateLimitAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions(RateLimits: new Dictionary<string, RateLimit> { ["api:*"] = new(2, TimeSpan.FromSeconds(3)) }));
+        for (var i = 0; i < 5; i++)
+            await q.EnqueueAsync(Keyed("api:crm"));
+        var first = await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5));
+        Ensure(first.Count == 2, $"{first.Count} started in the first window, not 2");
+        foreach (var j in first) await q.CompleteAsync(j);
+        Ensure((await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5))).Count == 0, "finishing early let more start in the same window");
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(5)); // a broker parks jobs over the limit for a few seconds
+        Ensure((await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5))).Count == 2, "the next window did not allow 2 more");
+    }
+
+    private static async Task TraceContextAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        using (var enqueuer = new System.Diagnostics.Activity("enqueue").SetIdFormat(System.Diagnostics.ActivityIdFormat.W3C).Start())
+        {
+            await q.EnqueueAsync(Job());
+            var job = Single(await q.LeaseAsync(Q, 1, Lease));
+            Ensure(job.Headers.GetValueOrDefault(JobHeaders.TraceParent) == enqueuer.Id, "the trace context was not carried with the job");
+        }
+    }
+
+    private static async Task DelayedRedriveAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        await q.EnqueueAsync(Job());
+        Ensure(await q.DeadLetterAsync(Single(await q.LeaseAsync(Q, 1, Lease)), "bad"), "dead-lettering failed");
+        var id = Single(await q.DeadLettersAsync(Q)).Id;
+        Ensure(await q.RedriveAsync(Q, id, clock.GetUtcNow() + TimeSpan.FromSeconds(4)), "the delayed redrive failed");
+        Ensure((await q.LeaseAsync(Q, 1, Lease)).Count == 0, "a delayed redrive ran early");
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(5));
+        Ensure((await q.LeaseAsync(Q, 1, Lease)).Count == 1, "a delayed redrive did not run once due");
+    }
+
+    private static async Task ProgressAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        await q.EnqueueAsync(Job());
+        var job = Single(await q.LeaseAsync(Q, 1, TimeSpan.FromMinutes(5)));
+        var beat = clock.GetUtcNow();
+        Ensure(await q.ExtendAsync(job, TimeSpan.FromMinutes(5), "page 40 of 120", beat), "extending with progress failed");
+        var row = (await q.PendingAsync(Q)).Single(p => p.Id == job.Id);
+        Ensure(row.Progress == "page 40 of 120" && row.LastHeartbeat?.ToUnixTimeMilliseconds() == beat.ToUnixTimeMilliseconds(), "the progress or heartbeat was not kept");
     }
 
     private static async Task Refused(Func<Task> act, string what)

@@ -30,6 +30,8 @@ public sealed class SqliteQueueControl : IQueueControl
             CREATE TABLE IF NOT EXISTS slots (queue TEXT NOT NULL, conc_key TEXT NOT NULL, token TEXT NOT NULL, until INTEGER NOT NULL, PRIMARY KEY (queue, conc_key, token));
             CREATE TABLE IF NOT EXISTS circuits (queue TEXT NOT NULL, conc_key TEXT NOT NULL, failures INTEGER NOT NULL, open_until INTEGER NOT NULL,
                 next_cooldown INTEGER NOT NULL, probe_token TEXT NULL, probe_until INTEGER NOT NULL, PRIMARY KEY (queue, conc_key));
+            CREATE TABLE IF NOT EXISTS key_starts (queue TEXT NOT NULL, conc_key TEXT NOT NULL, at INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS key_starts_at ON key_starts (queue, conc_key, at);
             """);
     }
 
@@ -104,7 +106,22 @@ public sealed class SqliteQueueControl : IQueueControl
         return Task.FromResult(next);
     }
 
-    public Task<IReadOnlyList<(string Key, int Running, CircuitRecord? Circuit)>> KeysAsync(string queue, CancellationToken ct = default)
+    public Task<bool> TryTakeStartAsync(string queue, string key, RateLimit rate, DateTimeOffset now, CancellationToken ct = default)
+    {
+        var at = now.ToUnixTimeMilliseconds();
+        using var connection = Open();
+        using var tx = connection.BeginTransaction(deferred: false);
+        Run(connection, tx, "DELETE FROM key_starts WHERE queue = $queue AND conc_key = $key AND at <= $cut",
+            ("$queue", queue), ("$key", key), ("$cut", at - (long)rate.Per.TotalMilliseconds));
+        using var count = Command(connection, tx, "SELECT COUNT(*) FROM key_starts WHERE queue = $queue AND conc_key = $key", ("$queue", queue), ("$key", key));
+        if ((long)count.ExecuteScalar()! >= rate.Count)
+            return Task.FromResult(false);
+        Run(connection, tx, "INSERT INTO key_starts (queue, conc_key, at) VALUES ($queue, $key, $at)", ("$queue", queue), ("$key", key), ("$at", at));
+        tx.Commit();
+        return Task.FromResult(true);
+    }
+
+    public Task<IReadOnlyList<(string Key, int Running, CircuitRecord? Circuit, int Starts)>> KeysAsync(string queue, CancellationToken ct = default)
     {
         using var connection = Open();
         var running = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -117,8 +134,14 @@ public sealed class SqliteQueueControl : IQueueControl
         using (var r = select.ExecuteReader())
             while (r.Read())
                 circuits[r.GetString(0)] = new CircuitRecord(r.GetInt32(1), r.GetInt64(2), r.GetInt64(3), r.IsDBNull(4) ? null : r.GetString(4), r.GetInt64(5));
-        return Task.FromResult<IReadOnlyList<(string, int, CircuitRecord?)>>(running.Keys.Union(circuits.Keys).Order(StringComparer.Ordinal)
-            .Select(k => (k, running.GetValueOrDefault(k), circuits.GetValueOrDefault(k))).ToList());
+        var starts = new Dictionary<string, int>(StringComparer.Ordinal);
+        using (var select = Command(connection, null, "SELECT conc_key, COUNT(*) FROM key_starts WHERE queue = $queue AND at > $cut GROUP BY conc_key",
+                   ("$queue", queue), ("$cut", Now - 3_600_000)))
+        using (var r = select.ExecuteReader())
+            while (r.Read())
+                starts[r.GetString(0)] = r.GetInt32(1);
+        return Task.FromResult<IReadOnlyList<(string, int, CircuitRecord?, int)>>(running.Keys.Union(circuits.Keys).Union(starts.Keys).Order(StringComparer.Ordinal)
+            .Select(k => (k, running.GetValueOrDefault(k), circuits.GetValueOrDefault(k), starts.GetValueOrDefault(k))).ToList());
     }
 
     private SqliteConnection Open()
