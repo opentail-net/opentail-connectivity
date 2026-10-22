@@ -47,7 +47,8 @@ public sealed class CsvSourceConnector : ISourceConnector
         ValidateHeaders(headers);
 
         var rowNumber = 0;
-        var seenIds = new Dictionary<string, int>(StringComparer.Ordinal);
+        var usedIds = new HashSet<string>(StringComparer.Ordinal);
+        var nextSuffix = new Dictionary<string, int>(StringComparer.Ordinal);
         while (csv.Read())
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -59,13 +60,16 @@ public sealed class CsvSourceConnector : ISourceConnector
 
             // A row without an id gets one from its position, which is stable while the file is only appended to.
             var id = GetField(row, _config.IdColumn) is { Length: > 0 } given ? given : $"row:{rowNumber}";
-            // A repeated id would replace the earlier row's payload; later rows get "#2", "#3" in file order instead.
-            if (seenIds.TryGetValue(id, out var count))
+            // A repeated id would replace the earlier row's payload; later rows get "#2", "#3" in file order instead, skipping
+            // any suffix already taken (rows "A", "A", "A#2" become "A", "A#2", "A#2#2"), so every final id is unique.
+            if (!usedIds.Add(id))
             {
-                seenIds[id] = ++count;
-                id = $"{id}#{count}";
+                var count = nextSuffix.GetValueOrDefault(id, 1);
+                string candidate;
+                do candidate = $"{id}#{++count}"; while (!usedIds.Add(candidate));
+                nextSuffix[id] = count;
+                id = candidate;
             }
-            else seenIds[id] = 1;
 
             var title = _config.TitleColumn is not null
                 ? GetField(row, _config.TitleColumn) ?? id

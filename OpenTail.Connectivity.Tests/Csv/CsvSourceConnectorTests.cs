@@ -188,6 +188,23 @@ public sealed class CsvSourceConnectorTests : IDisposable
     }
 
     [Fact]
+    public async Task A_generated_suffix_never_collides_with_an_id_in_the_file()
+    {
+        var path = WriteTempCsv("Id,Title,Body,Category\nA,T,one,X\nA,T,two,X\nA#2,T,three,X\nrow:5,T,four,X\n,T,five,X\nA,T,six,X\n");
+        var connector = new CsvSourceConnector(BasicConfig(), path, "tenant");
+
+        var first = await connector.DiscoverAsync().ToListAsync();
+        var bodies = new List<string>();
+        foreach (var item in first) bodies.Add(Encoding.UTF8.GetString(await connector.FetchAsync(item)));
+        var again = await connector.DiscoverAsync().ToListAsync();
+
+        Assert.Equal(["A", "A#2", "A#2#2", "row:5", "row:5#2", "A#3"], first.Select(i => i.Id));
+        Assert.Equal(first.Select(i => i.Id), again.Select(i => i.Id));
+        foreach (var (body, word) in bodies.Zip(new[] { "one", "two", "three", "four", "five", "six" }))
+            Assert.Contains(word, body);
+    }
+
+    [Fact]
     public async Task Modified_dates_are_read_without_the_culture_and_as_utc()
     {
         var path = WriteTempCsv("Id,Title,Body,Category,Updated\n1,T,b,A,2026-03-04 05:06:07\n");
