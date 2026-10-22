@@ -122,6 +122,10 @@ the changes since. So the first run is simply a delta run from the beginning.
   and `$top` from `PageSize`.
 - **Checkpoints:** after each page, yield `Checkpoint(@odata.nextLink)`. After the last page, yield
   `Checkpoint(@odata.deltaLink)`. A crash mid-run resumes from the page after the last saved one.
+- **Options fingerprint:** the cursor also stores a hash of the file filter (`FileFilter.Fingerprint`). When the filter
+  changes, the next run starts with `SourceChange.Reset` and lists the drive again, so unchanged files that are now in or out
+  of the filter are added, or left out of `SeenSourceRefs` for deletion (fetches are also refused for items outside the target
+  drive).
 - **Cursor:** the next link or delta link URL. It is checked to be on `graph.microsoft.com` before use (the shared same-host
   rule), so a tampered state file cannot send the token elsewhere.
 - **Expired token:** HTTP 410 (codes `resyncChangesApplyDifferences` / `resyncChangesUploadDifferences`) yields

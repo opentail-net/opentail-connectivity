@@ -49,6 +49,20 @@ public sealed class FileFilter
 
     public FileFilterOptions Options { get; }
 
+    /// <summary>
+    /// A short stable hash of the rules that decide which files are offered. Incremental connectors keep it with their cursor
+    /// and list everything again when it changes, so a narrowed or widened filter takes effect on unchanged files.
+    /// </summary>
+    public string Fingerprint => Hash(
+        "ext=" + string.Join(',', extensions.Select(e => e.ToLowerInvariant()).Order(StringComparer.Ordinal)),
+        "inc=" + string.Join('\n', include.Order(StringComparer.Ordinal)),
+        "exc=" + string.Join('\n', exclude.Order(StringComparer.Ordinal)),
+        "max=" + Options.MaxFileSizeBytes?.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    /// <summary>SHA-256 of the parts (newline-joined), first 16 hex characters.</summary>
+    public static string Hash(params string[] parts) =>
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join('\n', parts))))[..16];
+
     /// <summary>Extension, size and patterns together.</summary>
     public bool Includes(string relativePath, long sizeBytes) =>
         HasSupportedExtension(relativePath) && WithinSize(sizeBytes) && MatchesPatterns(relativePath);

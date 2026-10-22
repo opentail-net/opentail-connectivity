@@ -84,13 +84,28 @@ public sealed class GraphDriveConnectorTests
             }
             return Json($$"""{ "value": [ { "id": "a", "name": "a.txt", "size": 1, "file": {} } ], "@odata.deltaLink": "{{Base}}drives/drv/root/delta?token=NEW" }""");
         });
-        var cursor = JsonSerializer.Serialize(new { DriveId = "drv", Link = Base + "drives/drv/root/delta?token=OLD" });
+        var cursor = JsonSerializer.Serialize(new { DriveId = "drv", Link = Base + "drives/drv/root/delta?token=OLD", Options = Connector(graph).OptionsFingerprint });
 
         var changes = await Connector(graph).GetChangesAsync(cursor).ToListAsync();
 
         Assert.IsType<SourceChange.Reset>(changes[0]);
         Assert.Contains(graph.Requests, r => r.Contains("fresh=1"));
         Assert.Single(changes.OfType<SourceChange.Upsert>());
+    }
+
+    [Fact]
+    public async Task A_changed_file_filter_resets_and_lists_the_drive_again()
+    {
+        var graph = new StubHttp(_ => Json($$"""{ "value": [], "@odata.deltaLink": "{{Base}}drives/drv/root/delta?token=T" }"""));
+        var cursor = JsonSerializer.Serialize(new { DriveId = "drv", Link = Base + "drives/drv/root/delta?token=OLD",
+            Options = Connector(graph).OptionsFingerprint });
+        var narrowed = Connector(graph, options: new GraphDriveOptions(Filter: new FileFilterOptions(ExcludePatterns: ["**/*.pdf"])));
+
+        var changes = await narrowed.GetChangesAsync(cursor).ToListAsync();
+
+        Assert.IsType<SourceChange.Reset>(changes[0]);
+        Assert.DoesNotContain(graph.Requests, r => r.Contains("token=OLD"));
+        Assert.Contains(narrowed.OptionsFingerprint, changes.OfType<SourceChange.Checkpoint>().Last().Cursor);
     }
 
     [Fact]
@@ -103,7 +118,7 @@ public sealed class GraphDriveConnectorTests
         Assert.IsType<SourceChange.Reset>(changes[0]);
         Assert.DoesNotContain(graph.Requests, r => r.Contains("old-drive"));
 
-        var tampered = JsonSerializer.Serialize(new { DriveId = "drv", Link = "https://evil.example/steal" });
+        var tampered = JsonSerializer.Serialize(new { DriveId = "drv", Link = "https://evil.example/steal", Options = Connector(graph).OptionsFingerprint });
         await Assert.ThrowsAsync<InvalidDataException>(() => Connector(graph).GetChangesAsync(tampered).ToListAsync().AsTask());
         Assert.DoesNotContain(graph.Requests, r => r.Contains("evil"));
     }

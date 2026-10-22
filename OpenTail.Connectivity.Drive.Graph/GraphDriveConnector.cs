@@ -98,6 +98,12 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
             yield return new SourceChange.Reset("the target resolves to a different drive");
             link = FreshDelta(driveId);
         }
+        else if (!string.Equals(saved.Options, OptionsFingerprint, StringComparison.Ordinal))
+        {
+            // The file rules changed: unchanged files may now be in or out, and the delta feed would not bring them again.
+            yield return new SourceChange.Reset("the file filter changed; listing the drive again");
+            link = FreshDelta(driveId);
+        }
         else
         {
             link = OnGraph(saved.Link);
@@ -131,7 +137,7 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
             var next = page["@odata.nextLink"]?.GetValue<string>();
             var delta = page["@odata.deltaLink"]?.GetValue<string>();
             var resumeAt = next ?? delta ?? throw new InvalidDataException("A Graph delta page had neither a next link nor a delta link.");
-            yield return new SourceChange.Checkpoint(JsonSerializer.Serialize(new DeltaCursor(driveId, OnGraph(resumeAt).ToString())));
+            yield return new SourceChange.Checkpoint(JsonSerializer.Serialize(new DeltaCursor(driveId, OnGraph(resumeAt).ToString(), OptionsFingerprint)));
             if (next is null)
                 yield break;
             link = OnGraph(next);
@@ -376,7 +382,9 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
         return (id[..colon], id[(colon + 1)..]);
     }
 
-    private sealed record DeltaCursor(string DriveId, string Link);
+    internal string OptionsFingerprint => _filter.Fingerprint;
+
+    private sealed record DeltaCursor(string DriveId, string Link, string? Options = null);
 
     private readonly record struct Sent(HttpResponseMessage Message, TimeSpan Throttled) : IDisposable
     {

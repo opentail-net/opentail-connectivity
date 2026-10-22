@@ -85,6 +85,12 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
     {
         var state = cursor is null ? null : JsonSerializer.Deserialize<DriveCursor>(cursor);
         var throttled = TimeSpan.Zero;
+        if (state is not null && !string.Equals(state.Options, OptionsFingerprint, StringComparison.Ordinal))
+        {
+            // The file rules or export formats changed: unchanged files may now be in, out or exported differently.
+            yield return new SourceChange.Reset("the file filter or export formats changed; listing the drive again");
+            state = null;
+        }
 
         if (state is null or { Phase: "list" })
         {
@@ -292,7 +298,11 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
 
     private string ListFilter() => _target is GoogleDriveTarget.MyDrive ? "trashed = false and 'me' in owners" : "trashed = false";
 
-    private static SourceChange.Checkpoint Checkpoint(DriveCursor cursor) => new(JsonSerializer.Serialize(cursor));
+    private SourceChange.Checkpoint Checkpoint(DriveCursor cursor) => new(JsonSerializer.Serialize(cursor with { Options = OptionsFingerprint }));
+
+    internal string OptionsFingerprint => FileFilter.Hash(
+        _filter.Fingerprint,
+        string.Join('\n', _exports.Select(e => e.Key + "=" + e.Value).Order(StringComparer.Ordinal)));
 
     private async Task<(JsonNode? Page, bool Rejected)> GetChangesPageAsync(string query, CancellationToken ct)
     {
@@ -392,5 +402,6 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
     private static Func<CancellationToken, Task<string>> TokenFrom(GoogleCredential credential)
         => ct => ((ITokenAccess)credential).GetAccessTokenForRequestAsync(Api, ct);
 
-    private sealed record DriveCursor(string Phase, string? StartToken = null, string? ListPageToken = null, string? PageToken = null);
+    private sealed record DriveCursor(string Phase, string? StartToken = null, string? ListPageToken = null, string? PageToken = null,
+        string? Options = null);
 }

@@ -120,7 +120,9 @@ Every list and get call sets `fields=` to exactly these, so responses stay small
 ## Discovery and incremental runs
 
 The changes feed reports changes after a start token but cannot list what already exists. So a first run lists files and then
-switches to the feed, and the cursor records which phase it is in:
+switches to the feed, and the cursor records which phase it is in. The cursor also stores a hash of the file filter and
+export formats; when either changes, the next run starts with `SourceChange.Reset` and lists the drive again. `FetchAsync`
+reads the file's `driveId` / `ownedByMe` first and refuses files outside the target:
 
 ```json
 { "phase": "list", "startToken": "1234", "listPageToken": "..." }

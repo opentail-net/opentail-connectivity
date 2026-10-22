@@ -46,7 +46,7 @@ public sealed class GoogleDriveConnectorTests
         var api = new StubApi(req => Url(req).Contains("/files?")
             ? Json("""{"files":[]}""")
             : null);
-        var cursor = """{"Phase":"list","StartToken":"S0","ListPageToken":"L7"}""";
+        var cursor = $$"""{"Phase":"list","StartToken":"S0","ListPageToken":"L7","Options":"{{Shared(api).OptionsFingerprint}}"}""";
 
         var changes = await Shared(api).GetChangesAsync(cursor).ToListAsync();
 
@@ -104,6 +104,22 @@ public sealed class GoogleDriveConnectorTests
     // ---- changes phase
 
     [Fact]
+    public async Task Changed_export_formats_or_filter_reset_to_a_full_listing()
+    {
+        var api = new StubApi(req => Url(req).Contains("startPageToken") ? Json("""{"startPageToken":"S9"}""") : Json("""{"files":[]}"""));
+        var cursor = $$"""{"Phase":"changes","PageToken":"C1","Options":"{{Shared(api).OptionsFingerprint}}"}""";
+        var exports = new Dictionary<string, string> { ["application/vnd.google-apps.document"] = "application/pdf" };
+        var filtered = new GoogleDriveOptions(Filter: new FileFilterOptions(IncludePatterns: ["*.pdf"]));
+
+        foreach (var options in new[] { new GoogleDriveOptions(ExportFormats: exports), filtered })
+        {
+            var changes = await Connector(api, new GoogleDriveTarget.SharedDrive("sd1"), options).GetChangesAsync(cursor).ToListAsync();
+            Assert.IsType<SourceChange.Reset>(changes[0]);
+        }
+        Assert.DoesNotContain(api.Requests, r => r.Contains("pageToken=C1"));
+    }
+
+    [Fact]
     public async Task Changes_report_removed_and_trashed_files_and_end_with_the_new_start_token()
     {
         var api = new StubApi(req =>
@@ -114,7 +130,7 @@ public sealed class GoogleDriveConnectorTests
             return null;
         });
 
-        var changes = await Shared(api).GetChangesAsync("""{"Phase":"changes","PageToken":"C1"}""").ToListAsync();
+        var changes = await Shared(api).GetChangesAsync($$"""{"Phase":"changes","PageToken":"C1","Options":"{{Shared(api).OptionsFingerprint}}"}""").ToListAsync();
 
         Assert.Contains(api.Requests, r => r.Contains("/changes?") && r.Contains("includeRemoved=true") && r.Contains("driveId=sd1") && r.Contains("supportsAllDrives=true"));
         Assert.Equal(["gone", "t"], changes.OfType<SourceChange.Delete>().Select(d => d.SourceRef));
@@ -136,7 +152,7 @@ public sealed class GoogleDriveConnectorTests
             return null;
         });
 
-        var changes = await Shared(api).GetChangesAsync("""{"Phase":"changes","PageToken":"BAD"}""").ToListAsync();
+        var changes = await Shared(api).GetChangesAsync($$"""{"Phase":"changes","PageToken":"BAD","Options":"{{Shared(api).OptionsFingerprint}}"}""").ToListAsync();
 
         Assert.IsType<SourceChange.Reset>(changes[0]);
         Assert.Single(changes.OfType<SourceChange.Upsert>());
