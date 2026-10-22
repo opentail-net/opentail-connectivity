@@ -75,7 +75,7 @@ Size: about a session for V1 to V4, plus half a session for V5 and V6.
 
 ## Open questions
 
-- **Default ceiling** for the warning (proposed: 50,000 records with vectors).
-- **Hybrid by default** when a generator is present, or only when asked (proposed: hybrid by default; keyword-only on request).
+- *Decided (owner, 2026-10-23):* the warning ceiling is **50,000 records with vectors**, and search is **hybrid by default**
+  when a generator is present (keyword-only on request).
 - **Where the generator comes from** in the Host's memory module (frozen with tiers 2 and 3, plan section 20 M9): the same question
   the VectorData backend leaves to the caller.
