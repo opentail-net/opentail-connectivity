@@ -22,9 +22,9 @@ public interface IQueueControl
     /// <summary>Applies <paramref name="change"/> to the key's circuit atomically (null removes it) and returns the new value.</summary>
     Task<CircuitRecord?> UpdateCircuitAsync(string queue, string key, Func<CircuitRecord?, CircuitRecord?> change, CancellationToken ct = default);
 
-    /// <summary>Records a start for <paramref name="key"/> when fewer than <see cref="RateLimit.Count"/> started within the last
-    /// <see cref="RateLimit.Per"/> (a sliding window); false, recording nothing, when the window is full.</summary>
-    Task<bool> TryTakeStartAsync(string queue, string key, RateLimit rate, DateTimeOffset now, CancellationToken ct = default);
+    /// <summary>Records a start for <paramref name="key"/> when fewer than <see cref="JobRateLimit.Count"/> started within the last
+    /// <see cref="JobRateLimit.Per"/> (a sliding window); false, recording nothing, when the window is full.</summary>
+    Task<bool> TryTakeStartAsync(string queue, string key, JobRateLimit rate, DateTimeOffset now, CancellationToken ct = default);
 
     /// <summary>Keys with unexpired slots, a circuit or recent starts: how many slots each holds, its circuit, and its starts within
     /// the last hour (rate windows longer than that are counted up to an hour).</summary>
@@ -91,7 +91,7 @@ public sealed class InMemoryQueueControl(TimeProvider? time = null) : IQueueCont
         }
     }
 
-    public Task<bool> TryTakeStartAsync(string queue, string key, RateLimit rate, DateTimeOffset now, CancellationToken ct = default)
+    public Task<bool> TryTakeStartAsync(string queue, string key, JobRateLimit rate, DateTimeOffset now, CancellationToken ct = default)
     {
         lock (_gate)
         {

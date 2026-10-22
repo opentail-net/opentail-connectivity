@@ -240,11 +240,11 @@ public sealed record ConcurrencyKeyState(
     CircuitState Circuit,
     DateTimeOffset? OpenUntil,
     int Failures,
-    RateLimit? Rate = null,
+    JobRateLimit? Rate = null,
     int StartedInWindow = 0);
 
 /// <summary>At most <paramref name="Count"/> jobs with a key start within any <paramref name="Per"/> (a sliding window): "100 a minute".</summary>
-public sealed record RateLimit(int Count, TimeSpan Per);
+public sealed record JobRateLimit(int Count, TimeSpan Per);
 
 /// <summary>What an implementation guarantees beyond at-least-once delivery. The conformance suite checks each one declared.</summary>
 /// <param name="Durable">Jobs survive the process ending (and, where stated, a power cut).</param>
@@ -285,7 +285,7 @@ public sealed record WorkQueueOptions(
     TimeSpan? CircuitCooldown = null,
     TimeSpan? CircuitMaxCooldown = null,
     TimeSpan? DeadLetterRetention = null,
-    IReadOnlyDictionary<string, RateLimit>? RateLimits = null)
+    IReadOnlyDictionary<string, JobRateLimit>? RateLimits = null)
 {
     public TimeSpan MaxAgeOrDefault => MaxAge ?? TimeSpan.FromHours(24);
 
@@ -302,7 +302,7 @@ public sealed record WorkQueueOptions(
         => concurrencyKey is null ? null : Match(ConcurrencyLimits, concurrencyKey, out var limit) ? limit : DefaultConcurrencyLimit;
 
     /// <summary>The rate limit for a concurrency key (exact entry, then the longest matching prefix), or null.</summary>
-    public RateLimit? RateFor(string? concurrencyKey)
+    public JobRateLimit? RateFor(string? concurrencyKey)
         => concurrencyKey is not null && Match(RateLimits, concurrencyKey, out var rate) ? rate : null;
 
     private static bool Match<T>(IReadOnlyDictionary<string, T>? table, string key, out T value)

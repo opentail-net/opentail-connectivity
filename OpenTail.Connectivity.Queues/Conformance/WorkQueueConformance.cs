@@ -562,7 +562,7 @@ public static class WorkQueueConformance
 
     private static async Task RateLimitAsync(WorkQueueOpener open, Clock clock)
     {
-        await using var q = open(clock, new WorkQueueOptions(RateLimits: new Dictionary<string, RateLimit> { ["api:*"] = new(2, TimeSpan.FromSeconds(3)) }));
+        await using var q = open(clock, new WorkQueueOptions(RateLimits: new Dictionary<string, JobRateLimit> { ["api:*"] = new(2, TimeSpan.FromSeconds(3)) }));
         for (var i = 0; i < 5; i++)
             await q.EnqueueAsync(Keyed("api:crm"));
         var first = await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5));

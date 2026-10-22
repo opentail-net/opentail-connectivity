@@ -106,7 +106,7 @@ public sealed class SqliteQueueControl : IQueueControl
         return Task.FromResult(next);
     }
 
-    public Task<bool> TryTakeStartAsync(string queue, string key, RateLimit rate, DateTimeOffset now, CancellationToken ct = default)
+    public Task<bool> TryTakeStartAsync(string queue, string key, JobRateLimit rate, DateTimeOffset now, CancellationToken ct = default)
     {
         var at = now.ToUnixTimeMilliseconds();
         using var connection = Open();

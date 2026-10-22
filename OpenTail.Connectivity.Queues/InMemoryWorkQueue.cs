@@ -282,7 +282,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     /// <summary>The key's start times within the rate window (older ones dropped).</summary>
-    private Queue<DateTimeOffset> Started(string queue, string key, RateLimit rate, DateTimeOffset now)
+    private Queue<DateTimeOffset> Started(string queue, string key, JobRateLimit rate, DateTimeOffset now)
     {
         if (!_starts.TryGetValue((queue, key), out var starts))
             _starts[(queue, key)] = starts = new Queue<DateTimeOffset>();
