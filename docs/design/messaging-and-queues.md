@@ -99,8 +99,13 @@ IEventSink    publish an event                      (new) tell an outside bus wh
   (every second and before each lease), the broker returns them if the process dies; capped at 25 minutes, below the default
   `consumer_timeout`. Keys are carried, not deduplicated (`DeduplicatesKeys` false). Listing dead letters takes them on a channel
   of its own and closes it to put them back. Passed the suite against `rabbitmq:4.1` in `queues-rabbitmq.yml`, real time.
-- Not built yet: a worker loop helper (lease, run, complete or retry with backoff), the scheduler enqueueing jobs, the Host's
-  work items on the queue.
+- **`WorkQueueWorker`** (in `Queues`): runs a handler over a queue with a set concurrency. Returning completes the job; throwing
+  retries it after base × 2^(attempt−1), capped, ±20% jitter (2 seconds to 5 minutes by default) until the queue's attempt or age
+  limit dead-letters it; `PermanentJobFailureException` dead-letters at once. Leases are renewed at half time; a lost lease (or a
+  broker refusing a longer one) cancels the handler and its result is ignored. Jobs for tenants the worker does not serve are
+  dead-lettered unrun. Stopping cancels running handlers and hands their jobs back at once. Events go to a callback, so the
+  package needs no logging dependency. A failing queue (broker down) is reported and retried with backoff.
+- Not built yet: the scheduler enqueueing jobs, the Host's work items on the queue.
 
 ## Where I pushed back (before the owner's reason above)
 
