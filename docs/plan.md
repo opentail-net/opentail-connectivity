@@ -46,6 +46,10 @@ Live search and reading, nothing copied. [Roadmap: three tiers](roadmap.md#docum
   on `assistant.search.context` with the user's token: it needs per-user sign-in (section 3) and the terms in the
   [roadmap](roadmap.md#two-ways-to-use-business-data) (nothing stored, cached or indexed).
 
+- [ ] **[H]** Snowflake as a read-only Sql target with cost guards (warehouse checks, per-call limits, a daily budget per identity)
+  ([Snowflake](https://github.com/opentail-net/opentail-host/blob/main/docs/design/snowflake.md), steps S1 to S5). *Proposal,
+  2026-10-23; waits on a project that needs a warehouse.*
+
 ## 5. Ask the first customers
 
 - [ ] **[Owner]** Where does tier 1 fall short? Which collections are searched most, and does keyword search find what people need?
