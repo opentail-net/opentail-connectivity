@@ -296,6 +296,102 @@ public sealed class GoogleDriveConnectorTests
         }
     }
 
+    // ---- folder scoping
+
+    [Fact]
+    public async Task A_root_folder_keeps_files_below_it_with_paths_and_reports_the_rest_out_of_scope()
+    {
+        var api = new StubApi(req =>
+        {
+            var u = Url(req);
+            if (u.Contains("startPageToken")) return Json("""{"startPageToken":"S1"}""");
+            if (u.Contains("/files/p26?")) return Json("""{"id":"p26","mimeType":"application/vnd.google-apps.folder","driveId":"sd1"}""");
+            if (u.Contains("/files/sub?")) return Json("""{"id":"sub","name":"Sub","parents":["p26"]}""");
+            return Json("""
+                {"files":[
+                  {"id":"pr","name":"Projects","mimeType":"application/vnd.google-apps.folder","parents":["sd1"]},
+                  {"id":"p26","name":"2026","mimeType":"application/vnd.google-apps.folder","parents":["pr"]},
+                  {"id":"ot","name":"Other","mimeType":"application/vnd.google-apps.folder","parents":["sd1"]},
+                  {"id":"f1","name":"plan.txt","mimeType":"text/plain","size":"1","parents":["p26"]},
+                  {"id":"f2","name":"deep.txt","mimeType":"text/plain","size":"1","parents":["sub"]},
+                  {"id":"f3","name":"skip.txt","mimeType":"text/plain","size":"1","parents":["sub"]},
+                  {"id":"f4","name":"else.txt","mimeType":"text/plain","size":"1","parents":["ot"]}
+                ]}
+                """);
+        });
+        var connector = Connector(api, new GoogleDriveTarget.SharedDrive("sd1"),
+            new GoogleDriveOptions(RootFolderId: "p26", Filter: new FileFilterOptions(ExcludePatterns: ["Sub/skip.txt"])));
+
+        var changes = await connector.GetChangesAsync(null).ToListAsync();
+
+        Assert.Equal(["f1", "f2"], changes.OfType<SourceChange.Upsert>().Select(u => u.Item.Id));
+        Assert.Equal(["f3", "f4"], changes.OfType<SourceChange.Delete>().Where(d => d.Reason == DeletionReason.OutOfScope).Select(d => d.SourceRef));
+        Assert.Single(api.Requests, r => r.Contains("/files/sub?")); // looked up once, then remembered
+        Assert.Contains("\"sub\":{\"p\":\"p26\",\"n\":\"Sub\"}", changes.OfType<SourceChange.Checkpoint>().Last().Cursor);
+    }
+
+    [Fact]
+    public async Task A_root_folder_that_is_missing_or_in_another_drive_stops_the_run()
+    {
+        var missing = new StubApi(_ => new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("{}") });
+        var elsewhere = new StubApi(_ => Json("""{"id":"x","mimeType":"application/vnd.google-apps.folder","driveId":"other"}"""));
+
+        foreach (var api in new[] { missing, elsewhere })
+            await Assert.ThrowsAsync<InvalidOperationException>(() => Connector(api, new GoogleDriveTarget.SharedDrive("sd1"),
+                new GoogleDriveOptions(RootFolderId: "x")).GetChangesAsync(null).ToListAsync().AsTask());
+        Assert.DoesNotContain(missing.Requests.Concat(elsewhere.Requests), r => r.Contains("startPageToken"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_renamed_folder_lists_the_drive_again_only_when_paths_decide_scope(bool withPatterns)
+    {
+        var api = new StubApi(req =>
+        {
+            var u = Url(req);
+            if (u.Contains("startPageToken")) return Json("""{"startPageToken":"S9"}""");
+            if (u.Contains("pageToken=C1"))
+                return Json("""{"newStartPageToken":"C2","changes":[{"changeType":"file","fileId":"a","file":{"id":"a","name":"New","mimeType":"application/vnd.google-apps.folder","parents":["sd1"]}}]}""");
+            return Json("""{"files":[]}""");
+        });
+        var options = withPatterns ? new GoogleDriveOptions(Filter: new FileFilterOptions(ExcludePatterns: ["Old/**"])) : null;
+        var connector = Connector(api, new GoogleDriveTarget.SharedDrive("sd1"), options);
+        var cursor = $$"""{"Phase":"changes","PageToken":"C1","Options":"{{connector.OptionsFingerprint}}","Folders":{"a":{"p":"sd1","n":"Old"} """ + "}}";
+
+        var changes = await connector.GetChangesAsync(cursor).ToListAsync();
+
+        Assert.Equal(withPatterns, changes.Any(c => c is SourceChange.Reset));
+        Assert.Equal(withPatterns, api.Requests.Any(r => r.Contains("startPageToken")));
+        if (!withPatterns)
+            Assert.Contains("\"a\":{\"p\":\"sd1\",\"n\":\"New\"}", changes.OfType<SourceChange.Checkpoint>().Last().Cursor);
+    }
+
+    [Theory]
+    [InlineData("sub", true)]
+    [InlineData("p26", true)]
+    [InlineData("ot", false)]
+    [InlineData("sd1", false)]
+    public async Task Fetch_refuses_a_file_outside_the_root_folder(string parent, bool allowed)
+    {
+        var api = new StubApi(req =>
+        {
+            var u = Url(req);
+            if (u.Contains("fields=mimeType,driveId,ownedByMe")) return Json($$"""{"mimeType":"text/plain","driveId":"sd1","name":"f","parents":["{{parent}}"]}""");
+            if (u.Contains("/files/p26?")) return Json("""{"id":"p26","name":"2026","mimeType":"application/vnd.google-apps.folder","driveId":"sd1","parents":["sd1"]}""");
+            if (u.Contains("/files/sub?")) return Json("""{"id":"sub","name":"Sub","parents":["p26"]}""");
+            if (u.Contains("/files/ot?")) return Json("""{"id":"ot","name":"Other","parents":["sd1"]}""");
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("hi") };
+        });
+        var connector = Connector(api, new GoogleDriveTarget.SharedDrive("sd1"), new GoogleDriveOptions(RootFolderId: "p26"));
+
+        if (allowed)
+            Assert.Equal("hi"u8.ToArray(), await connector.FetchAsync(Item("f", "text/plain")));
+        else
+            await Assert.ThrowsAsync<InvalidOperationException>(() => connector.FetchAsync(Item("f", "text/plain")));
+        Assert.Equal(allowed, api.Requests.Any(r => r.Contains("alt=media")));
+    }
+
     // ---- helpers
 
     private static GoogleDriveConnector Shared(StubApi api) => Connector(api, new GoogleDriveTarget.SharedDrive("sd1"));

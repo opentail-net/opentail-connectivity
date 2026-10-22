@@ -11,8 +11,9 @@ namespace OpenTail.Connectivity.Drive.Graph;
 /// One code path: delta with no token lists the drive, the same query with a token returns changes since. A checkpoint follows
 /// every page, holding the next link (or, after the last page, the delta link), so a long first run resumes where it stopped.
 /// Deleted files and files that no longer pass the filter are reported as deletions. Folders produce no document; OneNote
-/// notebooks (<c>package</c>) and shortcuts to other drives (<c>remoteItem</c>) are skipped. Delta results carry no paths, so
-/// filter patterns match file names only. The same item may appear more than once in a feed; the stable ids make the repeat an
+/// notebooks (<c>package</c>) and shortcuts to other drives (<c>remoteItem</c>) are skipped. Delta results carry no paths, so the
+/// connector keeps a map of folder id to parent and name in its cursor and builds each file's path from it; a folder that moves
+/// or is renamed while paths matter (a root folder or patterns) makes it list the drive again. The same item may appear more than once in a feed; the stable ids make the repeat an
 /// overwrite. Download URLs are fetched per file and downloaded without the Graph token.
 /// </remarks>
 public sealed class GraphDriveConnector : IIncrementalSourceConnector
@@ -38,8 +39,10 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
     private readonly FileFilter _filter;
     private readonly Uri _baseUri;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
+    private readonly string? _rootFolderPath;
     private AccessToken? _token;
     private string? _driveId;
+    private string? _scopeRootId;
 
     /// <param name="graphClient">For Graph calls; the connector adds the token per request. Tests pass a stubbed one.</param>
     /// <param name="downloadClient">For pre-authenticated download URLs on other hosts. Must not carry an Authorization header.</param>
@@ -69,6 +72,8 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
         _tenantContext = tenantContext;
         _options = options ?? new GraphDriveOptions();
         ArgumentOutOfRangeException.ThrowIfLessThan(_options.PageSize, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(_options.MaxTrackedFolders, 1);
+        _rootFolderPath = _options.RootFolderPath?.Replace('\\', '/').Trim('/') is { Length: > 0 } root ? root : null;
         _graph = graphClient ?? new HttpClient();
         _download = downloadClient ?? new HttpClient();
         if (_download.DefaultRequestHeaders.Authorization is not null)
@@ -86,7 +91,9 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
     public async IAsyncEnumerable<SourceChange> GetChangesAsync(string? cursor, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var driveId = await ResolveDriveAsync(cancellationToken).ConfigureAwait(false);
+        var scopeRoot = await ResolveScopeRootAsync(driveId, cancellationToken).ConfigureAwait(false);
         var saved = cursor is null ? null : JsonSerializer.Deserialize<DeltaCursor>(cursor);
+        var folders = new Dictionary<string, Folder>(StringComparer.Ordinal);
         Uri link;
         if (saved is null)
         {
@@ -104,12 +111,21 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
             yield return new SourceChange.Reset("the file filter changed; listing the drive again");
             link = FreshDelta(driveId);
         }
+        else if (!string.Equals(saved.ScopeRoot, scopeRoot, StringComparison.Ordinal))
+        {
+            // The root folder was recreated under the same path: what was in scope before says nothing now.
+            yield return new SourceChange.Reset("the root folder resolves to a different folder");
+            link = FreshDelta(driveId);
+        }
         else
         {
             link = OnGraph(saved.Link);
+            foreach (var (id, folder) in saved.Folders ?? [])
+                folders[id] = folder;
         }
 
         var throttled = TimeSpan.Zero;
+        var pagesSinceCheckpoint = 0;
         while (true)
         {
             using var response = await SendAsync(link, throttledSoFar: throttled, cancellationToken).ConfigureAwait(false);
@@ -121,24 +137,48 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
                     ? OnGraph(location.IsAbsoluteUri ? location.ToString() : new Uri(link, location).ToString())
                     : FreshDelta(driveId);
                 yield return new SourceChange.Reset("graph delta token expired; listing the drive again");
+                folders.Clear();
                 link = restart;
                 continue;
             }
 
             await EnsureSuccessAsync(response.Message, cancellationToken).ConfigureAwait(false);
             var page = JsonNode.Parse(await response.Message.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false))!;
+            var relist = false;
             foreach (var node in page["value"]?.AsArray() ?? [])
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (node is null) continue;
-                if (Map(node, driveId) is { } change)
+                if (TrackFolder(node, folders))
+                {
+                    // Files under a moved or renamed folder are not reported again, so which of them are in scope is unknown.
+                    relist = true;
+                    break;
+                }
+
+                if (await MapAsync(node, driveId, scopeRoot, folders, cancellationToken).ConfigureAwait(false) is { } change)
                     yield return change;
+            }
+
+            if (relist)
+            {
+                yield return new SourceChange.Reset("a folder moved or was renamed; listing the drive again");
+                folders.Clear();
+                link = FreshDelta(driveId);
+                continue;
             }
 
             var next = page["@odata.nextLink"]?.GetValue<string>();
             var delta = page["@odata.deltaLink"]?.GetValue<string>();
             var resumeAt = next ?? delta ?? throw new InvalidDataException("A Graph delta page had neither a next link nor a delta link.");
-            yield return new SourceChange.Checkpoint(JsonSerializer.Serialize(new DeltaCursor(driveId, OnGraph(resumeAt).ToString(), OptionsFingerprint)));
+            // The cursor carries the folder map, so with many folders checkpoint every few pages rather than every page.
+            if (next is null || ++pagesSinceCheckpoint >= Math.Max(1, folders.Count / 2_000))
+            {
+                pagesSinceCheckpoint = 0;
+                yield return new SourceChange.Checkpoint(JsonSerializer.Serialize(
+                    new DeltaCursor(driveId, OnGraph(resumeAt).ToString(), OptionsFingerprint, scopeRoot, folders)));
+            }
+
             if (next is null)
                 yield break;
             link = OnGraph(next);
@@ -162,7 +202,7 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
             throw new InvalidOperationException($"{item.DisplayName} is not in the configured drive.");
         for (var attempt = 0; ; attempt++)
         {
-            var url = await DownloadUrlAsync(driveId, itemId, cancellationToken).ConfigureAwait(false);
+            var url = await DownloadUrlAsync(driveId, itemId, item.DisplayName, cancellationToken).ConfigureAwait(false);
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             using var response = await _download.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden && attempt == 0)
@@ -188,7 +228,30 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
         }
     }
 
-    private SourceChange? Map(JsonNode node, string driveId)
+    /// <summary>
+    /// Keeps the folder map current. Returns true when a known folder moved or was renamed and paths decide what is in scope:
+    /// its files are not reported again, so the caller lists the drive again.
+    /// </summary>
+    private bool TrackFolder(JsonNode node, Dictionary<string, Folder> folders)
+    {
+        if (node["id"]?.GetValue<string>() is not { Length: > 0 } itemId)
+            return false;
+        if (node["deleted"] is not null)
+        {
+            folders.Remove(itemId);
+            return false;
+        }
+
+        if (node["folder"] is null && node["root"] is null)
+            return false;
+        var folder = AsFolder(node);
+        var moved = folders.TryGetValue(itemId, out var known) && known != folder && PathsMatter;
+        folders[itemId] = folder;
+        EnsureWithinFolderCap(folders);
+        return moved;
+    }
+
+    private async Task<SourceChange?> MapAsync(JsonNode node, string driveId, string? scopeRoot, Dictionary<string, Folder> folders, CancellationToken ct)
     {
         var itemId = node["id"]?.GetValue<string>();
         if (string.IsNullOrEmpty(itemId))
@@ -202,8 +265,10 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
 
         var name = node["name"]?.GetValue<string>() ?? itemId;
         var size = node["size"]?.GetValue<long>() ?? 0;
-        if (!_filter.Includes(name, size))
-            return new SourceChange.Delete(id, DeletionReason.OutOfScope, _tenantContext); // grew too large, or renamed to an excluded type
+        var path = await RelativePathAsync(node["parentReference"]?["id"]?.GetValue<string>(), name, driveId, scopeRoot, folders, ct)
+            .ConfigureAwait(false);
+        if (path is null || !_filter.Includes(path, size))
+            return new SourceChange.Delete(id, DeletionReason.OutOfScope, _tenantContext); // outside the root folder, too large, or excluded
 
         var metadata = new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -232,6 +297,86 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
             : DateTimeOffset.UnixEpoch;
         var extension = Path.GetExtension(name).TrimStart('.').ToLowerInvariant();
         return new SourceChange.Upsert(new SourceItem(id, name, extension, size, modified, _tenantContext, metadata));
+    }
+
+    /// <summary>
+    /// The file's path below the scope root (the root folder, or the drive root), or null when it is not below it. Folders not
+    /// yet in the map are looked up one request each and remembered.
+    /// </summary>
+    private async Task<string?> RelativePathAsync(
+        string? parentId, string name, string driveId, string? scopeRoot, Dictionary<string, Folder> folders, CancellationToken ct)
+    {
+        var segments = new List<string> { name };
+        var current = parentId;
+        for (var depth = 0; depth < 1_000; depth++)
+        {
+            if (current is not null && string.Equals(current, scopeRoot, StringComparison.Ordinal))
+                return string.Join('/', Enumerable.Reverse(segments));
+            if (current is null)
+                return scopeRoot is null ? string.Join('/', Enumerable.Reverse(segments)) : null; // a file with no parent sits at the top
+            if (!folders.TryGetValue(current, out var folder))
+            {
+                JsonNode found;
+                try
+                {
+                    found = await GetJsonAsync(
+                        $"drives/{Uri.EscapeDataString(driveId)}/items/{Uri.EscapeDataString(current)}?$select=id,name,parentReference,root",
+                        ct, notFound: true).ConfigureAwait(false);
+                }
+                catch (FileNotFoundException)
+                {
+                    return null; // the parent is gone; a later page reports the file's deletion or move
+                }
+
+                folders[current] = folder = AsFolder(found);
+                EnsureWithinFolderCap(folders);
+            }
+
+            if (folder.Name is null)
+                return scopeRoot is null ? string.Join('/', Enumerable.Reverse(segments)) : null; // reached the drive root
+            segments.Add(folder.Name);
+            current = folder.ParentId;
+        }
+
+        throw new InvalidDataException("Folder parents nest more than 1,000 deep or form a loop.");
+    }
+
+    private static Folder AsFolder(JsonNode node) => node["root"] is not null
+        ? new Folder(null, null)
+        : new Folder(node["parentReference"]?["id"]?.GetValue<string>(), node["name"]?.GetValue<string>() ?? string.Empty);
+
+    private void EnsureWithinFolderCap(Dictionary<string, Folder> folders)
+    {
+        if (folders.Count > _options.MaxTrackedFolders)
+            throw new InvalidOperationException(
+                $"The drive has more than {_options.MaxTrackedFolders} folders to track. Set RootFolderPath to a narrower folder, or raise MaxTrackedFolders.");
+    }
+
+    /// <summary>Whether a folder's path can change which files are in scope.</summary>
+    private bool PathsMatter => _rootFolderPath is not null
+                                || _filter.Options.IncludePatterns is { Count: > 0 }
+                                || _filter.Options.ExcludePatterns is { Count: > 0 };
+
+    private async Task<string?> ResolveScopeRootAsync(string driveId, CancellationToken ct)
+    {
+        if (_rootFolderPath is null || _scopeRootId is not null)
+            return _scopeRootId;
+
+        var escaped = string.Join('/', _rootFolderPath.Split('/').Select(Uri.EscapeDataString));
+        JsonNode folder;
+        try
+        {
+            folder = await GetJsonAsync($"drives/{Uri.EscapeDataString(driveId)}/root:/{escaped}?$select=id,folder", ct, notFound: true)
+                .ConfigureAwait(false);
+        }
+        catch (FileNotFoundException)
+        {
+            throw new InvalidOperationException($"The drive has no folder at '{_rootFolderPath}'.");
+        }
+
+        if (folder["folder"] is null)
+            throw new InvalidOperationException($"'{_rootFolderPath}' is a file, not a folder.");
+        return _scopeRootId = folder["id"]?.GetValue<string>() ?? throw new InvalidDataException("Graph returned no id for the root folder.");
     }
 
     private async Task<string> ResolveDriveAsync(CancellationToken ct)
@@ -264,10 +409,25 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
         => (await GetJsonAsync(relative, ct).ConfigureAwait(false))["id"]?.GetValue<string>()
            ?? throw new InvalidDataException("Graph returned no id for the drive target.");
 
-    private async Task<string> DownloadUrlAsync(string driveId, string itemId, CancellationToken ct)
+    private async Task<string> DownloadUrlAsync(string driveId, string itemId, string displayName, CancellationToken ct)
     {
-        var item = await GetJsonAsync($"drives/{Uri.EscapeDataString(driveId)}/items/{Uri.EscapeDataString(itemId)}?$select=id,@microsoft.graph.downloadUrl", ct, notFound: true)
+        var item = await GetJsonAsync(
+                $"drives/{Uri.EscapeDataString(driveId)}/items/{Uri.EscapeDataString(itemId)}?$select=id,parentReference,@microsoft.graph.downloadUrl",
+                ct, notFound: true)
             .ConfigureAwait(false);
+        // The root folder is an access boundary for fetches too. Outside delta, items carry their parent's path
+        // ("/drives/{id}/root:/Projects/2026").
+        if (_rootFolderPath is not null)
+        {
+            var parent = Uri.UnescapeDataString(item["parentReference"]?["path"]?.GetValue<string>() ?? string.Empty);
+            var marker = parent.IndexOf("root:", StringComparison.Ordinal);
+            var folder = marker < 0 ? null : parent[(marker + "root:".Length)..].Trim('/');
+            if (folder is null
+                || !(string.Equals(folder, _rootFolderPath, StringComparison.OrdinalIgnoreCase)
+                     || folder.StartsWith(_rootFolderPath + "/", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"{displayName} is not in the configured folder.");
+        }
+
         return item["@microsoft.graph.downloadUrl"]?.GetValue<string>()
                ?? throw new InvalidDataException("Graph returned no download URL for the item.");
     }
@@ -383,9 +543,18 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
         return (id[..colon], id[(colon + 1)..]);
     }
 
-    internal string OptionsFingerprint => _filter.Fingerprint;
+    // "paths": patterns match paths since folder scoping; older cursors (name-only, no folder map) list the drive once more.
+    internal string OptionsFingerprint => FileFilter.Hash(_filter.Fingerprint, "paths", "root=" + _rootFolderPath?.ToLowerInvariant());
 
-    private sealed record DeltaCursor(string DriveId, string Link, string? Options = null);
+    /// <param name="ScopeRoot">The root folder's id, or null for the whole drive.</param>
+    /// <param name="Folders">Folder id to parent and name, for building paths.</param>
+    private sealed record DeltaCursor(
+        string DriveId, string Link, string? Options = null, string? ScopeRoot = null, Dictionary<string, Folder>? Folders = null);
+
+    /// <summary>A folder's parent id and name; both null for the drive root. Short property names keep the cursor small.</summary>
+    private sealed record Folder(
+        [property: System.Text.Json.Serialization.JsonPropertyName("p")] string? ParentId,
+        [property: System.Text.Json.Serialization.JsonPropertyName("n")] string? Name);
 
     private readonly record struct Sent(HttpResponseMessage Message, TimeSpan Throttled) : IDisposable
     {

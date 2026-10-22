@@ -22,18 +22,24 @@ public abstract record GoogleDriveTarget
     }
 }
 
-/// <param name="Filter">Shared file rules. Patterns match the file name only in this version (the feed gives no paths); for
-/// exported Google files the name includes the export extension. <see cref="FileFilterOptions.MaxFileSizeBytes"/> defaults to
+/// <param name="Filter">Shared file rules. Patterns match the path below <paramref name="RootFolderId"/> (or the drive root), as in
+/// the folder connector; for exported Google files the name includes the export extension. <see cref="FileFilterOptions.MaxFileSizeBytes"/> defaults to
 /// 50 MB for downloads.</param>
 /// <param name="ExportFormats">Google mime type to export mime type. Defaults: Docs and Slides to text, Sheets to .xlsx (CSV would
 /// hold the first sheet only). Google caps an export at 10 MB.</param>
 /// <param name="PageSize">Items per page, at most 1000.</param>
 /// <param name="MaxThrottleWait">Total time a run may wait on rate limits before it stops with an error. Default 10 minutes.</param>
+/// <param name="RootFolderId">Only files below this folder (its id, from the folder's URL). The whole drive is still read; files
+/// elsewhere are reported out of scope, and fetches outside the folder are refused.</param>
+/// <param name="MaxTrackedFolders">Drive gives no paths, so the connector keeps every folder's parent and name in its cursor. Past
+/// this many folders a run stops and asks for a narrower target.</param>
 public sealed record GoogleDriveOptions(
     FileFilterOptions? Filter = null,
     IReadOnlyDictionary<string, string>? ExportFormats = null,
     int PageSize = 100,
-    TimeSpan? MaxThrottleWait = null);
+    TimeSpan? MaxThrottleWait = null,
+    string? RootFolderId = null,
+    int MaxTrackedFolders = 50_000);
 
 public static class GoogleDriveCredentials
 {

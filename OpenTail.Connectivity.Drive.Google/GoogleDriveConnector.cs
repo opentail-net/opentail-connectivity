@@ -12,7 +12,9 @@ namespace OpenTail.Connectivity.Drive.Google;
 /// The changes feed cannot list what already exists, so a first run takes a start token <b>first</b>, lists the files, then switches
 /// to the feed from that token. Changes made during the listing are replayed next run: repeats, never losses. The cursor records
 /// the phase. A checkpoint follows every page. Trashed and removed files become deletions; so do files that fail the filter, and
-/// files that leave the target (moved to another drive, or no longer owned by the user for My Drive). Folders, shortcuts and
+/// files that leave the target (moved to another drive, or no longer owned by the user for My Drive), and files outside the root
+/// folder. The cursor keeps a map of folder id to parent and name for building paths; a folder that moves or is renamed while
+/// paths matter (a root folder or patterns) makes it list the drive again. Folders, shortcuts and
 /// Google types other than Docs, Sheets and Slides produce nothing. Docs and Slides are exported as text, Sheets as .xlsx. Every
 /// request carries the shared-drive flags: without them shared-drive files are silently invisible.
 /// </remarks>
@@ -22,7 +24,7 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
     private const string TokenInfo = "https://oauth2.googleapis.com/tokeninfo";
     private const string Folder = "application/vnd.google-apps.folder";
     private const string GooglePrefix = "application/vnd.google-apps.";
-    private const string FileFields = "id,name,mimeType,size,modifiedTime,webViewLink,md5Checksum,version,trashed,driveId,ownedByMe,owners(emailAddress)";
+    private const string FileFields = "id,name,mimeType,size,modifiedTime,webViewLink,md5Checksum,version,trashed,driveId,ownedByMe,owners(emailAddress),parents";
 
     private static readonly Dictionary<string, string> DefaultExports = new(StringComparer.Ordinal)
     {
@@ -53,6 +55,8 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private string? _checkedToken;
     private string? _container;
+    private readonly string? _rootFolderId;
+    private bool _rootChecked;
 
     /// <param name="credential">Already scoped; see <see cref="GoogleDriveCredentials"/>.</param>
     public GoogleDriveConnector(GoogleCredential credential, GoogleDriveTarget target, string tenantContext,
@@ -75,6 +79,8 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
         _filter = new FileFilter(filter with { MaxFileSizeBytes = filter.MaxFileSizeBytes ?? 50L * 1024 * 1024 });
         _exports = _options.ExportFormats ?? DefaultExports;
         _delay = delay ?? Task.Delay;
+        ArgumentOutOfRangeException.ThrowIfLessThan(_options.MaxTrackedFolders, 1);
+        _rootFolderId = string.IsNullOrWhiteSpace(_options.RootFolderId) ? null : _options.RootFolderId.Trim();
     }
 
     public string SyncScope => $"gdrive:{_tenantContext}:{_target.Key}";
@@ -83,6 +89,7 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
 
     public async IAsyncEnumerable<SourceChange> GetChangesAsync(string? cursor, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        await CheckRootFolderAsync(cancellationToken).ConfigureAwait(false);
         var state = cursor is null ? null : JsonSerializer.Deserialize<DriveCursor>(cursor);
         var throttled = TimeSpan.Zero;
         if (state is not null && !string.Equals(state.Options, OptionsFingerprint, StringComparison.Ordinal))
@@ -91,6 +98,10 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
             yield return new SourceChange.Reset("the file filter or export formats changed; listing the drive again");
             state = null;
         }
+
+        var folders = new Dictionary<string, FolderEntry>(StringComparer.Ordinal);
+        foreach (var (id, folder) in state?.Folders ?? [])
+            folders[id] = folder;
 
         if (state is null or { Phase: "list" })
         {
@@ -104,22 +115,37 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
                             + $"&fields={Uri.EscapeDataString("nextPageToken,files(" + FileFields + ")")}"
                             + (pageToken is null ? "" : "&pageToken=" + Uri.EscapeDataString(pageToken));
                 var page = await GetAsync(query, cancellationToken).ConfigureAwait(false);
+                var relist = false;
                 foreach (var file in page["files"]?.AsArray() ?? [])
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    if (file is not null && await MapFileAsync(file, cancellationToken).ConfigureAwait(false) is { } change)
+                    if (file is null) continue;
+                    if (TrackFolder(file, folders))
+                    {
+                        relist = true;
+                        break;
+                    }
+
+                    if (await MapFileAsync(file, folders, cancellationToken).ConfigureAwait(false) is { } change)
                         yield return change;
+                }
+
+                if (relist)
+                {
+                    await foreach (var change in RelistAsync(cancellationToken).ConfigureAwait(false))
+                        yield return change;
+                    yield break;
                 }
 
                 pageToken = page["nextPageToken"]?.GetValue<string>();
                 if (pageToken is null)
                 {
                     // The listing is complete. The feed from the start token, read next run, replays what changed meanwhile.
-                    yield return Checkpoint(new DriveCursor("changes", PageToken: startToken));
+                    yield return Checkpoint(new DriveCursor("changes", PageToken: startToken), folders);
                     yield break;
                 }
 
-                yield return Checkpoint(new DriveCursor("list", StartToken: startToken, ListPageToken: pageToken));
+                yield return Checkpoint(new DriveCursor("list", StartToken: startToken, ListPageToken: pageToken), folders);
             }
         }
 
@@ -148,25 +174,41 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
                     continue;
                 if (change["removed"]?.GetValue<bool>() == true || change["file"] is null)
                 {
+                    folders.Remove(fileId);
                     yield return new SourceChange.Delete(fileId, DeletionReason.Deleted, _tenantContext); // deleted, or access lost
                     continue;
                 }
 
-                if (await MapFileAsync(change["file"]!, cancellationToken).ConfigureAwait(false) is { } mapped)
+                if (TrackFolder(change["file"]!, folders))
+                {
+                    await foreach (var again in RelistAsync(cancellationToken).ConfigureAwait(false))
+                        yield return again;
+                    yield break;
+                }
+
+                if (await MapFileAsync(change["file"]!, folders, cancellationToken).ConfigureAwait(false) is { } mapped)
                     yield return mapped;
             }
 
             if (page["nextPageToken"]?.GetValue<string>() is { } next)
             {
-                yield return Checkpoint(new DriveCursor("changes", PageToken: next));
+                yield return Checkpoint(new DriveCursor("changes", PageToken: next), folders);
                 token = next;
                 continue;
             }
 
             var fresh = page["newStartPageToken"]?.GetValue<string>() ?? throw new InvalidDataException("A last changes page had no newStartPageToken.");
-            yield return Checkpoint(new DriveCursor("changes", PageToken: fresh));
+            yield return Checkpoint(new DriveCursor("changes", PageToken: fresh), folders);
             yield break;
         }
+    }
+
+    /// <summary>Files under a moved or renamed folder are not reported again, so which of them are in scope is unknown.</summary>
+    private async IAsyncEnumerable<SourceChange> RelistAsync([EnumeratorCancellation] CancellationToken ct)
+    {
+        yield return new SourceChange.Reset("a folder moved or was renamed; listing the drive again");
+        await foreach (var change in GetChangesAsync(null, ct).ConfigureAwait(false))
+            yield return change;
     }
 
     public async IAsyncEnumerable<SourceItem> DiscoverAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -182,7 +224,7 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
     {
         ArgumentNullException.ThrowIfNull(item);
         // Read the file's own metadata rather than trusting the item: the target is an access boundary for fetches too.
-        var file = await GetAsync($"files/{Uri.EscapeDataString(item.Id)}?supportsAllDrives=true&fields=mimeType,driveId,ownedByMe",
+        var file = await GetAsync($"files/{Uri.EscapeDataString(item.Id)}?supportsAllDrives=true&fields=mimeType,driveId,ownedByMe,parents,name",
             cancellationToken, notFound: true).ConfigureAwait(false);
         var inTarget = _target switch
         {
@@ -191,6 +233,10 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
         };
         if (!inTarget)
             throw new InvalidOperationException($"{item.DisplayName} is not in the configured drive.");
+        // Walked with fresh lookups, not the cursor's map: a folder moved out since the last run must not still count as inside.
+        if (_rootFolderId is not null
+            && await RelativePathAsync(file, new Dictionary<string, FolderEntry>(StringComparer.Ordinal), cancellationToken).ConfigureAwait(false) is null)
+            throw new InvalidOperationException($"{item.DisplayName} is not in the configured folder.");
         var mime = file["mimeType"]?.GetValue<string>() ?? string.Empty;
         var path = _exports.TryGetValue(mime, out var exportAs)
             ? $"files/{Uri.EscapeDataString(item.Id)}/export?mimeType={Uri.EscapeDataString(exportAs)}"
@@ -218,7 +264,7 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
         return buffer.ToArray();
     }
 
-    private async Task<SourceChange?> MapFileAsync(JsonNode file, CancellationToken ct)
+    private async Task<SourceChange?> MapFileAsync(JsonNode file, Dictionary<string, FolderEntry> folders, CancellationToken ct)
     {
         var id = file["id"]?.GetValue<string>();
         if (string.IsNullOrEmpty(id))
@@ -248,7 +294,8 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
             : Path.GetExtension(name).TrimStart('.').ToLowerInvariant();
         var displayName = exported ? name + "." + extension : name;
         var size = exported ? 0 : long.TryParse(file["size"]?.GetValue<string>(), out var s2) ? s2 : 0;
-        if (!_filter.Includes(displayName, size))
+        var path = await RelativePathAsync(file, folders, ct, displayName).ConfigureAwait(false);
+        if (path is null || !_filter.Includes(path, size))
             return new SourceChange.Delete(id, DeletionReason.OutOfScope, _tenantContext);
 
         var metadata = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -279,6 +326,106 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
         return new SourceChange.Upsert(new SourceItem(id, displayName, extension, size, modified, _tenantContext, metadata));
     }
 
+    /// <summary>
+    /// Keeps the folder map current. Returns true when a known folder moved or was renamed while paths decide what is in scope.
+    /// </summary>
+    private bool TrackFolder(JsonNode file, Dictionary<string, FolderEntry> folders)
+    {
+        if (file["mimeType"]?.GetValue<string>() != Folder || file["id"]?.GetValue<string>() is not { Length: > 0 } id)
+            return false;
+        if (file["trashed"]?.GetValue<bool>() == true)
+        {
+            folders.Remove(id);
+            return false;
+        }
+
+        var folder = AsFolder(file);
+        var moved = folders.TryGetValue(id, out var known) && known != folder && PathsMatter;
+        folders[id] = folder;
+        EnsureWithinFolderCap(folders);
+        return moved;
+    }
+
+    /// <summary>
+    /// The path below the root folder (or the drive root), or null when the file is not below it. Unknown folders are looked up
+    /// one request each and remembered in <paramref name="folders"/>.
+    /// </summary>
+    private async Task<string?> RelativePathAsync(JsonNode file, Dictionary<string, FolderEntry> folders, CancellationToken ct, string? name = null)
+    {
+        var segments = new List<string> { name ?? file["name"]?.GetValue<string>() ?? string.Empty };
+        var current = file["parents"]?.AsArray().FirstOrDefault()?.GetValue<string>();
+        var sharedDrive = (_target as GoogleDriveTarget.SharedDrive)?.DriveId;
+        for (var depth = 0; depth < 1_000; depth++)
+        {
+            if (current is not null && current == _rootFolderId)
+                return string.Join('/', Enumerable.Reverse(segments));
+            if (current is null || current == sharedDrive)
+                return _rootFolderId is null ? string.Join('/', Enumerable.Reverse(segments)) : null; // reached the drive root
+            if (!folders.TryGetValue(current, out var folder))
+            {
+                JsonNode found;
+                try
+                {
+                    found = await GetAsync($"files/{Uri.EscapeDataString(current)}?supportsAllDrives=true&fields=id,name,parents", ct, notFound: true)
+                        .ConfigureAwait(false);
+                }
+                catch (FileNotFoundException)
+                {
+                    return null; // the parent is gone or out of reach; a later change reports the file's move
+                }
+
+                folders[current] = folder = AsFolder(found);
+                EnsureWithinFolderCap(folders);
+            }
+
+            if (folder.Name is null)
+                return _rootFolderId is null ? string.Join('/', Enumerable.Reverse(segments)) : null; // My Drive's root has no parent
+            segments.Add(folder.Name);
+            current = folder.ParentId;
+        }
+
+        throw new InvalidDataException("Folder parents nest more than 1,000 deep or form a loop.");
+    }
+
+    private static FolderEntry AsFolder(JsonNode node) => node["parents"]?.AsArray().FirstOrDefault()?.GetValue<string>() is { } parent
+        ? new FolderEntry(parent, node["name"]?.GetValue<string>() ?? string.Empty)
+        : new FolderEntry(null, null);
+
+    private void EnsureWithinFolderCap(Dictionary<string, FolderEntry> folders)
+    {
+        if (folders.Count > _options.MaxTrackedFolders)
+            throw new InvalidOperationException(
+                $"The drive has more than {_options.MaxTrackedFolders} folders to track. Set RootFolderId to a narrower folder, or raise MaxTrackedFolders.");
+    }
+
+    /// <summary>Whether a folder's path can change which files are in scope.</summary>
+    private bool PathsMatter => _rootFolderId is not null
+                                || _filter.Options.IncludePatterns is { Count: > 0 }
+                                || _filter.Options.ExcludePatterns is { Count: > 0 };
+
+    /// <summary>The root folder must exist, be a folder, and (for a shared drive) be in that drive.</summary>
+    private async Task CheckRootFolderAsync(CancellationToken ct)
+    {
+        if (_rootFolderId is null || _rootChecked)
+            return;
+        JsonNode folder;
+        try
+        {
+            folder = await GetAsync($"files/{Uri.EscapeDataString(_rootFolderId)}?supportsAllDrives=true&fields=id,mimeType,driveId,trashed", ct, notFound: true)
+                .ConfigureAwait(false);
+        }
+        catch (FileNotFoundException)
+        {
+            throw new InvalidOperationException($"The root folder '{_rootFolderId}' does not exist or is not shared with this account.");
+        }
+
+        if (folder["mimeType"]?.GetValue<string>() != Folder || folder["trashed"]?.GetValue<bool>() == true)
+            throw new InvalidOperationException($"'{_rootFolderId}' is not a folder (or is in the trash).");
+        if (_target is GoogleDriveTarget.SharedDrive s && folder["driveId"]?.GetValue<string>() != s.DriveId)
+            throw new InvalidOperationException($"The root folder '{_rootFolderId}' is not in the configured shared drive.");
+        _rootChecked = true;
+    }
+
     private async Task<string> ContainerAsync(CancellationToken ct)
     {
         if (_container is not null)
@@ -302,10 +449,14 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
 
     private string ListFilter() => _target is GoogleDriveTarget.MyDrive ? "trashed = false and 'me' in owners" : "trashed = false";
 
-    private SourceChange.Checkpoint Checkpoint(DriveCursor cursor) => new(JsonSerializer.Serialize(cursor with { Options = OptionsFingerprint }));
+    private SourceChange.Checkpoint Checkpoint(DriveCursor cursor, Dictionary<string, FolderEntry> folders)
+        => new(JsonSerializer.Serialize(cursor with { Options = OptionsFingerprint, Folders = folders }));
 
+    // "paths": patterns match paths since folder scoping; older cursors (name-only, no folder map) list the drive once more.
     internal string OptionsFingerprint => FileFilter.Hash(
         _filter.Fingerprint,
+        "paths",
+        "root=" + _rootFolderId,
         string.Join('\n', _exports.Select(e => e.Key + "=" + e.Value).Order(StringComparer.Ordinal)));
 
     private async Task<(JsonNode? Page, bool Rejected)> GetChangesPageAsync(string query, CancellationToken ct)
@@ -406,6 +557,12 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
     private static Func<CancellationToken, Task<string>> TokenFrom(GoogleCredential credential)
         => ct => ((ITokenAccess)credential).GetAccessTokenForRequestAsync(Api, ct);
 
+    /// <param name="Folders">Folder id to parent and name, for building paths.</param>
     private sealed record DriveCursor(string Phase, string? StartToken = null, string? ListPageToken = null, string? PageToken = null,
-        string? Options = null);
+        string? Options = null, Dictionary<string, FolderEntry>? Folders = null);
+
+    /// <summary>A folder's parent id and name; both null for My Drive's root. Short property names keep the cursor small.</summary>
+    private sealed record FolderEntry(
+        [property: System.Text.Json.Serialization.JsonPropertyName("p")] string? ParentId,
+        [property: System.Text.Json.Serialization.JsonPropertyName("n")] string? Name);
 }

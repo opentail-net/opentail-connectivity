@@ -258,13 +258,18 @@ connector, so the contract is tested by real use before it grows. Section 7's co
   ([Graph files](design/microsoft-graph-files.md#suggested-slices)). *Built 2026-10-20 as `OpenTail.Connectivity.Drive.Graph`
   (owner: build it now), with `UserOneDrive` and the delegated-token check from slice 2. Stubbed tests only: needs a real tenant
   before it is Verified.*
-- [ ] **[C]** Graph files, later slices: folder scoping, permissions and metadata-only mode, Teams channel files (OneDrive
-  targets are built, with slice 1).
+- [x] **[C]** Graph files, folder scoping: `RootFolderPath`, folder map in the cursor, path patterns, fetch boundary. *Built
+  2026-10-22, stubbed tests only.* **B**: patterns now match paths, not names (`*.pdf` matches the top folder only; use
+  `**/*.pdf`), and existing cursors list the drive once more.
+- [ ] **[C]** Graph files, later slices: permissions and metadata-only mode, Teams channel files (OneDrive targets are built,
+  with slice 1).
 - [x] **[C]** Google Drive, slice 1: shared drives with a service account, listing then changes, exports
   ([Google Drive](design/google-drive.md#suggested-slices)). *Built 2026-10-20 as `OpenTail.Connectivity.Drive.Google` (owner:
   build it now), with My Drive and the token scope check from slice 2. Stubbed tests only: needs a real Workspace before it is
   Verified.*
-- [ ] **[C]** Google Drive, later slices: folder scoping, permissions and metadata-only mode (My Drive is built, with slice 1).
+- [x] **[C]** Google Drive, folder scoping: `RootFolderId`, same approach as Graph. *Built 2026-10-22, stubbed tests only.* **B**:
+  as for Graph, patterns match paths.
+- [ ] **[C]** Google Drive, later slices: permissions and metadata-only mode (My Drive is built, with slice 1).
 
 **Summary cards** (tier 2 with summaries), if section 5 says names and paths are not enough:
 - [ ] **[Owner]** Decide the summary language, who owns the tag vocabulary, and where cards live

@@ -143,9 +143,14 @@ reads the file's `driveId` / `ownedByMe` first and refuses files outside the tar
 Forgetting the shared-drive flags makes shared-drive files silently invisible. Every request goes through one builder that sets
 them, and a test checks each request.
 
-**Scope of a sync in v1 is the whole drive.** Limiting it to a folder needs the connector to track folder ancestry, because a
-change to a folder's parent does not produce changes for its contents. That is step 3 below. In v1, `FileFilterOptions` patterns
-match the **file name only**.
+**Folder scoping (built 2026-10-22).** `RootFolderId` limits a sync to one folder. The connector still reads the whole drive,
+because a change to a folder's parent does not produce changes for its contents: the cursor keeps a map of folder id to parent and
+name (filled from the listing and the feed; unknown parents are looked up once each), and builds each file's path from it.
+`FileFilterOptions` patterns match that path, relative to the root folder, as in the folder connector. Files outside the folder
+are reported out of scope. When a known folder moves or is renamed and paths matter (a root folder or patterns are set), the run
+lists the drive again. The map is capped by `MaxTrackedFolders` (default 50,000). `FetchAsync` walks the file's parents with fresh
+lookups and refuses files outside the folder. The root folder is checked on each run: it must exist, be a folder, and be in the
+shared drive. The first run after upgrading lists the drive again (the cursor fingerprint changed).
 
 ## Permissions (optional, off by default)
 
@@ -200,7 +205,7 @@ live access check before showing results.
 1. `SharedDrive` targets with a service account, listing then changes, binary downloads and the three Google exports, name-only
    filters, no permissions.
 2. `MyDrive` with delegation and user refresh tokens, and the token scope check.
-3. Folder scoping: a `RootFolderId` option, with a map of folder id to path in the cursor, as for Graph.
+3. Folder scoping: a `RootFolderId` option, with a map of folder id to path in the cursor, as for Graph. *Built 2026-10-22.*
 4. `CapturePermissions` and metadata-only mode (tier 2).
 
 ## Vendor facts to verify

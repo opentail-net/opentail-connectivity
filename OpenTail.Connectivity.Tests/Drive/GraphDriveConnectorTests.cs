@@ -277,6 +277,114 @@ public sealed class GraphDriveConnectorTests
         }
     }
 
+    // ---- folder scoping
+
+    [Fact]
+    public async Task A_root_folder_keeps_files_below_it_with_paths_and_reports_the_rest_out_of_scope()
+    {
+        var graph = new StubHttp(req =>
+        {
+            var uri = Uri.UnescapeDataString(req.RequestUri!.ToString());
+            if (uri.Contains("/root:/Projects/2026")) return Json("""{ "id": "p26", "folder": {} }""");
+            if (uri.Contains("/items/sub?")) return Json("""{ "id": "sub", "name": "Sub", "parentReference": { "id": "p26" } }""");
+            return Json($$"""
+                { "value": [
+                    { "id": "r", "name": "root", "root": {}, "folder": {} },
+                    { "id": "pr", "name": "Projects", "folder": {}, "parentReference": { "id": "r" } },
+                    { "id": "p26", "name": "2026", "folder": {}, "parentReference": { "id": "pr" } },
+                    { "id": "ot", "name": "Other", "folder": {}, "parentReference": { "id": "r" } },
+                    { "id": "f1", "name": "plan.txt", "size": 1, "file": {}, "parentReference": { "id": "p26" } },
+                    { "id": "f2", "name": "deep.txt", "size": 1, "file": {}, "parentReference": { "id": "sub" } },
+                    { "id": "f3", "name": "skip.txt", "size": 1, "file": {}, "parentReference": { "id": "sub" } },
+                    { "id": "f4", "name": "else.txt", "size": 1, "file": {}, "parentReference": { "id": "ot" } }
+                  ],
+                  "@odata.deltaLink": "{{Base}}drives/drv/root/delta?token=T1" }
+                """);
+        });
+        var connector = Connector(graph, options: new GraphDriveOptions(
+            RootFolderPath: "/Projects/2026/", Filter: new FileFilterOptions(ExcludePatterns: ["Sub/skip.txt"])));
+
+        var changes = await connector.GetChangesAsync(null).ToListAsync();
+
+        Assert.Equal(["drv:f1", "drv:f2"], changes.OfType<SourceChange.Upsert>().Select(u => u.Item.Id));
+        Assert.Equal(["drv:f3", "drv:f4"], changes.OfType<SourceChange.Delete>()
+            .Where(d => d.Reason == DeletionReason.OutOfScope).Select(d => d.SourceRef));
+        Assert.Single(graph.Requests, r => r.Contains("/items/sub?")); // looked up once, then remembered
+        var cursor = changes.OfType<SourceChange.Checkpoint>().Last().Cursor;
+        Assert.Contains("\"ScopeRoot\":\"p26\"", cursor);
+        Assert.Contains("\"sub\":{\"p\":\"p26\",\"n\":\"Sub\"}", cursor);
+    }
+
+    [Fact]
+    public async Task A_missing_root_folder_stops_the_run()
+    {
+        var graph = new StubHttp(_ => new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("{}") });
+        var connector = Connector(graph, options: new GraphDriveOptions(RootFolderPath: "Nope"));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => connector.GetChangesAsync(null).ToListAsync().AsTask());
+        Assert.Contains("no folder at 'Nope'", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_renamed_folder_lists_the_drive_again_only_when_paths_decide_scope(bool withPatterns)
+    {
+        var graph = new StubHttp(req => req.RequestUri!.Query.Contains("token=OLD")
+            ? Json($$"""{ "value": [ { "id": "a", "name": "New", "folder": {}, "parentReference": { "id": "r" } } ], "@odata.deltaLink": "{{Base}}drives/drv/root/delta?token=T2" }""")
+            : Json($$"""{ "value": [], "@odata.deltaLink": "{{Base}}drives/drv/root/delta?token=T3" }"""));
+        var options = withPatterns ? new GraphDriveOptions(Filter: new FileFilterOptions(ExcludePatterns: ["Old/**"])) : null;
+        var connector = Connector(graph, options: options);
+        var cursor = JsonSerializer.Serialize(new
+        {
+            DriveId = "drv", Link = Base + "drives/drv/root/delta?token=OLD", Options = connector.OptionsFingerprint,
+            Folders = new Dictionary<string, object> { ["r"] = new { p = (string?)null, n = (string?)null }, ["a"] = new { p = "r", n = "Old" } },
+        });
+
+        var changes = await connector.GetChangesAsync(cursor).ToListAsync();
+
+        Assert.Equal(withPatterns, changes.Any(c => c is SourceChange.Reset));
+        Assert.Equal(withPatterns, graph.Requests.Any(r => r.Contains("/root/delta?$select")));
+        if (!withPatterns)
+            Assert.Contains("\"a\":{\"p\":\"r\",\"n\":\"New\"}", changes.OfType<SourceChange.Checkpoint>().Last().Cursor);
+    }
+
+    [Fact]
+    public async Task Past_the_folder_cap_a_run_stops_and_asks_for_a_narrower_target()
+    {
+        var graph = new StubHttp(_ => Json($$"""
+            { "value": [ { "id": "r", "root": {}, "folder": {} }, { "id": "a", "name": "A", "folder": {}, "parentReference": { "id": "r" } },
+                         { "id": "b", "name": "B", "folder": {}, "parentReference": { "id": "r" } } ],
+              "@odata.deltaLink": "{{Base}}drives/drv/root/delta?token=T" }
+            """));
+        var connector = Connector(graph, options: new GraphDriveOptions(MaxTrackedFolders: 2));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => connector.GetChangesAsync(null).ToListAsync().AsTask());
+        Assert.Contains("RootFolderPath", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("/drives/drv/root:/Projects/2026/Sub", true)]
+    [InlineData("/drives/drv/root:/Projects/2026", true)]
+    [InlineData("/drives/drv/root:/Projects/2026-old", false)]
+    [InlineData("/drives/drv/root:/Other", false)]
+    [InlineData(null, false)]
+    public async Task Fetch_refuses_an_item_outside_the_root_folder(string? parentPath, bool allowed)
+    {
+        var parent = parentPath is null ? "{}" : $$"""{ "path": "{{parentPath}}" }""";
+        var graph = new StubHttp(req => req.RequestUri!.AbsolutePath.Contains("/root:/")
+            ? Json("""{ "id": "p26", "folder": {} }""")
+            : Json($$"""{ "id": "f1", "parentReference": {{parent}}, "@microsoft.graph.downloadUrl": "https://dl.example/f1" }"""));
+        var download = new StubHttp(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent([1, 2]) });
+        var connector = Connector(graph, download, new GraphDriveOptions(RootFolderPath: "Projects/2026"));
+
+        if (allowed)
+            Assert.Equal([1, 2], await connector.FetchAsync(Item("drv:f1")));
+        else
+            await Assert.ThrowsAsync<InvalidOperationException>(() => connector.FetchAsync(Item("drv:f1")));
+        Assert.Equal(allowed, download.Requests.Count == 1);
+    }
+
     // ---- helpers
 
     private static GraphDriveConnector Connector(StubHttp graph, StubHttp? download = null, GraphDriveOptions? options = null,

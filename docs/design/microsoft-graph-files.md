@@ -134,9 +134,15 @@ the changes since. So the first run is simply a delta run from the beginning.
 - **Retries:** the pipeline's retry list (no `FindAsync`). `FetchAsync` gets the item for a fresh download URL; a 404 throws
   `FileNotFoundException`, so a vanished item uses up its attempts and is dropped.
 
-**Scope of a sync in v1 is the whole drive.** Delta responses do not include an item's path, so a sync limited to a folder, and
-include/exclude patterns on paths, need the connector to track folder ids itself. That is planned as step 3 below. In v1,
-`FileFilterOptions` patterns match the **file name only**, and the docs say so.
+**Folder scoping (built 2026-10-22).** Delta responses do not include an item's path, and on OneDrive for Business and SharePoint
+delta works only on the drive root, so the connector reads the whole drive and tracks folders itself: the cursor holds a map of
+folder id to parent and name, and unknown parents are looked up once each. `RootFolderPath` limits a sync to one folder; files
+elsewhere are reported out of scope. `FileFilterOptions` patterns match the path relative to that folder (or the drive root), as
+in the folder connector. When a known folder moves or is renamed and paths matter (a root folder or patterns are set), the run
+lists the drive again, because its files are not reported again. The map is capped by `MaxTrackedFolders` (default 50,000); past
+2,000 folders the connector checkpoints every few pages, so the cursor is not rewritten on every page. `FetchAsync` refuses items
+whose `parentReference.path` is outside the folder. If the root folder is recreated (a new id), the run starts over. The first run
+after upgrading lists the drive again (the cursor fingerprint changed).
 
 ## Downloading content
 
@@ -211,7 +217,7 @@ live access check before showing results.
 3. Folder scoping: a `RootFolderPath` option. The cursor becomes JSON holding the delta link and a map of folder id to path for the
    drive, updated from folder items in each page, so paths and patterns work as in the folder connector. Items whose parent is
    not yet known are resolved with one item request and cached. The map is capped (for example 50,000 folders), beyond which the
-   connector asks for a narrower target.
+   connector asks for a narrower target. *Built 2026-10-22.*
 4. `CapturePermissions` and metadata-only mode (tier 2).
 5. Teams channel files: resolve `/teams/{teamId}/channels/{channelId}/filesFolder` to a drive and folder, then reuse step 3.
 
@@ -230,11 +236,13 @@ Checked on 2026-10-20 against [driveItem: delta](https://learn.microsoft.com/en-
   request each), which also sidesteps its expiry.
 - **Not checked yet:** `Sites.Selected` with a `read` grant for delta and download. The documented least-privileged application
   permission for delta is `Files.Read.All`.
+- **To verify:** whether `parentReference.path` on an item GET is percent-encoded. `FetchAsync` decodes it before comparing; a
+  folder name holding a literal `%` could be misread.
 - **Not used:** the Graph SDK's retry handler. The connector honours `Retry-After` itself, up to `MaxThrottleWait`.
 
 ## Open questions
 
 Built with these provisional answers (owner asked for the connector on 2026-10-20; easy to change before 1.0):
 - `Drive.Graph`, with `Drive.Google` alongside it later.
-- Name-only patterns in v1; folder scoping in step 3.
+- Name-only patterns in v1; paths since folder scoping (2026-10-22).
 - The write-permission check on start is in: a token whose `roles` or `scp` include a write permission is refused.
