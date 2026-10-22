@@ -1,0 +1,57 @@
+name: Work queue on RabbitMQ
+
+# The RabbitMQ work queue against a real broker (OpenTail.Connectivity.Tests.RabbitMQ): the work queue conformance suite, in
+# real time. Linux only and never on every push, to save Actions minutes: run it by hand, or it runs when the queue packages,
+# these tests or this workflow change.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'OpenTail.Connectivity.Queues/**'
+      - 'OpenTail.Connectivity.Queues.RabbitMQ/**'
+      - 'OpenTail.Connectivity.Tests.RabbitMQ/**'
+      - '.github/workflows/queues-rabbitmq.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: queues-rabbitmq-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rabbitmq:
+    name: RabbitMQ 4.1
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      rabbitmq:
+        image: rabbitmq:4.1
+        ports: [ '5672:5672' ]
+        options: --health-cmd "rabbitmq-diagnostics -q check_port_connectivity" --health-interval 5s --health-timeout 10s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # MinVer reads the v* tags
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build OpenTail.Connectivity.Tests.RabbitMQ -c Release
+
+      - name: Test
+        env:
+          # The image's default user; it only accepts connections from localhost, which the mapped port is.
+          OTAIL_QUEUE_RABBITMQ: amqp://guest:guest@localhost:5672/
+        # A skipped test here means the URI is missing, or a capability check that should run did not: fail rather than pass quietly.
+        run: |
+          dotnet test --project OpenTail.Connectivity.Tests.RabbitMQ -c Release --no-build 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          skipped=$(grep -Eo "skipped: [0-9]+" test.log | grep -Eo "[0-9]+" | tail -1)
+          # The two key-deduplication checks are skipped by design: RabbitMQ does not declare DeduplicatesKeys.
+          if [ "${skipped:-0}" != "2" ]; then echo "::error::Expected exactly 2 skipped tests, got ${skipped:-0}"; exit 1; fi
+          exit $status

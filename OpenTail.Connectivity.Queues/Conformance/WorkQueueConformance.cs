@@ -21,10 +21,13 @@ public static class WorkQueueConformance
     private const string Q = "conformance";
     private static readonly TimeSpan Lease = TimeSpan.FromSeconds(2);
 
-    public static IReadOnlyList<WorkQueueConformanceCheck> Checks(Func<WorkQueueOpener> newStorage, bool realTime = false)
+    /// <param name="capabilities">The queue's capabilities, when known without opening one (a broker that is not reachable while
+    /// tests are being discovered); otherwise a queue is opened to read them.</param>
+    public static IReadOnlyList<WorkQueueConformanceCheck> Checks(
+        Func<WorkQueueOpener> newStorage, bool realTime = false, WorkQueueCapabilities? capabilities = null)
     {
         ArgumentNullException.ThrowIfNull(newStorage);
-        var capabilities = Probe(newStorage);
+        capabilities ??= Probe(newStorage);
 
         WorkQueueConformanceCheck Check(string name, bool applies, Func<WorkQueueOpener, Clock, Task> run)
             => new(name, applies, () => run(newStorage(), new Clock(realTime)));
@@ -251,7 +254,8 @@ public static class WorkQueueConformance
         await clock.AdvanceAsync(Lease + TimeSpan.FromSeconds(1));
         var bodies = (await second.LeaseAsync(Q, 10, Lease)).Select(j => j.Body).Order(StringComparer.Ordinal).ToList();
         Ensure(bodies.SequenceEqual(["in flight", "waiting"]), $"after reopening the queue held [{string.Join(", ", bodies)}]");
-        Ensure((await second.EnqueueAsync(Job(key: "done-key"))).Duplicate, "a finished job's key was forgotten on reopening");
+        if (second.Capabilities.DeduplicatesKeys)
+            Ensure((await second.EnqueueAsync(Job(key: "done-key"))).Duplicate, "a finished job's key was forgotten on reopening");
     }
 
     private static async Task InvalidRefusedAsync(WorkQueueOpener open, Clock clock)

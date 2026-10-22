@@ -1,0 +1,448 @@
+using System.Text;
+using RabbitMQ.Client;
+
+namespace OpenTail.Connectivity.Queues.RabbitMQ;
+
+/// <summary>
+/// <see cref="IWorkQueue"/> on RabbitMQ. Each work queue is a durable quorum queue, with a quorum queue beside it for dead
+/// letters and "wait" queues for delays. Every publish waits for the broker's confirmation, and a message is acknowledged only
+/// after its replacement is confirmed, so a crash can duplicate a job but never lose one.
+/// </summary>
+/// <remarks>
+/// <para><b>Leases.</b> A leased job is an unacknowledged delivery on this instance's channel. If the process dies, the broker
+/// hands the job out again. If the lease runs out while the process lives, this instance gives the job back itself (checked every
+/// second and before each lease), as a copy with the attempt counted. RabbitMQ closes a channel that holds a delivery longer than
+/// its <c>consumer_timeout</c> (30 minutes by default), so a lease, extensions included, is capped at
+/// <see cref="RabbitMqWorkQueueOptions.MaxLeaseTotal"/>.</para>
+/// <para><b>Delays.</b> RabbitMQ has no delayed delivery without a plugin. A delayed job waits in a queue whose messages all live
+/// for the same time (powers of 4 seconds, from 1 second to about 3 days) and then return to the work queue; a job that comes back
+/// before its time waits again. A delayed job is never handed out early, and is at most about a second late.</para>
+/// <para><b>Keys</b> are carried, not deduplicated: RabbitMQ keeps no index of past messages. Handlers must be idempotent anyway
+/// (delivery is at least once); use the key for that.</para>
+/// </remarks>
+public sealed class RabbitMqWorkQueue : IWorkQueue
+{
+    /// <summary>What this queue guarantees; known without connecting.</summary>
+    public static WorkQueueCapabilities SupportedCapabilities { get; } =
+        new(Durable: true, DelayedDelivery: true, LeaseExpiry: true, DeduplicatesKeys: false);
+
+    private const string Prefix = "x-ot-";
+    private static readonly long[] WaitTiersSeconds = [1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144];
+
+    private readonly ConnectionFactory? _factory;
+    private readonly bool _ownsConnection;
+    private readonly WorkQueueOptions _options;
+    private readonly RabbitMqWorkQueueOptions _rabbit;
+    private readonly TimeProvider _time;
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly Dictionary<string, Lease> _leases = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _declared = new(StringComparer.Ordinal);
+    private readonly CancellationTokenSource _stopping = new();
+    private IConnection? _connection;
+    private IChannel? _channel;
+    private Task? _sweeper;
+
+    /// <param name="uri">For example <c>amqp://user:password@host:5672/vhost</c>. Connects on first use.</param>
+    public RabbitMqWorkQueue(Uri uri, WorkQueueOptions? options = null, RabbitMqWorkQueueOptions? rabbit = null, TimeProvider? time = null)
+        : this(options, rabbit, time)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        _factory = new ConnectionFactory { Uri = uri, ClientProvidedName = "opentail-work-queue" };
+        _ownsConnection = true;
+    }
+
+    /// <param name="connection">An open connection; this queue opens its own channels on it and leaves the connection open.</param>
+    public RabbitMqWorkQueue(IConnection connection, WorkQueueOptions? options = null, RabbitMqWorkQueueOptions? rabbit = null, TimeProvider? time = null)
+        : this(options, rabbit, time)
+    {
+        _connection = connection ?? throw new ArgumentNullException(nameof(connection));
+    }
+
+    private RabbitMqWorkQueue(WorkQueueOptions? options, RabbitMqWorkQueueOptions? rabbit, TimeProvider? time)
+    {
+        _options = options ?? new WorkQueueOptions();
+        _rabbit = rabbit ?? new RabbitMqWorkQueueOptions();
+        _time = time ?? TimeProvider.System;
+    }
+
+    public WorkQueueCapabilities Capabilities => SupportedCapabilities;
+
+    public async Task<EnqueueResult> EnqueueAsync(EnqueueRequest request, CancellationToken ct = default)
+    {
+        _options.Validate(request);
+        var now = Now;
+        var job = new Message(Guid.NewGuid().ToString("N"), request.Tenant, request.Body, request.Key,
+            new Dictionary<string, string>(request.Headers ?? new Dictionary<string, string>(), StringComparer.Ordinal),
+            Attempts: 0, EnqueuedAt: now, NotBefore: request.NotBefore?.ToUnixTimeMilliseconds() ?? now, LastError: null);
+        await LockedAsync(async channel =>
+        {
+            await DeclareAsync(channel, request.Queue, ct).ConfigureAwait(false);
+            await PublishDueOrWaitingAsync(channel, request.Queue, job, now, ct).ConfigureAwait(false);
+            return true;
+        }, ct).ConfigureAwait(false);
+        return new EnqueueResult(job.Id, Duplicate: false);
+    }
+
+    public Task<IReadOnlyList<LeasedJob>> LeaseAsync(string queue, int max, TimeSpan lease, CancellationToken ct = default)
+    {
+        WorkQueueOptions.ValidateQueueName(queue);
+        WorkQueueOptions.ValidateLease(max, lease);
+        if (lease > _rabbit.MaxLeaseTotalOrDefault)
+            throw new ArgumentOutOfRangeException(nameof(lease), $"A RabbitMQ lease is at most {_rabbit.MaxLeaseTotalOrDefault} (the broker's consumer_timeout).");
+
+        return LockedAsync<IReadOnlyList<LeasedJob>>(async channel =>
+        {
+            await DeclareAsync(channel, queue, ct).ConfigureAwait(false);
+            await ReturnExpiredAsync(channel, ct).ConfigureAwait(false);
+            var leased = new List<LeasedJob>();
+            while (leased.Count < max)
+            {
+                var got = await channel.BasicGetAsync(Name(queue), autoAck: false, ct).ConfigureAwait(false);
+                if (got is null)
+                    break;
+                var message = Read(got);
+                var now = Now;
+                if (message.NotBefore > now)
+                {
+                    // Back from a wait queue a little early: wait again.
+                    await PublishDueOrWaitingAsync(channel, queue, message, now, ct).ConfigureAwait(false);
+                    await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (WorkQueueRules.DeadReason(message.Attempts, At(message.EnqueuedAt), At(now), _options) is { } reason)
+                {
+                    await PublishDeadAsync(channel, queue, message, reason, now, ct).ConfigureAwait(false);
+                    await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                var token = Guid.NewGuid().ToString("N");
+                var until = now + (long)lease.TotalMilliseconds;
+                var job = message with { Attempts = message.Attempts + 1 };
+                _leases[token] = new Lease(queue, job, got.DeliveryTag, channel, now, until);
+                leased.Add(new LeasedJob(queue, job.Id, job.Tenant, job.Body, job.Key, job.Headers, job.Attempts, At(job.EnqueuedAt), At(until), token));
+            }
+
+            return leased;
+        }, ct);
+    }
+
+    public Task<bool> CompleteAsync(LeasedJob job, CancellationToken ct = default)
+        => WithLeaseAsync(job, async (channel, lease) =>
+            await channel.BasicAckAsync(lease.DeliveryTag, multiple: false, ct).ConfigureAwait(false), ct);
+
+    public Task<bool> RetryAsync(LeasedJob job, TimeSpan delay, string? error = null, CancellationToken ct = default)
+        => WithLeaseAsync(job, async (channel, lease) =>
+        {
+            var now = Now;
+            var again = lease.Job with { NotBefore = now + (long)Math.Max(0, delay.TotalMilliseconds), LastError = error };
+            await PublishDueOrWaitingAsync(channel, lease.Queue, again, now, ct).ConfigureAwait(false);
+            await channel.BasicAckAsync(lease.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+        }, ct);
+
+    public Task<bool> DeadLetterAsync(LeasedJob job, string reason, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        return WithLeaseAsync(job, async (channel, lease) =>
+        {
+            await PublishDeadAsync(channel, lease.Queue, lease.Job, reason, Now, ct).ConfigureAwait(false);
+            await channel.BasicAckAsync(lease.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+        }, ct);
+    }
+
+    public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
+        return WithLeaseAsync(job, (_, held) =>
+        {
+            var until = Now + (long)lease.TotalMilliseconds;
+            if (until - held.LeasedAt > (long)_rabbit.MaxLeaseTotalOrDefault.TotalMilliseconds)
+                throw new ArgumentOutOfRangeException(nameof(lease), $"A RabbitMQ lease, extensions included, is at most {_rabbit.MaxLeaseTotalOrDefault} (the broker's consumer_timeout).");
+            held.Until = until;
+            return Task.CompletedTask;
+        }, ct, keepLease: true);
+    }
+
+    /// <summary>Reads without removing: the messages are taken on a channel of their own, which is closed to put them back.</summary>
+    public async Task<IReadOnlyList<DeadLetter>> DeadLettersAsync(string queue, int max = 100, CancellationToken ct = default)
+    {
+        WorkQueueOptions.ValidateQueueName(queue);
+        var connection = await ConnectionAsync(ct).ConfigureAwait(false);
+        await LockedAsync(async channel =>
+        {
+            await DeclareAsync(channel, queue, ct).ConfigureAwait(false);
+            return true;
+        }, ct).ConfigureAwait(false);
+        await using var peek = await connection.CreateChannelAsync(cancellationToken: ct).ConfigureAwait(false);
+        var dead = new List<DeadLetter>();
+        while (dead.Count < max && await peek.BasicGetAsync(DeadName(queue), autoAck: false, ct).ConfigureAwait(false) is { } got)
+        {
+            var m = Read(got, countReturned: false); // peeking returns them, which is not an attempt
+            dead.Add(new DeadLetter(queue, m.Id, m.Tenant, m.Body, m.Key, m.Headers, m.Attempts, At(m.EnqueuedAt),
+                At(LongHeader(got.BasicProperties.Headers, "dead-at") ?? 0), StringHeader(got.BasicProperties.Headers, "reason") ?? "", m.LastError));
+        }
+
+        await peek.CloseAsync(ct).ConfigureAwait(false);
+        return dead;
+    }
+
+    public async Task<bool> RedriveAsync(string queue, string id, CancellationToken ct = default)
+    {
+        WorkQueueOptions.ValidateQueueName(queue);
+        var connection = await ConnectionAsync(ct).ConfigureAwait(false);
+        await LockedAsync(async channel =>
+        {
+            await DeclareAsync(channel, queue, ct).ConfigureAwait(false);
+            return true;
+        }, ct).ConfigureAwait(false);
+        await using var search = await connection.CreateChannelAsync(Confirmed, ct).ConfigureAwait(false);
+        var found = false;
+        while (await search.BasicGetAsync(DeadName(queue), autoAck: false, ct).ConfigureAwait(false) is { } got)
+        {
+            var m = Read(got);
+            if (m.Id != id)
+                continue; // left unacknowledged: closing the channel puts it back
+            var now = Now;
+            await PublishAsync(search, Name(queue), m with { Attempts = 0, EnqueuedAt = now, NotBefore = now, LastError = null }, extra: null, ct)
+                .ConfigureAwait(false);
+            await search.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+            found = true;
+            break;
+        }
+
+        await search.CloseAsync(ct).ConfigureAwait(false);
+        return found;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _stopping.CancelAsync().ConfigureAwait(false);
+        if (_sweeper is not null)
+            await _sweeper.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        // Closing the channel hands every unfinished lease back to the broker.
+        if (_channel is not null)
+            await _channel.DisposeAsync().ConfigureAwait(false);
+        if (_ownsConnection && _connection is not null)
+            await _connection.DisposeAsync().ConfigureAwait(false);
+        _stopping.Dispose();
+        _gate.Dispose();
+    }
+
+    private static readonly CreateChannelOptions Confirmed = new(publisherConfirmationsEnabled: true, publisherConfirmationTrackingEnabled: true);
+
+    private long Now => _time.GetUtcNow().ToUnixTimeMilliseconds();
+
+    private static DateTimeOffset At(long unixMs) => DateTimeOffset.FromUnixTimeMilliseconds(unixMs);
+
+    private string Name(string queue) => _rabbit.QueuePrefix + queue;
+
+    private string DeadName(string queue) => Name(queue) + ".dead";
+
+    private string WaitName(string queue, long seconds) => Name(queue) + ".wait." + seconds;
+
+    private async Task<bool> WithLeaseAsync(LeasedJob job, Func<IChannel, Lease, Task> act, CancellationToken ct, bool keepLease = false)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        return await LockedAsync(async channel =>
+        {
+            await ReturnExpiredAsync(channel, ct).ConfigureAwait(false);
+            if (!_leases.TryGetValue(job.LeaseToken, out var lease) || lease.Job.Id != job.Id || !ReferenceEquals(lease.Channel, channel))
+                return false;
+            await act(channel, lease).ConfigureAwait(false);
+            if (!keepLease)
+                _leases.Remove(job.LeaseToken);
+            return true;
+        }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Gives back jobs whose lease ran out: a copy with the attempt counted goes back, then the delivery is acknowledged.</summary>
+    private async Task ReturnExpiredAsync(IChannel channel, CancellationToken ct)
+    {
+        var now = Now;
+        foreach (var (token, lease) in _leases.Where(l => l.Value.Until <= now).ToList())
+        {
+            _leases.Remove(token);
+            if (!ReferenceEquals(lease.Channel, channel))
+                continue; // that channel is gone, and the broker already gave its deliveries back
+            await PublishAsync(channel, Name(lease.Queue), lease.Job with { NotBefore = now }, extra: null, ct).ConfigureAwait(false);
+            await channel.BasicAckAsync(lease.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task PublishDueOrWaitingAsync(IChannel channel, string queue, Message message, long now, CancellationToken ct)
+    {
+        var wait = message.NotBefore - now;
+        if (wait <= 0)
+        {
+            await PublishAsync(channel, Name(queue), message, extra: null, ct).ConfigureAwait(false);
+            return;
+        }
+
+        // The longest tier that does not overshoot; under a second waits a second (late, never early).
+        var seconds = WaitTiersSeconds.LastOrDefault(t => t * 1000 <= wait, WaitTiersSeconds[0]);
+        await DeclareWaitAsync(channel, queue, seconds, ct).ConfigureAwait(false);
+        await PublishAsync(channel, WaitName(queue, seconds), message, extra: null, ct).ConfigureAwait(false);
+    }
+
+    private Task PublishDeadAsync(IChannel channel, string queue, Message message, string reason, long now, CancellationToken ct)
+        => PublishAsync(channel, DeadName(queue), message, new Dictionary<string, object?> { [Prefix + "reason"] = reason, [Prefix + "dead-at"] = now }, ct);
+
+    private static async Task PublishAsync(IChannel channel, string routingKey, Message m, Dictionary<string, object?>? extra, CancellationToken ct)
+    {
+        var headers = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            [Prefix + "tenant"] = m.Tenant,
+            [Prefix + "attempts"] = m.Attempts,
+            [Prefix + "enqueued"] = m.EnqueuedAt,
+            [Prefix + "not-before"] = m.NotBefore,
+        };
+        if (m.Key is not null) headers[Prefix + "key"] = m.Key;
+        if (m.LastError is not null) headers[Prefix + "last-error"] = m.LastError;
+        foreach (var (name, value) in m.Headers) headers[Prefix + "h-" + name] = value;
+        foreach (var (name, value) in extra ?? []) headers[name] = value;
+        var properties = new BasicProperties { MessageId = m.Id, Persistent = true, ContentType = "application/octet-stream", Headers = headers };
+        // mandatory: an unroutable message fails the publish instead of vanishing; with confirms on, the await is the broker's yes.
+        await channel.BasicPublishAsync(exchange: "", routingKey: routingKey, mandatory: true, basicProperties: properties,
+            body: Encoding.UTF8.GetBytes(m.Body), cancellationToken: ct).ConfigureAwait(false);
+    }
+
+    private static Message Read(BasicGetResult got, bool countReturned = true)
+    {
+        var h = got.BasicProperties.Headers;
+        var headers = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (name, _) in h ?? new Dictionary<string, object?>())
+            if (name.StartsWith(Prefix + "h-", StringComparison.Ordinal))
+                headers[name[(Prefix.Length + 2)..]] = StringHeader(h, name[Prefix.Length..])!;
+        // Returned by the broker after a crash: the copy's count misses that delivery, so count it here.
+        var returned = countReturned && got.Redelivered ? 1 : 0;
+        return new Message(
+            got.BasicProperties.MessageId ?? throw new InvalidDataException("A work queue message has no message id."),
+            StringHeader(h, "tenant") ?? throw new InvalidDataException("A work queue message has no tenant."),
+            Encoding.UTF8.GetString(got.Body.Span),
+            StringHeader(h, "key"),
+            headers,
+            (int)(LongHeader(h, "attempts") ?? 0) + returned,
+            LongHeader(h, "enqueued") ?? 0,
+            LongHeader(h, "not-before") ?? 0,
+            StringHeader(h, "last-error"));
+    }
+
+    private static string? StringHeader(IDictionary<string, object?>? headers, string name)
+        => headers?.TryGetValue(Prefix + name, out var value) == true
+            ? value switch { byte[] bytes => Encoding.UTF8.GetString(bytes), string s => s, null => null, _ => value.ToString() }
+            : null;
+
+    private static long? LongHeader(IDictionary<string, object?>? headers, string name)
+        => headers?.TryGetValue(Prefix + name, out var value) == true
+            ? value switch { long l => l, int i => i, byte[] bytes => long.Parse(Encoding.UTF8.GetString(bytes), System.Globalization.CultureInfo.InvariantCulture), _ => null }
+            : null;
+
+    private async Task DeclareAsync(IChannel channel, string queue, CancellationToken ct)
+    {
+        if (!_declared.Add(Name(queue)))
+            return;
+        var quorum = new Dictionary<string, object?> { ["x-queue-type"] = "quorum" };
+        await channel.QueueDeclareAsync(Name(queue), durable: true, exclusive: false, autoDelete: false, arguments: quorum, cancellationToken: ct).ConfigureAwait(false);
+        await channel.QueueDeclareAsync(DeadName(queue), durable: true, exclusive: false, autoDelete: false, arguments: quorum, cancellationToken: ct).ConfigureAwait(false);
+    }
+
+    private async Task DeclareWaitAsync(IChannel channel, string queue, long seconds, CancellationToken ct)
+    {
+        if (!_declared.Add(WaitName(queue, seconds)))
+            return;
+        // Every message here lives the same time, then dead-letters back to the work queue. At-least-once dead-lettering keeps
+        // a message until the work queue confirms it (it needs reject-publish overflow).
+        var arguments = new Dictionary<string, object?>
+        {
+            ["x-queue-type"] = "quorum",
+            ["x-message-ttl"] = seconds * 1000,
+            ["x-dead-letter-exchange"] = "",
+            ["x-dead-letter-routing-key"] = Name(queue),
+            ["x-dead-letter-strategy"] = "at-least-once",
+            ["x-overflow"] = "reject-publish",
+        };
+        await channel.QueueDeclareAsync(WaitName(queue, seconds), durable: true, exclusive: false, autoDelete: false, arguments: arguments, cancellationToken: ct)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<T> LockedAsync<T>(Func<IChannel, Task<T>> act, CancellationToken ct)
+    {
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_channel is not { IsOpen: true })
+            {
+                // A new channel: deliveries on the old one went back to the broker, so its leases are void.
+                _leases.Clear();
+                _declared.Clear();
+                var connection = await ConnectionAsync(ct).ConfigureAwait(false);
+                if (_channel is not null)
+                    await _channel.DisposeAsync().ConfigureAwait(false);
+                _channel = await connection.CreateChannelAsync(Confirmed, ct).ConfigureAwait(false);
+                _sweeper ??= Task.Run(SweepAsync);
+            }
+
+            return await act(_channel).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task<IConnection> ConnectionAsync(CancellationToken ct)
+    {
+        if (_connection is not null)
+            return _connection;
+        return _connection = await _factory!.CreateConnectionAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Gives back expired leases even when this worker is idle, so other workers get the jobs.</summary>
+    private async Task SweepAsync()
+    {
+        while (!_stopping.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), _stopping.Token).ConfigureAwait(false);
+                if (_leases.Count > 0)
+                    await LockedAsync(async channel =>
+                    {
+                        await ReturnExpiredAsync(channel, _stopping.Token).ConfigureAwait(false);
+                        return true;
+                    }, _stopping.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception) when (!_stopping.IsCancellationRequested)
+            {
+                // A broken channel is replaced on the next call; the sweep tries again in a second.
+            }
+        }
+    }
+
+    private sealed record Message(
+        string Id, string Tenant, string Body, string? Key, IReadOnlyDictionary<string, string> Headers, int Attempts, long EnqueuedAt, long NotBefore,
+        string? LastError);
+
+    private sealed class Lease(string queue, Message job, ulong deliveryTag, IChannel channel, long leasedAt, long until)
+    {
+        public string Queue { get; } = queue;
+        public Message Job { get; } = job;
+        public ulong DeliveryTag { get; } = deliveryTag;
+        public IChannel Channel { get; } = channel;
+        public long LeasedAt { get; } = leasedAt;
+        public long Until { get; set; } = until;
+    }
+}
+
+/// <param name="QueuePrefix">Put before every RabbitMQ queue name. Default <c>ot.</c>.</param>
+/// <param name="MaxLeaseTotal">The longest a job may stay leased, extensions included. Keep it below the broker's
+/// <c>consumer_timeout</c> (30 minutes by default). Default 25 minutes.</param>
+public sealed record RabbitMqWorkQueueOptions(string QueuePrefix = "ot.", TimeSpan? MaxLeaseTotal = null)
+{
+    public TimeSpan MaxLeaseTotalOrDefault => MaxLeaseTotal ?? TimeSpan.FromMinutes(25);
+}
