@@ -14,8 +14,9 @@ connector, and deletions and retries with the first connector that has a change 
 
 ## The problem today
 
-- **Delivery is at most once.** `FolderSyncStateStore` records every scanned file, including ones that failed, so a failure is
-  not retried until the file changes. ~~The inbox adapters save their cursor when enumeration ends, before the caller has processed
+- **Delivery is at most once.** ~~`FolderSyncStateStore` records every scanned file, including ones that failed, so a failure is
+  not retried until the file changes.~~ **Fixed:** the folder connector implements `ISourceItemFeedback`; the pipeline calls
+  `NotProcessed` for failed items, which keeps them out of the saved state so the next run retries them. ~~The inbox adapters save their cursor when enumeration ends, before the caller has processed
   anything.~~ **Fixed:** `InboxSyncCommit.Manual` exists (plan section 10).
 - **There is no notion of success.** Sync state is saved by the connector (inbox) or by the caller (`SaveStateAsync`) without
   knowing whether the run worked.
@@ -161,15 +162,15 @@ SyncOptions? Sync = null
 public sealed record SyncOptions(
     int CheckpointEveryItems = 500,      // commit at the first checkpoint after this many items...
     TimeSpan? CheckpointEvery = null,    // ...or after this long (default 5 minutes), whichever comes first
-    int MaxItemAttempts = 3,
-    int MaxRetryEntries = 10_000,
+    int MaxItemAttempts = 3,        // historical design; built as SyncOptions.MaxItemAttempts, default 5
+    int MaxRetryEntries = 10_000,   // historical design; built as SyncOptions.MaxRetryItems, default 100
     bool IgnoreDeletions = false,        // allow a deletion-reporting connector with no deletion exporter
     bool CollectSourceRefs = false,
     int MaxReportedRefs = 10_000);
 
 // IngestionReport gains:
 string? SyncScope, bool FullRun, bool SyncCommitted,
-int ItemsDeleted, int ItemsRetried, int ItemsAbandoned, int ItemsRejected,
+int ItemsDeleted, int ItemsRetried, int ItemsAbandoned, int ItemsRejected,   // historical; built: ItemsDeleted, RetriesPending
 IReadOnlyList<string>? DeletedSourceRefs, IReadOnlyList<string>? SeenSourceRefs, bool SourceRefsTruncated
 ```
 
@@ -204,7 +205,7 @@ it behaves exactly as today.
    nothing past the last commit is saved, and the exception is rethrown. Non-incremental runs keep today's behaviour of counting
    the item as failed.
 5. **Commit.** Call `FlushAsync` on every exporter, then `SaveAsync(scope, new SyncState(checkpoint, retries, ...), version)`.
-   Never save before the flush has succeeded. If the retry list is over `MaxRetryEntries`, do not save; fail the run with a clear
+   Never save before the flush has succeeded. (Built: when the retry list is full, at `MaxRetryItems`, the cursor is held rather than the run failed.) If the retry list is over `MaxRetryEntries`, do not save; fail the run with a clear
    error, since that many fetch failures means something systemic.
 6. **End.** When the stream ends, commit at its last checkpoint. A stream that ends without a final checkpoint commits only the
    retry list, keeping the old cursor.

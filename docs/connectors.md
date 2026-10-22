@@ -44,7 +44,8 @@ offered again, and known files now out of scope appear in `DeletedSinceLastScan`
 that no longer exist. A corrupt or missing state file is treated as "no state" (a full run). Files the pipeline did not process (failed
 extraction or validation, an error, or left by `MaxItemsProcessed`) are kept out of the state, so the next run tries them again; if
 you drive the connector yourself, call `NotProcessed(item)` for those before saving. `SourceItem.Id` is the file path as built
-from the `folderPath` you pass, so moving or re-spelling the root changes every id.
+from the full path of the `folderPath` you pass: `docs`, `./docs` and its absolute path give the same ids from the same
+working directory, but moving the folder to another absolute path changes every id. Identity is the path, not the content.
 
 ## Web
 

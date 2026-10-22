@@ -48,22 +48,19 @@ They are used by the OpenTail Host's modules and by OpenTail itself.
 - [Roadmap](docs/roadmap.md): live tools in the Host versus indexing here, the three tiers of document search, and what this
   repository builds for each.
 - [Extending](docs/extending.md): building on the packages from another project, and where it is awkward today.
-- Design proposals (nothing implemented yet): [shared groundwork](docs/design/shared-groundwork.md),
-  [incremental sync and deletions](docs/design/sync-and-deletions.md),
-  [summary cards](docs/design/summary-cards.md),
-  [skills and scenarios](docs/design/skills-and-scenarios.md),
-  [roles and permissions](docs/design/roles-and-permissions.md),
-  [what downstream stores can rely on](docs/design/consumer-contract.md),
-  [testing and verification](docs/design/testing-and-verification.md),
-  [SQL connectors](docs/design/sql-connectors.md),
-  [SharePoint / OneDrive](docs/design/microsoft-graph-files.md),
-  [Google Drive](docs/design/google-drive.md),
-  [object storage](docs/design/object-storage.md),
-  [tickets, wikis and chat](docs/design/tickets-wikis-and-chat.md),
-  [CRM](docs/design/crm.md),
-  [finance systems](docs/design/finance.md),
-  [plug-and-play memory](docs/design/memory.md) and
-  [triggers](docs/design/triggers.md) (the *when*).
+- Design notes and proposals (status varies; each page states its own):
+  - Built, reference: [shared groundwork](docs/design/shared-groundwork.md),
+    [incremental sync and deletions](docs/design/sync-and-deletions.md),
+    [what downstream stores can rely on](docs/design/consumer-contract.md),
+    [testing and verification](docs/design/testing-and-verification.md).
+  - Partly built: [SharePoint / OneDrive](docs/design/microsoft-graph-files.md) and [Google Drive](docs/design/google-drive.md)
+    (slice 1), [object storage](docs/design/object-storage.md), [plug-and-play memory](docs/design/memory.md) (M1 to M6),
+    [source permissions and isolation](docs/design/source-permissions-and-isolation.md) (a staged plan: metadata and a
+    fail-closed helper exist; no connector captures complete ACLs and nothing enforces them at query time).
+  - Proposals, nothing built: [SQL connectors](docs/design/sql-connectors.md) (beyond the SQLite connector),
+    [summary cards](docs/design/summary-cards.md), [skills and scenarios](docs/design/skills-and-scenarios.md),
+    [tickets, wikis and chat](docs/design/tickets-wikis-and-chat.md), [CRM](docs/design/crm.md),
+    [finance systems](docs/design/finance.md), [triggers](docs/design/triggers.md) (the *when*).
 - [Using and writing connectors](docs/writing-a-connector.md): a worked example and the contracts to implement.
 - [Host Sql module: Postgres and MySQL](docs/host/sql-postgres-mysql.md): a plan for code in `opentail-host`, including a
   security fix, kept here with the other SQL design work.

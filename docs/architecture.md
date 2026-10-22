@@ -76,13 +76,18 @@ A source that implements `IIncrementalSourceConnector` streams changes since a c
   **flushes every exporter and only then saves the cursor**. At the end of the stream, or at `MaxItemsProcessed`, it commits the
   last checkpoint reached.
 - Each save carries the version it loaded; if another run saved meanwhile, `SyncConflictException` and nothing is saved.
-- A failed fetch (network, throttling) adds the item to a **retry list** stored with the cursor (up to `MaxRetryEntries`, default
-  10,000). Each run first retries listed items before reading new changes. After `MaxItemAttempts` (default 3), a permanently
-  failing item is dropped with an error and the cursor moves on. A rejected item (extraction or validation failed) is not retried:
+- A failed fetch (network, throttling) adds the item to a **retry list** stored with the cursor (up to `SyncOptions.MaxRetryItems`,
+  default 100; when the list is full the cursor is held instead of moving past the item). Each run first retries listed items,
+  through `FetchAsync`, before reading new changes. After `MaxItemAttempts` (default 5), a permanently failing item is dropped
+  with an error and the cursor moves on. A rejected item (extraction or validation failed) is not retried:
   the same bytes would fail again.
-- An exporter or stream exception stops the run; nothing after the last commit is saved. A crash between flush and save repeats
-  some items next run, which stable ids make harmless.
-- The report's `SyncScope`, `FullRun`, `SyncCommitted`, `ItemsRetried` and `ItemsAbandoned` say what happened.
+- An exporter or stream exception stops an incremental run and is rethrown; nothing after the last commit is saved, so the
+  cursor never moves past a change no exporter has flushed. A crash between flush and save repeats some items next run, which
+  stable ids make harmless. In a non-incremental run an exporter exception (other than cancellation) is caught instead: the item
+  counts as failed and the run goes on. Exporters are not a transaction in either case: an earlier exporter may have accepted a
+  document that a later one rejected.
+- The report's `SyncScope`, `FullRun`, `SyncCommitted`, `RetriesPending` and `ItemsDeleted` say what happened; dropped retries
+  appear in `Errors`.
 
 ### Deletions
 

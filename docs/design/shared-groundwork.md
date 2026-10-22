@@ -24,10 +24,12 @@ update a document in place or notice that one was removed.
 **Implementation.** Document IDs are now derived from source identity:
 
 ```
-Id = lowercase hex of SHA-256( sourceType + "\n" + tenantContext + "\n" + sourceRef ), first 32 characters
+Part(s) = s.Length (invariant culture) + ":" + s
+Id      = lowercase hex of SHA-256( UTF-8( Part(sourceType) + Part(tenantContext) + Part(sourceRef) ) ), first 32 characters
 ```
 
-This is implemented in `ConnectivityPipeline.DocumentId`. See `architecture.md` for current behavior.
+Length-prefixing each part means no characters inside one part can make two different triples hash alike. Call
+`ConnectivityPipeline.DocumentId` rather than reimplementing it. This is implemented in `ConnectivityPipeline.DocumentId`. See `architecture.md` for current behavior.
 
 `SourceRef` is the connector's `SourceItem.Id`, which most connectors already make stable (path, URL, row id, message id). The
 exceptions to fix or document first: `MboxConnector` uses a random id for a message without `Message-Id`, and the folder and
