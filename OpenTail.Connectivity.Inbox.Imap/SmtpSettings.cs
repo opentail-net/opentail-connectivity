@@ -7,6 +7,9 @@ public sealed record SmtpSettings(
     string Username,
     string Password)
 {
+    /// <summary>Leaves out the password, so logging the settings does not log credentials.</summary>
+    public override string ToString() => $"SmtpSettings {{ Host = {Host}, Port = {Port}, UseSsl = {UseSsl}, Username = {Username} }}";
+
     public static SmtpSettings Create(
         string host, int? port, bool? useSsl, string username, string password)
     {

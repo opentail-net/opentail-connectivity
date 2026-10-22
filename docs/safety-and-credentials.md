@@ -65,8 +65,10 @@ limit the app to specific mailboxes (RBAC for Applications, or the older applica
 
 ## Credentials
 
-- `ImapSettings`, `GmailSettings` and `GraphSettings` are plain records that hold passwords, client secrets and refresh tokens.
-  Their auto-generated `ToString()` prints those values, so do not log the objects.
+- `ImapSettings`, `SmtpSettings`, `GmailSettings`, `GraphSettings` and `SqlConnectorConfig` hold passwords, client secrets,
+  refresh tokens or connection strings. Their `ToString()` leaves those out (tested), as does `SftpSettings`. The secret fields
+  are still public properties and record equality still compares them, so log an explicit list of safe fields rather than whole
+  objects, and never serialise settings into logs or telemetry.
 - Load secrets from environment variables or a secret store, not from source or config checked into git.
 - `CredentialRedactor` replaces given secret values with `[REDACTED]` in text such as error messages. Build it with
   `new CredentialRedactor(secret1, secret2)` or `CredentialRedactor.FromEnv("VAR1", "VAR2")`. It matches exact values only.

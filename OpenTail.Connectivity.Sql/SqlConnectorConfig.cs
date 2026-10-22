@@ -12,4 +12,8 @@ public sealed record SqlConnectorConfig(
     IReadOnlyList<string> BodyFields,
     string? ModifiedField = null,
     IReadOnlyList<string>? MetadataFields = null,
-    bool IsQuery = false);
+    bool IsQuery = false)
+{
+    /// <summary>Leaves out the connection string, which can hold a password.</summary>
+    public override string ToString() => $"SqlConnectorConfig {{ TableOrQuery = {(IsQuery ? "(query)" : TableOrQuery)}, IdField = {IdField} }}";
+}

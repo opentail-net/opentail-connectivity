@@ -6,6 +6,9 @@ public sealed record GraphSettings(
     string ClientSecret,
     string UserEmail)
 {
+    /// <summary>Leaves out the client secret, so logging the settings does not log credentials.</summary>
+    public override string ToString() => $"GraphSettings {{ TenantId = {TenantId}, ClientId = {ClientId}, UserEmail = {UserEmail} }}";
+
     public static GraphSettings Create(string tenantId, string clientId, string clientSecret, string userEmail)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
