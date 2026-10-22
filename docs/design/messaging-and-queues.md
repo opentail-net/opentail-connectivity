@@ -105,6 +105,13 @@ IEventSink    publish an event                      (new) tell an outside bus wh
   broker refusing a longer one) cancels the handler and its result is ignored. Jobs for tenants the worker does not serve are
   dead-lettered unrun. Stopping cancels running handlers and hands their jobs back at once. Events go to a callback, so the
   package needs no logging dependency. A failing queue (broker down) is reported and retried with backoff.
+- **Stopping jobs that keep coming back** (owner, 2026-10-22: "items nobody knew how to kill"): `CancelAsync` (waiting, delayed
+  or running; a running worker's lease is revoked and `WorkQueueWorker` cancels its handler; the key keeps deduplicating),
+  `RunNowAsync`, `PendingAsync` (no bodies), `DeleteDeadLetterAsync`, and `EnqueueRequest.Source` (`rule:7`, `schedule:x`,
+  `work:w-1`, `continuation:c-1`) so an operator can stop what creates a job, not only the job. RabbitMQ cancels through
+  `ICancelledJobs`, a store every worker shares (in-memory, or `SqliteCancelledJobs` on one machine), and lists only waiting and
+  delayed jobs. Seven more conformance checks (24 in all); RabbitMQ passes the 21 that apply. The Host shows all of it on one
+  **Jobs** page of its admin view (user-facing word: *job*, for work items, continuations and queue jobs alike).
 - Not built yet: the scheduler enqueueing jobs, the Host's work items on the queue.
 
 ## Where I pushed back (before the owner's reason above)
