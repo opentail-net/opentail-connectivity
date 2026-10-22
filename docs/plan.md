@@ -849,6 +849,42 @@ still outstanding. Writes go through a separate interface; zip is a pipeline ste
 - [x] **[C]** Follow-on: WebDAV adapter (`OpenTail.Connectivity.Storage.WebDav`).
 - [x] **[C]** Follow-on: Box adapter (`OpenTail.Connectivity.Storage.Box`).
 
+## 29. External reviews, 2026-10-21 (to-fix documents)
+
+Seven review documents, now in [done/](done/): the Markdown frontmatter finding, the additional bug-fix plan, the second, third
+and fourth reviews, the follow-up review and the consolidated remediation plan. All fixed 2026-10-22 with regression tests,
+except where noted. Breaking changes for 0.3.0 are marked **B**.
+
+- [x] **[C]** Markdown exporter: YAML-safe frontmatter; metadata keys cannot shadow fixed fields.
+- [x] **[C]** WebDAV: listing and error bodies bounded (16 MB, 1 KB); `Create(handler)` refuses auto-redirecting handlers; a
+  supplied client that followed a redirect fails closed.
+- [x] **[C]** `ObjectStoreReader` returns HTML as source (contract documented and tested).
+- [x] **[C]** SFTP: symlinked path components refused (check-to-open race documented); prefix walks start at the prefix.
+- [x] **[C]** Drive (Graph, Google): fetch enforces the configured target; cursors reset when the filter or export formats change.
+- [x] **[C]** **B** Inbox adapters: no default `InboxSyncCommit` when a sync store is passed.
+- [x] **[C]** Pipeline dedup: per tenant, and a hash counts only after every exporter took the document.
+- [x] **[C]** Folder sync: size compared with timestamp; scope fingerprint; files outside `ModifiedSince` not recorded.
+- [x] **[C]** ICS: recurrences expanded within a window, `MaxEvents` and calendar id honoured, RFC 5545 end times.
+- [x] **[C]** RSS/Atom: Atom id and alternate link, `updated` as modified, stable unknown dates, payload-hash versions, 10 MB cap,
+  DTDs prohibited.
+- [x] **[C]** Crawler: case-sensitive URL keys, whole-segment path prefixes, `Create(handler)`.
+- [x] **[C]** **B** Object storage: Azure `Container` is `account/name`, S3 with a service URL is `host/bucket` (ids change for
+  those sources); `ObjectStorageOptions.Namespace`.
+- [x] **[C]** **B** Calendar writes: `CalendarWritePolicy`, default `Disabled`; `ICalendarReader` split out.
+- [x] **[C]** **B** Mailbox: `AllowDelete`, `AllowMove`, `AllowMarkRead` on `EmailSenderPolicy`, off by default.
+- [x] **[C]** CSV: duplicate-id suffixes never collide with ids in the file.
+- [x] **[C]** SQLite: cursor scope includes tenant and the id/modified fields (one full run after upgrading).
+- [x] **[C]** Settings records: `ToString()` leaves out secrets.
+- [x] **[C]** Docs: deletion rule on three pages; extending guide; README design status (and a broken link); doc-id formula;
+  folder identity; sync defaults; exporter failures; conformance coverage; verification labels; object-storage inventory; ACL
+  contract; tenant isolation; deployment-wide email limits; clear-text NuGet token.
+- [ ] **[O]** Live-provider integration suites (Graph, Gmail, object storage): need dedicated test accounts and least-privilege
+  credentials from the owner. Until then, everything that talks to a provider stays labelled Tested.
+- [ ] **[O]** The Host's Email and Calendar modules must adopt the breaking changes above (write policies, commit mode) when
+  they move to Connectivity 0.3.0.
+- [ ] Conformance suite for the Drive connectors and `ObjectStorageConnector` (not yet covered).
+- [ ] Split `IEmailSender` into send and manage, in step with the Host.
+
 ## Background, no action planned
 
 These are kept for the day their content needs indexing. Read them, but nothing above depends on them.
