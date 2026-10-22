@@ -878,12 +878,12 @@ except where noted. Breaking changes for 0.3.0 are marked **B**.
 - [x] **[C]** Docs: deletion rule on three pages; extending guide; README design status (and a broken link); doc-id formula;
   folder identity; sync defaults; exporter failures; conformance coverage; verification labels; object-storage inventory; ACL
   contract; tenant isolation; deployment-wide email limits; clear-text NuGet token.
-- [ ] **[O]** Live-provider integration suites (Graph, Gmail, object storage): need dedicated test accounts and least-privilege
+- [ ] **[Owner]** Live-provider integration suites (Graph, Gmail, object storage): need dedicated test accounts and least-privilege
   credentials from the owner. Until then, everything that talks to a provider stays labelled Tested.
-- [ ] **[O]** The Host's Email and Calendar modules must adopt the breaking changes above (write policies, commit mode) when
+- [ ] **[H]** The Host's Email and Calendar modules must adopt the breaking changes above (write policies, commit mode) when
   they move to Connectivity 0.3.0.
-- [ ] Conformance suite for the Drive connectors and `ObjectStorageConnector` (not yet covered).
-- [ ] Split `IEmailSender` into send and manage, in step with the Host.
+- [ ] **[C]** Conformance suite for the Drive connectors and `ObjectStorageConnector` (not yet covered).
+- [ ] **[C]** **[H]** Split `IEmailSender` into send and manage, in step with the Host.
 
 ## Background, no action planned
 
