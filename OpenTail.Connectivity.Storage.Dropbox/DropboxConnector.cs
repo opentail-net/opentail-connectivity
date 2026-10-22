@@ -7,6 +7,11 @@ using OpenTail.Connectivity.Storage;
 namespace OpenTail.Connectivity.Storage.Dropbox;
 
 /// <summary>Ingests a Dropbox folder through its list-folder cursor, including deletions and filter changes.</summary>
+/// <remarks>
+/// Item ids and the sync scope include the account's namespace, so two accounts with the same tenant and root path never share
+/// checkpoint state or overwrite each other's documents downstream. Use the account's Dropbox id
+/// (<see cref="DropboxObjectStoreClient.GetAccountIdAsync"/>), which is stable and not secret.
+/// </remarks>
 public sealed class DropboxConnector : IIncrementalSourceConnector
 {
     private const long DefaultMaxFileSizeBytes = 50L * 1024 * 1024;
@@ -16,24 +21,34 @@ public sealed class DropboxConnector : IIncrementalSourceConnector
     private readonly FileFilter _filter;
     private readonly ObjectStorageConnector _fetcher;
     private readonly string _idPrefix;
+    private readonly string _container;
 
+    /// <param name="accountNamespace">A stable, non-secret name for the Dropbox account, normally its account id
+    /// (<c>dbid:...</c>, from <see cref="DropboxObjectStoreClient.GetAccountIdAsync"/>). Required: the root path alone does not
+    /// tell accounts apart.</param>
     public DropboxConnector(
         DropboxObjectStoreClient client,
         string tenantContext,
+        string accountNamespace,
         FileFilterOptions? filter = null,
         int pageSize = 1000)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantContext);
+        ArgumentException.ThrowIfNullOrWhiteSpace(accountNamespace);
+        if (accountNamespace.Trim('/').Length == 0)
+            throw new ArgumentException("The account namespace must name the account.", nameof(accountNamespace));
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
         _client = client;
         _tenantContext = tenantContext;
         _pageSize = pageSize;
         var effectiveFilter = filter ?? new FileFilterOptions();
         _filter = new FileFilter(effectiveFilter with { MaxFileSizeBytes = effectiveFilter.MaxFileSizeBytes ?? DefaultMaxFileSizeBytes });
-        _fetcher = new ObjectStorageConnector(client, tenantContext, new ObjectStorageOptions(Filter: effectiveFilter));
-        _idPrefix = $"dropbox://{client.Container}/";
-        SyncScope = $"dropbox:{tenantContext}:{client.Container}";
+        // The fetcher builds the same prefix from the same namespace, so it accepts exactly the ids this connector hands out.
+        _fetcher = new ObjectStorageConnector(client, tenantContext, new ObjectStorageOptions(Filter: effectiveFilter, Namespace: accountNamespace));
+        _container = accountNamespace.Trim('/') + "/" + client.Container;
+        _idPrefix = $"dropbox://{_container}/";
+        SyncScope = $"dropbox:{tenantContext}:{_container}";
     }
 
     public string SyncScope { get; }
@@ -127,7 +142,7 @@ public sealed class DropboxConnector : IIncrementalSourceConnector
         var metadata = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             [SourceKeys.Url] = id,
-            [SourceKeys.Container] = _client.Container,
+            [SourceKeys.Container] = _container,
             [SourceKeys.AclCaptured] = "false",
         };
         if (info.ETag is not null)

@@ -260,6 +260,11 @@ checkpoints and tests.
   that fail the filter become `Delete(OutOfScope)`. Folders produce nothing.
 - An expired or invalid cursor (Dropbox returns 409 with `error_summary` starting `reset`) yields `Reset` and lists from scratch.
 - `ReportsDeletions = true`. `SourceItem.Id = "dropbox://" + Container + "/" + key`, so it matches ST1's ids for the same file.
+- *Fixed 2026-10-23 (review):* the root path alone does not tell Dropbox accounts apart, so two accounts with the same tenant and
+  root shared sync state and ids. `DropboxConnector` now **requires** an account namespace (normally the account id from
+  `DropboxObjectStoreClient.GetAccountIdAsync`, `dbid:...`, stable and not secret); ids and the sync scope are
+  `dropbox://{namespace}/{container}/{key}` and `dropbox:{tenant}:{namespace}/{container}`, matching `ObjectStorageConnector` with
+  `ObjectStorageOptions.Namespace`, so fetches accept exactly these ids. Existing Dropbox sources list once more under the new scope.
   `source.version = content_hash`. `FetchAsync` goes through the ST5 client's `ReadAsync`.
 - Tests: a first run with checkpoints, a later run with a deleted entry and a changed file, the reset on `reset/...`, filtered
   files as `OutOfScope`, and a pipeline run where a deletion reaches a deletion exporter with the right document id.

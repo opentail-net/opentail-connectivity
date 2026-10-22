@@ -57,6 +57,18 @@ public sealed class DropboxObjectStoreClient : IObjectStoreClient, IDisposable
         return new ObjectListingPage(objects, page.HasMore ? page.Cursor : null);
     }
 
+    /// <summary>The signed-in account's Dropbox id (<c>dbid:...</c>): stable, not secret, and the right namespace for
+    /// <see cref="DropboxConnector"/>.</summary>
+    public async Task<string> GetAccountIdAsync(CancellationToken cancellationToken = default)
+    {
+        using var response = await SendAsync(
+            token => JsonPost(new Uri(ApiRoot, "users/get_current_account"), token, "null"), cancellationToken).ConfigureAwait(false);
+        using var json = await ReadJsonAsync(response, cancellationToken).ConfigureAwait(false);
+        return json.RootElement.TryGetProperty("account_id", out var id) && id.GetString() is { Length: > 0 } accountId
+            ? accountId
+            : throw new InvalidDataException("Dropbox returned no account id.");
+    }
+
     internal async Task<DropboxListPage> ListFolderPageAsync(string? cursor, int pageSize, CancellationToken cancellationToken)
     {
         var endpoint = cursor is null ? "files/list_folder" : "files/list_folder/continue";
