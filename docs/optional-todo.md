@@ -26,3 +26,10 @@ From the [queue research](design/queue-research-2026-10-22.md).
   each handler building its own. *When:* several handlers need it.
 - **A producer span at enqueue** (OpenTelemetry `send` operation). The trace context is already carried; a span on the enqueuing
   side would show the enqueue itself in traces. Small.
+
+## Memory
+
+- **An index for SQLite vectors** (sqlite-vec once it reaches 1.0, or an HNSW library), still filtering before ranking; float16
+  storage and per-collection caching first. *When:* a local deployment outgrows exact search (see
+  [SQLite vectors](design/sqlite-vectors.md#scale-honestly)).
+
