@@ -74,6 +74,48 @@ public sealed class MarkdownDocumentExporterTests : IDisposable
     }
 
     [Fact]
+    public async Task MetadataNewlineCannotInjectFields()
+    {
+        var meta = new Dictionary<string, string> { ["note"] = "line1\ntenant: evil" };
+        var content = await ExportAndRead(MakeDoc(metadata: meta));
+
+        Assert.Contains("note: \"line1\\ntenant: evil\"", content);
+        Assert.DoesNotContain("\ntenant: evil", content);
+    }
+
+    [Theory]
+    [InlineData("a: b", "\"a: b\"")]
+    [InlineData("say \"hi\"", "\"say \\\"hi\\\"\"")]
+    [InlineData("# not a comment", "\"# not a comment\"")]
+    [InlineData("true", "\"true\"")]
+    [InlineData("123", "\"123\"")]
+    [InlineData("", "\"\"")]
+    [InlineData("café", "\"café\"")]
+    [InlineData("back\\slash", "\"back\\\\slash\"")]
+    [InlineData("plain-value_1.0", "plain-value_1.0")]
+    public void YamlScalarQuotesAnythingAmbiguous(string input, string expected) =>
+        Assert.Equal(expected, MarkdownDocumentExporter.YamlScalar(input));
+
+    [Fact]
+    public async Task MetadataKeysAreEncodedAndCannotShadowFixedFields()
+    {
+        var meta = new Dictionary<string, string> { ["id"] = "spoof", ["bad: key"] = "v" };
+        var content = await ExportAndRead(MakeDoc(metadata: meta));
+
+        Assert.Contains("meta_id: spoof", content);
+        Assert.Contains("\"bad: key\": v", content);
+        Assert.Single(content.Split('\n'), l => l.StartsWith("id:", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TitleNewlinesDoNotBreakHeading()
+    {
+        var content = await ExportAndRead(MakeDoc(title: "One\nTwo"));
+
+        Assert.Contains("# One Two", content);
+    }
+
+    [Fact]
     public async Task SafeFilenameStripsPathUnsafeChars()
     {
         var doc = MakeDoc(title: "Title:With/Unsafe*Chars?");
