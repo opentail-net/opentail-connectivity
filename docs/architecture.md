@@ -41,7 +41,8 @@ The report is written separately: pass the returned `IngestionReport` to `JsonRe
 Items dropped as duplicates (when deduplication is on) count as skipped. `MaxItemsProcessed` caps documents produced, not items
 discovered.
 
-`PipelineOptions` controls content-hash deduplication (`DeduplicateByContentHash`, bounded by `MaxDedupHashes`), extra metadata
+`PipelineOptions` controls content-hash deduplication (`DeduplicateByContentHash`, bounded by `MaxDedupHashes`; per run and per
+tenant, and a hash counts only once every exporter has taken the document), extra metadata
 stamped on every document, and a cap on items processed.
 
 ### Validation codes

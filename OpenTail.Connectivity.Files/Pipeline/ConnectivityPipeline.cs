@@ -556,7 +556,7 @@ public sealed class ConnectivityPipeline
             return Outcome.Rejected;
         }
 
-        if (!run.FirstTimeHash(doc.ContentHash))
+        if (run.IsDuplicate(doc.TenantContext, doc.ContentHash))
         {
             run.Skipped++;
             return Outcome.Skipped;
@@ -574,6 +574,8 @@ public sealed class ConnectivityPipeline
             return Outcome.ExporterFailed;
         }
 
+        // Remembered only once every exporter has it, so a failed export never hides a later copy.
+        run.RememberHash(doc.TenantContext, doc.ContentHash);
         if (itemVersion is not null)
             run.PendingVersions.Add((doc.Id, itemVersion));
 
@@ -700,14 +702,19 @@ public sealed class ConnectivityPipeline
 
         public bool CapReached => options.MaxItemsProcessed is { } cap && processed >= cap;
 
-        public bool FirstTimeHash(string hash)
+        // Keyed by tenant and hash: the same body in two tenants is two documents.
+        private static string HashKey(string tenant, string hash) => tenant + "\n" + hash;
+
+        public bool IsDuplicate(string tenant, string hash) => seenHashes?.Contains(HashKey(tenant, hash)) == true;
+
+        public void RememberHash(string tenant, string hash)
         {
-            if (seenHashes is null) return true;
-            if (!seenHashes.Add(hash)) return false;
-            seenHashOrder.Enqueue(hash);
+            if (seenHashes is null) return;
+            var key = HashKey(tenant, hash);
+            if (!seenHashes.Add(key)) return;
+            seenHashOrder.Enqueue(key);
             while (seenHashes.Count > Math.Max(1, options.MaxDedupHashes) && seenHashOrder.Count > 0)
                 seenHashes.Remove(seenHashOrder.Dequeue());
-            return true;
         }
 
         public void Processed(int bodyLength)

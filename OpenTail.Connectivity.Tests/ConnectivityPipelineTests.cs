@@ -95,6 +95,55 @@ public sealed class ConnectivityPipelineTests : IDisposable
         Assert.Equal(3, report.ItemsProcessed);
     }
 
+    [Fact]
+    public async Task Dedup_is_per_tenant()
+    {
+        const string body = "The same body text, long enough for the document validator to accept it.";
+        var source = new InMemorySource(("a", body, "alpha"), ("b", body, "bravo"), ("c", body, "alpha"));
+        var exporter = new RecordingExporter();
+
+        var report = await new ConnectivityPipeline(source, new BytesTextExtractor(), [exporter],
+            new PipelineOptions(DeduplicateByContentHash: true)).RunAsync();
+
+        Assert.Equal(["alpha", "bravo"], exporter.Tenants);
+        Assert.Equal(1, report.ItemsSkipped);
+    }
+
+    [Fact]
+    public async Task A_failed_export_does_not_hide_a_later_copy_of_the_same_body()
+    {
+        const string body = "The same body text, long enough for the document validator to accept it.";
+        var source = new InMemorySource(("a", body, "tenant"), ("b", body, "tenant"), ("c", body, "tenant"));
+        var first = new RecordingExporter();
+        var flaky = new RecordingExporter { FailOnce = true };
+
+        var report = await new ConnectivityPipeline(source, new BytesTextExtractor(), [first, flaky],
+            new PipelineOptions(DeduplicateByContentHash: true)).RunAsync();
+
+        Assert.Equal(1, report.ItemsFailed);
+        Assert.Single(flaky.Tenants); // "b" reached the exporter that failed on "a"
+        Assert.Equal(1, report.ItemsSkipped); // "c" is a duplicate of the exported "b"
+    }
+
+    private sealed class RecordingExporter : IConnectivityExporter
+    {
+        public bool FailOnce { get; set; }
+        public List<string> Tenants { get; } = [];
+
+        public Task ExportAsync(NormalisedDocument doc, CancellationToken cancellationToken = default)
+        {
+            if (FailOnce)
+            {
+                FailOnce = false;
+                throw new IOException("disk full");
+            }
+            Tenants.Add(doc.TenantContext);
+            return Task.CompletedTask;
+        }
+
+        public Task FlushAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
     // Null text = extraction failure; empty string = empty content; otherwise success.
     private sealed class StubTextExtractor : ITextExtractor
     {
@@ -113,8 +162,12 @@ public sealed class ConnectivityPipelineTests : IDisposable
             new(true, Encoding.UTF8.GetString(content));
     }
 
-    private sealed class InMemorySource(params (string Id, string Body)[] items) : ISourceConnector
+    private sealed class InMemorySource(params (string Id, string Body, string Tenant)[] items) : ISourceConnector
     {
+        public InMemorySource(params (string Id, string Body)[] items) : this(items.Select(i => (i.Id, i.Body, "tenant")).ToArray())
+        {
+        }
+
         public async IAsyncEnumerable<SourceItem> DiscoverAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             foreach (var item in items)
@@ -126,7 +179,7 @@ public sealed class ConnectivityPipelineTests : IDisposable
                     "txt",
                     item.Body.Length,
                     DateTimeOffset.UtcNow,
-                    "tenant");
+                    item.Tenant);
             }
 
             await Task.CompletedTask;
