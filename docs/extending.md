@@ -66,7 +66,7 @@ This sketch has not been compiled.
 These are proposals for the maintainers. Source-item metadata, stable document IDs and the transformer hook, proposed here
 earlier, are implemented (see the table above).
 
-1. *Done for 0.3.0:* `IEmailSender` is send only and `IMailboxManager` holds delete, move and mark-read, as `ICalendarReader`
-   is split from calendar writes. The Host's Email module adopts it when it moves to 0.3.0.
+1. *Done 2026-10-22:* `IEmailSender` is send only and `IMailboxManager` holds delete, move and mark-read, as `ICalendarReader`
+   is split from calendar writes. The Host's Email module adopts it when it takes the next packages.
 2. Add an optional `Microsoft.Extensions.DependencyInjection` extension package, kept separate so `Files` stays light.
 3. Declare which types are public API and stable, and treat the rest as internal, ahead of a 1.0.

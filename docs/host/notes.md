@@ -63,8 +63,8 @@ The Host pins `OpenTail.Connectivity.*` at 0.1.0 and uses `IInboxAdapter`, `IEma
 `GmailCredentialProvider` and `HtmlTextExtractor`. It does not use the pipeline, `SourceItem`, `NormalisedDocument` or the
 exporters.
 - The groundwork changes to the pipeline and `SourceItem` do not reach the Host.
-- 0.3.0 splits `IEmailSender` (send only) from `IMailboxManager` (delete, move, mark read), and `ICalendarReader` from calendar
-  writes. The Host's Email and Calendar modules and their test fakes change when they move to 0.3.0: mailbox tools take an
+- Connectivity now splits `IEmailSender` (send only) from `IMailboxManager` (delete, move, mark read), and `ICalendarReader` from calendar
+  writes. The Host's Email and Calendar modules and their test fakes change when they take the next packages: mailbox tools take an
   `IMailboxManager` wrapped in `PolicyEnforcingMailboxManager`.
 - Fixes to the inbox adapters (the `MaxMessages` gaps and sync-state timing in the
   [connector reference](../connectors.md#inbox-and-calendars)) do not affect the Host today, because it passes no sync state

@@ -21,7 +21,8 @@ when the owner says so. Where an owner decision blocks code, a provisional defau
 so the default is easy to change.
 
 **Where it stands (end of 2026-10-18).** The owner answered every open decision on 2026-10-18 (recorded in each section). Connectivity
-`v0.2.0` is released and the Host pins it. The Sql module has now run against real SQL Server, Postgres and MySQL in GitHub
+versions were reset to `v0.0.1` (the only tag) and the Host pins 0.0.1; nothing outside `C:\Git\split` uses the packages, so
+breaking changes need no new version label. The Sql module has now run against real SQL Server, Postgres and MySQL in GitHub
 Actions (21 of 21 tests). The Host designs (sections 12 to 16) moved to
 [`opentail-host/docs/design`](https://github.com/opentail-net/opentail-host/blob/main/docs/design); this plan keeps the checklist.
 
@@ -864,7 +865,7 @@ still outstanding. Writes go through a separate interface; zip is a pipeline ste
 
 Seven review documents, now in [done/](done/): the Markdown frontmatter finding, the additional bug-fix plan, the second, third
 and fourth reviews, the follow-up review and the consolidated remediation plan. All fixed 2026-10-22 with regression tests,
-except where noted. Breaking changes for 0.3.0 are marked **B**.
+except where noted. Breaking changes are marked **B**; the Host adopts them the next time it takes new packages.
 
 - [x] **[C]** Markdown exporter: YAML-safe frontmatter; metadata keys cannot shadow fixed fields.
 - [x] **[C]** WebDAV: listing and error bodies bounded (16 MB, 1 KB); `Create(handler)` refuses auto-redirecting handlers; a
@@ -892,12 +893,12 @@ except where noted. Breaking changes for 0.3.0 are marked **B**.
 - [ ] **[Owner]** Live-provider integration suites (Graph, Gmail, object storage): need dedicated test accounts and least-privilege
   credentials from the owner. Until then, everything that talks to a provider stays labelled Tested.
 - [ ] **[H]** The Host's Email and Calendar modules must adopt the breaking changes above (write policies, commit mode) when
-  they move to Connectivity 0.3.0.
+  they take the next Connectivity packages.
 - [x] **[C]** Conformance suite for the Drive connectors and `ObjectStorageConnector`. *Done 2026-10-22; it found that both
   Drive connectors ignored cancellation inside a page (fixed).*
 - [x] **[C]** **B** Split `IEmailSender` (send only) and `IMailboxManager` (delete, move, mark read), with
   `PolicyEnforcingMailboxManager`. *Done 2026-10-22; the provider senders implement both.*
-- [ ] **[H]** The Host adopts the split with the rest of 0.3.0 (Email module, `Deferred`, IMAP factory, test fakes).
+- [ ] **[H]** The Host adopts the split with the other breaking changes (Email module, `Deferred`, IMAP factory, test fakes).
 
 ## Background, no action planned
 
