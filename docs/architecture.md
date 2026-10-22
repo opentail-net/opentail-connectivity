@@ -92,8 +92,9 @@ stable `Id` the upsert had. Deletions are processed in order with upserts and co
 
 Connectors without a change feed (SQL, object storage) cannot see deletions incrementally. With `SyncOptions.CollectSourceRefs`,
 a **full run** that completes fills `IngestionReport.SeenSourceRefs` with every source ref discovered, whatever its outcome.
-Consumers compare this list with what they hold to find deletions by absence. `SourceRefsTruncated` warns when the list hit
-`MaxReportedRefs` (default 100,000).
+Consumers compare this list with what they hold to find deletions by absence (`MaxReportedRefs` defaults to 100,000).
+
+**Deletion rule (the same on every page):** delete by absence only after a run that was full and completed, whose `SeenSourceRefs` is not null and whose `SourceRefsTruncated` is false. `SourceRefsTruncated` is true when the list hit `MaxReportedRefs` (warning `SOURCE_REFS_TRUNCATED`) or when some items' refs are unknown this run, for example an archive that could not be expanded (warning `SOURCE_REFS_INCOMPLETE`); either way the list must not be used for deletions. A failed or retried item is still in the list, because it still exists at the source. Never infer deletions from absence in an incremental run.
 
 The pipeline never infers a deletion from absence itself; it only reports what the connector says or lists what it saw.
 

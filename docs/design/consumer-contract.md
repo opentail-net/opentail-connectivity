@@ -51,9 +51,8 @@ consumer guesses differently, and guessing wrong on permissions leaks data.
 
 1. **Upsert by `Id`.** Replace the stored document when `ContentHash` differs; ignore it when it matches.
 2. **Keep `SourceRef` and `TenantContext`** alongside the `Id`, so records can be traced back to the source and removed per tenant.
-3. **Apply deletions deliberately.** Remove documents only on an explicit deletion list, or after a full run whose
-   `SeenSourceRefs` list does not include them (and is not truncated). Never delete because an incremental run did not mention
-   something.
+3. **Apply deletions deliberately.** Remove documents only on an explicit deletion list, or by absence under this rule:
+   delete by absence only after a run that was full and completed, whose `SeenSourceRefs` is not null and whose `SourceRefsTruncated` is false. `SourceRefsTruncated` is true when the list hit `MaxReportedRefs` (warning `SOURCE_REFS_TRUNCATED`) or when some items' refs are unknown this run, for example an archive that could not be expanded (warning `SOURCE_REFS_INCOMPLETE`); either way the list must not be used for deletions. A failed or retried item is still in the list, because it still exists at the source. Never infer deletions from absence in an incremental run.
 4. **Filter at query time by permissions.** Check `source.acl.captured` and `source.acl.principals` against the asking user's
    identity. Resolve groups on your side. If `captured` is not `true`, show the document only to people already trusted with the
    whole source. This is the rule that prevents leaks.

@@ -229,6 +229,8 @@ with every upserted ref, **whatever its outcome**. A rejected or retried item st
 deleted. The consumer removes what it holds and the list does not contain, for that scope and tenant. `SeenSourceRefs` is null
 for incremental runs, partial runs and runs resumed from a checkpoint, so a consumer cannot mistake them for a full listing. If the
 list is over `MaxReportedRefs` it is truncated, `SourceRefsTruncated` is true, and the consumer must not use it for deletions.
+
+**Deletion rule (the same on every page):** delete by absence only after a run that was full and completed, whose `SeenSourceRefs` is not null and whose `SourceRefsTruncated` is false. `SourceRefsTruncated` is true when the list hit `MaxReportedRefs` (warning `SOURCE_REFS_TRUNCATED`) or when some items' refs are unknown this run, for example an archive that could not be expanded (warning `SOURCE_REFS_INCOMPLETE`); either way the list must not be used for deletions. A failed or retried item is still in the list, because it still exists at the source. Never infer deletions from absence in an incremental run.
 Large sources need an exporter that records seen refs rather than the report.
 
 The pipeline never infers a deletion from absence.
