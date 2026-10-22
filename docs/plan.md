@@ -248,7 +248,8 @@ connector, so the contract is tested by real use before it grows. Section 7's co
   would be noise, and `IsCaptured` is the check consumers need.*
 - [x] **[C]** Added: the SQLite connector as the first real user of the sync core (keyset paging on (modified, id), a checkpoint
   per batch, typed cursor so Unix-second columns page as numbers). It proves the core against a real source without a service.
-- [ ] **[C]** Deletions (`IDeletionExporter`, `JsonlDeletionExporter`) and retries, with the first change-feed connector.
+- [x] **[C]** Deletions (`IDeletionExporter`, `JsonlDeletionExporter`) and retries, with the first change-feed connector.
+  *Done with Graph files and Google Drive (section 7); retries are the sync core's retry list.*
 
 ## 7. Tiers 2 and 3: indexing connectors (only if section 5 says so)
 
@@ -257,12 +258,13 @@ connector, so the contract is tested by real use before it grows. Section 7's co
   ([Graph files](design/microsoft-graph-files.md#suggested-slices)). *Built 2026-10-20 as `OpenTail.Connectivity.Drive.Graph`
   (owner: build it now), with `UserOneDrive` and the delegated-token check from slice 2. Stubbed tests only: needs a real tenant
   before it is Verified.*
-- [ ] **[C]** Graph files, later slices: OneDrive targets, folder scoping, permissions and metadata-only mode, Teams channel files.
+- [ ] **[C]** Graph files, later slices: folder scoping, permissions and metadata-only mode, Teams channel files (OneDrive
+  targets are built, with slice 1).
 - [x] **[C]** Google Drive, slice 1: shared drives with a service account, listing then changes, exports
   ([Google Drive](design/google-drive.md#suggested-slices)). *Built 2026-10-20 as `OpenTail.Connectivity.Drive.Google` (owner:
   build it now), with My Drive and the token scope check from slice 2. Stubbed tests only: needs a real Workspace before it is
   Verified.*
-- [ ] **[C]** Google Drive, later slices: My Drive, folder scoping, permissions and metadata-only mode.
+- [ ] **[C]** Google Drive, later slices: folder scoping, permissions and metadata-only mode (My Drive is built, with slice 1).
 
 **Summary cards** (tier 2 with summaries), if section 5 says names and paths are not enough:
 - [ ] **[Owner]** Decide the summary language, who owns the tag vocabulary, and where cards live
@@ -272,7 +274,8 @@ connector, so the contract is tested by real use before it grows. Section 7's co
 - [ ] **[H]** Summariser, search over cards with permission checks, curation screens.
 
 **Also for tier 3**
-- [ ] **[C]** Object storage indexing connector with the watermark ([object storage](design/object-storage.md#discovery-and-incremental-runs)).
+- [x] **[C]** Object storage indexing connector with the watermark ([object storage](design/object-storage.md#discovery-and-incremental-runs)).
+  *Done as `ObjectStorageConnector` (section 28, ST1).*
 - [x] **[C]** Redaction hook, with the first collection that holds personal data ([3](design/shared-groundwork.md#3-document-transformer-hook-redaction-and-enrichment)).
   *Done ahead of that collection, as groundwork: `IDocumentTransformer`, `PipelineOptions.Transformers` (hash after them, fail
   closed) and `PatternRedactor`. Changed from the design: phone numbers need nine digits and must not look like a date, because
