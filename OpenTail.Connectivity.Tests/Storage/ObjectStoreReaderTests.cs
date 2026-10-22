@@ -18,6 +18,17 @@ public sealed class ObjectStoreReaderTests
         new(store, new ObjectStoreReaderOptions { Prefixes = ["finance/monthly/"] });
 
     [Fact]
+    public async Task Html_is_returned_as_source_not_rendered_text()
+    {
+        const string html = "<html><head><style>p{}</style><script>x()</script></head><body><p>Visible</p></body></html>";
+        var store = new InMemoryObjectStoreClient("acme-exports").Put("finance/monthly/page.html", html, T);
+
+        var result = await Reader(store).ReadTextAsync("finance/monthly/page.html");
+
+        Assert.Equal(html, result.Text);
+    }
+
+    [Fact]
     public async Task Lists_the_only_prefix_by_default_and_leaves_out_folder_placeholders()
     {
         var result = await Reader(Store()).ListAsync();

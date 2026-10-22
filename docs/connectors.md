@@ -151,6 +151,8 @@ Nextcloud, an application password is suitable when a separate client credential
 setting `allowInsecureHttp: true`. The adapter follows collections recursively and caches one sorted listing while paging;
 its key-based resume token is not a snapshot across process restarts. Discovery is limited to 100,000 items by default;
 set `maxSnapshotItems` to raise or lower the cap. Exceeding the cap throws `InvalidOperationException`.
+Each PROPFIND listing body is capped at 16 MB (`maxListingResponseBytes`) before XML parsing, whatever `Content-Length`
+says; a larger body throws `InvalidDataException`. Error bodies are read only up to 1 KB for the exception message.
 When supplying an `HttpClient`, configure its handler with automatic redirects disabled so the adapter can validate each
 redirect before sending credentials to the next request:
 

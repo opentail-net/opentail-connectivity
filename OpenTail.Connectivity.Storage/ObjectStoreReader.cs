@@ -105,6 +105,11 @@ public sealed class ObjectStoreReader
     }
 
     /// <summary>Reads one object as text. Throws <see cref="ObjectStoreRefusedException"/> before any read when it is not allowed.</summary>
+    /// <remarks>
+    /// Text formats (including HTML, XML and JSON) come back as their source, decoded but not rendered: HTML keeps its
+    /// tags, scripts and styles. That keeps capped partial reads useful. Binary formats (PDF, Office ...) go through the
+    /// configured extractor and must fit the read limit whole.
+    /// </remarks>
     public async Task<ObjectText> ReadTextAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(key);

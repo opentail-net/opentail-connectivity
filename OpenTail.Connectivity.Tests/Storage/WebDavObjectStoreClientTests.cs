@@ -208,6 +208,63 @@ public sealed class WebDavObjectStoreClientTests
         Assert.Contains("limit of 1", error.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Listing_within_byte_limit_parses()
+    {
+        var xml = Multi(File("/remote.php/dav/files/alice/library/a.txt", 1, "e"));
+        using var http = new HttpClient(new StubHandler(_ => Xml(xml)));
+        using var client = new WebDavObjectStoreClient(new Uri(Root), "alice", "app-pass", http,
+            maxListingResponseBytes: Encoding.UTF8.GetByteCount(xml));
+
+        var page = await client.ListAsync("", null, 10);
+
+        Assert.Equal(["a.txt"], page.Objects.Select(item => item.Key));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Oversized_listing_is_rejected_with_or_without_content_length(bool declareLength)
+    {
+        var xml = Multi(File("/remote.php/dav/files/alice/library/a.txt", 1, "e"));
+        using var http = new HttpClient(new StubHandler(_ => new HttpResponseMessage((HttpStatusCode)207)
+        {
+            Content = declareLength
+                ? new StringContent(xml, Encoding.UTF8, "application/xml")
+                : new StreamContent(new UnknownLengthStream(Encoding.UTF8.GetBytes(xml))),
+        }));
+        using var client = new WebDavObjectStoreClient(new Uri(Root), "alice", "app-pass", http,
+            maxListingResponseBytes: Encoding.UTF8.GetByteCount(xml) - 1);
+
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => client.ListAsync("", null, 10));
+
+        Assert.StartsWith("WebDAV listing response", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("multistatus", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Error_body_is_truncated()
+    {
+        var big = new string('x', 100_000);
+        using var http = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)
+        {
+            Content = new StreamContent(new UnknownLengthStream(Encoding.UTF8.GetBytes(big))),
+        }));
+        using var client = Client(http);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => client.ListAsync("", null, 10));
+
+        Assert.True(error.Message.Length < 2_000);
+        Assert.EndsWith("(truncated)", error.Message, StringComparison.Ordinal);
+    }
+
+    // A stream that cannot report its length, so HttpContent has no Content-Length.
+    private sealed class UnknownLengthStream(byte[] data) : MemoryStream(data)
+    {
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+    }
+
     private static WebDavObjectStoreClient Client(HttpClient http) =>
         new(new Uri(Root), "alice", "app-pass", http);
 

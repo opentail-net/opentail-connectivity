@@ -21,12 +21,15 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
     private static readonly XNamespace Dav = "DAV:";
     private const int MaxRedirects = 5;
     private const int DefaultMaxSnapshotItems = 100_000;
+    private const int DefaultMaxListingResponseBytes = 16 * 1024 * 1024;
+    private const int MaxErrorBodyBytes = 1024;
     private readonly Uri _root;
     private readonly string _rootPath;
     private readonly string _authorization;
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
     private readonly int _maxSnapshotItems;
+    private readonly int _maxListingResponseBytes;
     private readonly object _snapshotLock = new();
     private ListingSnapshot? _snapshot;
 
@@ -36,12 +39,14 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
         string password,
         HttpClient? http = null,
         bool allowInsecureHttp = false,
-        int maxSnapshotItems = DefaultMaxSnapshotItems)
+        int maxSnapshotItems = DefaultMaxSnapshotItems,
+        int maxListingResponseBytes = DefaultMaxListingResponseBytes)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentException.ThrowIfNullOrWhiteSpace(username);
         ArgumentNullException.ThrowIfNull(password);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxSnapshotItems, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxListingResponseBytes, 1);
         if (username.Contains(':'))
             throw new ArgumentException("A WebDAV Basic-auth username cannot contain a colon.", nameof(username));
         if (!root.IsAbsoluteUri || root.Scheme != Uri.UriSchemeHttps && !(allowInsecureHttp && root.Scheme == Uri.UriSchemeHttp) ||
@@ -54,6 +59,7 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
         _http = http ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
         _ownsHttp = http is null;
         _maxSnapshotItems = maxSnapshotItems;
+        _maxListingResponseBytes = maxListingResponseBytes;
         Container = _root.Authority + _root.AbsolutePath.TrimEnd('/');
     }
 
@@ -155,7 +161,7 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
         if (response.StatusCode == HttpStatusCode.NotFound)
             return null;
         await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
-        var document = await ReadMultiStatusAsync(response, cancellationToken).ConfigureAwait(false);
+        var document = await ReadMultiStatusAsync(response, _maxListingResponseBytes, cancellationToken).ConfigureAwait(false);
         var ownResponse = document.Root?.Elements(Dav + "response")
             .FirstOrDefault(element => RelativeKey(ReadHref(element, response.RequestMessage?.RequestUri ?? uri)) == key);
         return ownResponse is null ? null : Map(ownResponse, response.RequestMessage?.RequestUri ?? uri);
@@ -227,7 +233,7 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
                 continue;
             using var response = await SendAsync(HttpMethodPropfind, directory, depth: "1", PropFindBody, cancellationToken).ConfigureAwait(false);
             await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
-            var document = await ReadMultiStatusAsync(response, cancellationToken).ConfigureAwait(false);
+            var document = await ReadMultiStatusAsync(response, _maxListingResponseBytes, cancellationToken).ConfigureAwait(false);
             foreach (var entry in document.Root?.Elements(Dav + "response") ?? [])
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -337,9 +343,16 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
 
     private Uri BuildUri(string key) => new(_root, string.Join('/', key.Split('/').Select(Uri.EscapeDataString)));
 
-    private static async Task<XDocument> ReadMultiStatusAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    // The whole PROPFIND body is buffered (bounded) before XML parsing, so a hostile or
+    // runaway server cannot exhaust memory before the discovered-item limit applies.
+    private static async Task<XDocument> ReadMultiStatusAsync(HttpResponseMessage response, int maxBytes, CancellationToken cancellationToken)
     {
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        if (response.Content.Headers.ContentLength is long declared && declared > maxBytes)
+            throw new InvalidDataException($"WebDAV listing response is too large ({declared} bytes; limit {maxBytes}).");
+        var (body, truncated) = await ReadUpToAsync(response.Content, maxBytes, cancellationToken).ConfigureAwait(false);
+        if (truncated)
+            throw new InvalidDataException($"WebDAV listing response exceeded the limit of {maxBytes} bytes.");
+        using var stream = new MemoryStream(body, writable: false);
         var settings = new XmlReaderSettings { Async = true, DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };
         using var reader = XmlReader.Create(stream, settings);
         return await XDocument.LoadAsync(reader, LoadOptions.None, cancellationToken).ConfigureAwait(false);
@@ -390,8 +403,28 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
     {
         if (response.IsSuccessStatusCode)
             return;
-        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var (bytes, truncated) = await ReadUpToAsync(response.Content, MaxErrorBodyBytes, cancellationToken).ConfigureAwait(false);
+        var body = Encoding.UTF8.GetString(bytes) + (truncated ? "... (truncated)" : "");
         throw new HttpRequestException($"WebDAV request failed with {(int)response.StatusCode} ({response.StatusCode}): {body}");
+    }
+
+    // Reads at most maxBytes; Truncated is true when the stream had more. Does not trust Content-Length.
+    private static async Task<(byte[] Bytes, bool Truncated)> ReadUpToAsync(HttpContent content, int maxBytes, CancellationToken cancellationToken)
+    {
+        await using var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        while (true)
+        {
+            var remaining = maxBytes + 1L - buffer.Length;
+            if (remaining <= 0)
+                break;
+            var read = await stream.ReadAsync(chunk.AsMemory(0, (int)Math.Min(chunk.Length, remaining)), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+                break;
+            buffer.Write(chunk, 0, read);
+        }
+        return buffer.Length > maxBytes ? (buffer.GetBuffer()[..maxBytes], true) : (buffer.ToArray(), false);
     }
 
     private static bool SameOrigin(Uri left, Uri right) =>
