@@ -760,6 +760,9 @@ part of it. Plug and play (scheduler, event sources, store, sink, each with a co
 - [ ] T1 contracts; T2 durable firing log with the kill test; T3 scheduler; T4 Host sink; T5 webhooks and Host events; T6 watches;
   T7 rule management ([steps](design/triggers.md#steps)).
 
+- [ ] **[Owner]** Messaging, queues and the scheduler: ideas written down for a later talk with the owner, nothing planned
+  ([messaging and queues](design/messaging-and-queues.md), 2026-10-22).
+
 ## 22. External review, 2026-10-20
 
 All 13 findings confirmed, 7 more found; plan in [review-2026-10-20.md](review-2026-10-20.md). All fixed 2026-10-20.
@@ -895,9 +898,6 @@ except where noted. Breaking changes for 0.3.0 are marked **B**.
 - [ ] **[C]** **[H]** Split `IEmailSender` into send and manage, in step with the Host.
 
 ## Background, no action planned
-
-- Messaging, queues and the scheduler: ideas written down for a later talk with the owner, nothing planned
-  ([messaging and queues](design/messaging-and-queues.md), 2026-10-22).
 
 These are kept for the day their content needs indexing. Read them, but nothing above depends on them.
 
