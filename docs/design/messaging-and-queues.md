@@ -120,6 +120,11 @@ The owner raised two problems from real systems: SSRS reports that deadlock thei
 hang without anyone noticing. Thinking them through turned up others that usually arrive with them. They are designed here
 together, because several share one mechanism (the per-key state below), and listed in the order they would be built.
 
+SSRS is the owner's example, not a target: nothing below is specific to it. A concurrency key names any shared resource that
+suffers under simultaneous load (a database, a reporting server, an ERP or CRM API with a connection cap, a mail server, an outside
+API, one tenant's share of the workers, a schedule that must not overlap itself), and the circuit breaker and run-time limits
+apply to any resource that can fail or hang.
+
 ### What exists today, and where it falls short
 
 | Concern | Today | Gap |
