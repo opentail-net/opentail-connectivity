@@ -16,6 +16,7 @@ public sealed class FolderSourceConnector : ISourceConnector, ISourceItemFeedbac
     private readonly FolderSyncStateStore? _stateStore;
     private FolderSyncState? _loadedState;
     private readonly Dictionary<string, DateTimeOffset> _allScannedFiles = new();
+    private readonly Dictionary<string, long> _scannedSizes = new();
     private readonly FolderConnectorOptions? _connectorOptions;
     private readonly FileFilter _filter;
     private readonly HashSet<string> _noisyDirectories;
@@ -49,7 +50,10 @@ public sealed class FolderSourceConnector : ISourceConnector, ISourceItemFeedbac
     {
         DeletedSinceLastScan = Array.Empty<string>();
         _allScannedFiles.Clear();
+        _scannedSizes.Clear();
         _loadedState = _stateStore?.Load();
+        // Changed scope rules: unchanged files may have come into scope, so the saved timestamps cannot skip anything.
+        var trustState = _loadedState is not null && _loadedState.ScanFingerprint == ScanFingerprint;
         var includeNoisy = _connectorOptions?.IncludeNoisyDirectories ?? false;
         var maxDepth = _connectorOptions?.MaxDepth;
 
@@ -69,15 +73,18 @@ public sealed class FolderSourceConnector : ISourceConnector, ISourceItemFeedbac
             if (!_filter.MatchesPatterns(Path.GetRelativePath(_folderPath, path)))
                 continue;
 
-            _allScannedFiles[path] = modified;
-
-            // ModifiedSince filter: skip files not modified on or after the cutoff
+            // ModifiedSince filter: skip files not modified on or after the cutoff. They are out of scope, so they are not
+            // recorded either: a later run with an earlier cutoff must still find them.
             if (_connectorOptions?.ModifiedSince is { } cutoff && modified < cutoff)
                 continue;
 
-            if (_loadedState is not null &&
-                _loadedState.FileTimestamps.TryGetValue(path, out var knownTs) &&
-                modified <= knownTs)
+            _allScannedFiles[path] = modified;
+            _scannedSizes[path] = info.Length;
+
+            if (trustState &&
+                _loadedState!.FileTimestamps.TryGetValue(path, out var knownTs) &&
+                modified <= knownTs &&
+                (_loadedState.FileSizes is not { } sizes || !sizes.TryGetValue(path, out var knownSize) || knownSize == info.Length))
                 continue;
 
             yield return new SourceItem(
@@ -170,7 +177,16 @@ public sealed class FolderSourceConnector : ISourceConnector, ISourceItemFeedbac
     {
         if (_loadedState?.FileTimestamps.TryGetValue(item.Id, out var previous) == true) _allScannedFiles[item.Id] = previous;
         else _allScannedFiles.Remove(item.Id);
+        if (_loadedState?.FileSizes?.TryGetValue(item.Id, out var size) == true) _scannedSizes[item.Id] = size;
+        else _scannedSizes.Remove(item.Id);
     }
+
+    private string ScanFingerprint => FileFilter.Hash(
+        _filter.Fingerprint,
+        "since=" + _connectorOptions?.ModifiedSince?.UtcTicks,
+        "depth=" + _connectorOptions?.MaxDepth,
+        "noisy=" + (_connectorOptions?.IncludeNoisyDirectories ?? false),
+        "dirs=" + string.Join('|', _noisyDirectories.Select(d => d.ToLowerInvariant()).Order(StringComparer.Ordinal)));
 
     public async Task SaveStateAsync(CancellationToken cancellationToken = default)
     {
@@ -178,7 +194,9 @@ public sealed class FolderSourceConnector : ISourceConnector, ISourceItemFeedbac
         var state = new FolderSyncState(
             FolderPath: _folderPath,
             FileTimestamps: new Dictionary<string, DateTimeOffset>(_allScannedFiles),
-            UpdatedAt: DateTimeOffset.UtcNow);
+            UpdatedAt: DateTimeOffset.UtcNow,
+            FileSizes: _scannedSizes.Where(s => _allScannedFiles.ContainsKey(s.Key)).ToDictionary(),
+            ScanFingerprint: ScanFingerprint);
         await _stateStore.SaveAsync(state, cancellationToken);
     }
 }

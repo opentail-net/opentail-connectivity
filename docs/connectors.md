@@ -37,7 +37,10 @@ Throws `DirectoryNotFoundException` if the folder is missing. `FolderConnectorOp
 | `MaxPendingDirectories` | Bound on directories queued during traversal (default 10,000). |
 
 **Incremental runs:** pass a `FolderSyncStateStore(path)` and call `connector.SaveStateAsync()` after the run. The next run skips
-files whose timestamps have not changed. State is a JSON file keyed by file path; `CleanStaleEntriesAsync` drops entries for files
+files whose timestamp and size have not changed (a rewrite that keeps both is not seen: timestamps are a fast check, not a
+content hash). Files outside `ModifiedSince` are not recorded, so an earlier cutoff later still finds them. The state also keeps
+a fingerprint of the scope rules (filters, `ModifiedSince`, depth, noisy folders): when they change, every file in scope is
+offered again, and known files now out of scope appear in `DeletedSinceLastScan`. State is a JSON file keyed by file path; `CleanStaleEntriesAsync` drops entries for files
 that no longer exist. A corrupt or missing state file is treated as "no state" (a full run). Files the pipeline did not process (failed
 extraction or validation, an error, or left by `MaxItemsProcessed`) are kept out of the state, so the next run tries them again; if
 you drive the connector yourself, call `NotProcessed(item)` for those before saving. `SourceItem.Id` is the file path as built

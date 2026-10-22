@@ -56,6 +56,68 @@ public sealed class FolderSyncStateTests : IDisposable
         Assert.Empty(run2);
     }
 
+    private async Task<List<string>> Run(FolderConnectorOptions? options = null, bool save = true)
+    {
+        var connector = new FolderSourceConnector(_dir, "tenant", new FolderSyncStateStore(_stateFile), options);
+        var names = new List<string>();
+        await foreach (var item in connector.DiscoverAsync()) names.Add(item.DisplayName);
+        if (save) await connector.SaveStateAsync();
+        LastDeleted = connector.DeletedSinceLastScan.Select(Path.GetFileName).ToList()!;
+        return names;
+    }
+
+    private List<string> LastDeleted { get; set; } = [];
+
+    [Fact]
+    public async Task A_size_change_with_the_old_timestamp_is_detected()
+    {
+        var path = Path.Combine(_dir, "a.txt");
+        File.WriteAllText(path, "content a");
+        var stamp = File.GetLastWriteTimeUtc(path);
+        Assert.Single(await Run());
+
+        File.WriteAllText(path, "content a, now longer");
+        File.SetLastWriteTimeUtc(path, stamp);
+
+        Assert.Equal(["a.txt"], await Run());
+        Assert.Empty(await Run());
+    }
+
+    [Fact]
+    public async Task A_file_older_than_the_cutoff_is_found_once_the_cutoff_is_removed()
+    {
+        var path = Path.Combine(_dir, "old.txt");
+        File.WriteAllText(path, "old content");
+        File.SetLastWriteTimeUtc(path, new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        var cutoff = new FolderConnectorOptions { ModifiedSince = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero) };
+
+        Assert.Empty(await Run(cutoff));
+        Assert.Equal(["old.txt"], await Run());
+    }
+
+    [Fact]
+    public async Task Raising_the_cutoff_past_a_known_file_reports_it_out_of_scope()
+    {
+        var path = Path.Combine(_dir, "a.txt");
+        File.WriteAllText(path, "content a");
+        File.SetLastWriteTimeUtc(path, new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        Assert.Single(await Run());
+
+        await Run(new FolderConnectorOptions { ModifiedSince = new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero) });
+
+        Assert.Equal(["a.txt"], LastDeleted);
+    }
+
+    [Fact]
+    public async Task A_changed_filter_offers_unchanged_files_again()
+    {
+        File.WriteAllText(Path.Combine(_dir, "a.txt"), "content a");
+        File.WriteAllText(Path.Combine(_dir, "b.md"), "content b");
+        Assert.Equal(["a.txt"], await Run(new FolderConnectorOptions { ExcludePatterns = ["*.md"] }));
+
+        Assert.Equal(["a.txt", "b.md"], (await Run()).Order());
+    }
+
     [Fact]
     public async Task ReusedConnector_ReloadsStateBetweenRuns()
     {
