@@ -3,7 +3,10 @@ namespace OpenTail.Connectivity.Files.Contracts;
 /// <summary>When an inbox adapter with a sync state store saves its state.</summary>
 public enum InboxSyncCommit
 {
-    /// <summary>When the caller has enumerated every message (the default, and the behaviour before this option existed).</summary>
+    /// <summary>
+    /// When the caller has enumerated every message, before it knows whether they were stored: a message that fails
+    /// downstream is not fetched again. Only for callers that store each message durably while enumerating.
+    /// </summary>
     AfterEnumeration,
 
     /// <summary>
@@ -21,4 +24,21 @@ public interface IInboxSyncCommit
 
     /// <summary>Saves the state of the last completed enumeration, if any. Does nothing when nothing is pending.</summary>
     Task CommitSyncStateAsync(CancellationToken cancellationToken = default);
+}
+
+/// <summary>Shared argument check for the inbox adapters.</summary>
+public static class InboxSyncCommits
+{
+    /// <summary>
+    /// With a sync store the caller must choose when state is saved: there is no default, because
+    /// <see cref="InboxSyncCommit.AfterEnumeration"/> can lose messages a downstream store fails to write.
+    /// </summary>
+    public static InboxSyncCommit Require(bool hasSyncStore, InboxSyncCommit? commit)
+    {
+        if (hasSyncStore && commit is null)
+            throw new ArgumentException(
+                "Choose InboxSyncCommit.Manual (save after your store has flushed, then call CommitSyncStateAsync) or " +
+                "InboxSyncCommit.AfterEnumeration when passing a sync state store.", nameof(commit));
+        return commit ?? InboxSyncCommit.Manual;
+    }
 }

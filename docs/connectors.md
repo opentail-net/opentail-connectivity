@@ -225,12 +225,15 @@ filter on its first delta request (the delta link keeps it). `SyncToken` is rese
 
 Each inbox adapter takes an optional sync state store in its constructor (`ImapSyncStateStore`, `GraphSyncStateStore`,
 `GmailSyncStateStore`) so later runs fetch only what changed: IMAP keeps the highest UID per folder, Graph a link per mailbox and
-folder, and Gmail a history id. When to save it is the `commit` argument:
+folder, and Gmail a history id. When to save it is the `commit` argument. It has no default: passing a store without choosing
+throws `ArgumentException`.
 
-- `InboxSyncCommit.AfterEnumeration` (default): saved once you have enumerated all the messages, before you know whether you
-  stored them; a message that fails downstream is not fetched again.
-- `InboxSyncCommit.Manual`: saved only when you call `CommitSyncStateAsync()` (the adapters implement `IInboxSyncCommit`), after
-  your own store or exporter has flushed. A run that fails before that fetches the same messages again.
+- `InboxSyncCommit.Manual` (recommended): saved only when you call `CommitSyncStateAsync()` (the adapters implement
+  `IInboxSyncCommit`). The sequence is enumerate, store and flush durably, then commit. A run that fails before the commit
+  fetches the same messages again.
+- `InboxSyncCommit.AfterEnumeration`: saved once you have enumerated all the messages, before you know whether you stored
+  them; a message that fails downstream is not fetched again. Use it only when you store each message durably while
+  enumerating.
 
 When more than `MaxMessages` messages are waiting, a run reads the oldest of them and the next run carries on, rather than
 skipping the backlog: IMAP takes the lowest new UIDs, Gmail saves the last history record it read in full, Graph saves the next

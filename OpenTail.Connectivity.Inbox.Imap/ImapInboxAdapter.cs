@@ -13,14 +13,14 @@ public sealed class ImapInboxAdapter : IInboxAdapter, IInboxSyncCommit
     private ImapSyncState? _pending;
 
     public ImapInboxAdapter(ImapSettings settings, string tenantContext, ImapSyncStateStore? syncStore = null,
-        InboxSyncCommit commit = InboxSyncCommit.AfterEnumeration)
+        InboxSyncCommit? commit = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantContext);
         _settings = settings;
         _tenantContext = tenantContext;
         _syncStore = syncStore;
-        _commit = commit;
+        _commit = InboxSyncCommits.Require(syncStore is not null, commit);
     }
 
     public bool HasPendingSyncState => _pending is not null;

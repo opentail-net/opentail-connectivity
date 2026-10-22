@@ -132,6 +132,30 @@ public sealed class GraphInboxSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task Manual_commit_without_a_commit_replays_the_same_messages_next_run()
+    {
+        var (first, _, graph) = Create(InboxSyncCommit.Manual);
+        graph.Respond(_ => Page(["a"], delta: Base + "?$deltatoken=D"));
+        Assert.Equal(["s a"], await Subjects(first, 10));
+        // The downstream store failed here, so CommitSyncStateAsync was never called.
+
+        var (second, _, again) = Create(InboxSyncCommit.Manual);
+        again.Respond(_ => Page(["a"], delta: Base + "?$deltatoken=D"));
+        Assert.Equal(["s a"], await Subjects(second, 10));
+        Assert.DoesNotContain("deltatoken=D", again.Requests[0].Url);
+    }
+
+    [Fact]
+    public void A_sync_store_without_a_chosen_commit_mode_is_refused()
+    {
+        Assert.Throws<ArgumentException>(() => new GraphInboxAdapter(GraphSettings.Create("t", "c", "s", "me@example.com"), "tenant",
+            new GraphSyncStateStore(_stateFile)));
+        Assert.Throws<ArgumentException>(() => new ImapInboxAdapter(new ImapSettings("imap.example.com", 993, true, "u", "p"), "tenant",
+            new ImapSyncStateStore(_stateFile)));
+        _ = new GraphInboxAdapter(GraphSettings.Create("t", "c", "s", "me@example.com"), "tenant"); // no store: nothing to commit
+    }
+
+    [Fact]
     public async Task State_saved_per_mailbox_before_folders_is_used_for_the_inbox()
     {
         var (adapter, store, graph) = Create();

@@ -16,7 +16,7 @@ public sealed class GmailInboxAdapter : IInboxAdapter, IInboxSyncCommit
         string tenantContext,
         GmailSyncStateStore? syncStore = null,
         GmailCredentialProvider? credentialProvider = null,
-        InboxSyncCommit commit = InboxSyncCommit.AfterEnumeration)
+        InboxSyncCommit? commit = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantContext);
@@ -24,7 +24,7 @@ public sealed class GmailInboxAdapter : IInboxAdapter, IInboxSyncCommit
         _tenantContext = tenantContext;
         _syncStore = syncStore;
         _credentialProvider = credentialProvider ?? new GmailCredentialProvider(settings);
-        _commit = commit;
+        _commit = InboxSyncCommits.Require(syncStore is not null, commit);
     }
 
     public bool HasPendingSyncState => _pending is not null;
