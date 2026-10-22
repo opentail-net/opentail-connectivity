@@ -6,4 +6,7 @@
   <ItemGroup>
     <ProjectReference Include="..\OpenTail.Connectivity.Files\OpenTail.Connectivity.Files.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="OpenTail.Connectivity.Tests" />
+  </ItemGroup>
 </Project>

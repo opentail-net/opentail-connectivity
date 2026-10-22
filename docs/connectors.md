@@ -53,7 +53,11 @@ new SiteCrawlConnector(httpClient, startUrl, tenantContext, options: null)
 new RssFeedConnector(httpClient, feedUrl, tenant, maxItems: 100, since: null, maxResponseBytes: 10 * 1024 * 1024)
 ```
 
-You supply the `HttpClient`, so set its timeout, proxy and user agent. `WebCrawlOptions`:
+You supply the `HttpClient`, so set its timeout, proxy and user agent. Redirects are checked before each hop only when the
+client does not follow them itself: use `SiteCrawlConnector.CreateHttpClient()`, or `SiteCrawlConnector.Create(handler, ...)`,
+which refuses a handler with `AllowAutoRedirect` on. A client that follows redirects on its own has already requested the target
+when the crawler drops an off-origin result. The start URL is trusted configuration: the crawler does not block private or
+loopback addresses, so do not pass it user input. Paths are case-sensitive (`/Manual` and `/manual` are two pages). `WebCrawlOptions`:
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -62,7 +66,7 @@ You supply the `HttpClient`, so set its timeout, proxy and user agent. `WebCrawl
 | `RequestDelay` | none | Pause between requests. |
 | `RespectRobotsTxt` | `true` | Skip paths `robots.txt` disallows. |
 | `UseSitemap` | `false` | Seed the crawl from the sitemap. |
-| `AllowedPathPrefixes` | none | Only crawl these path prefixes. |
+| `AllowedPathPrefixes` | none | Only crawl these path prefixes, matched by whole segments and case-sensitively: `/docs` covers `/docs` and `/docs/a`, not `/docs-private`. |
 | `MaxRetries`, `RetryDelay` | 1, 500 ms | Retries for failed fetches. |
 | `MaxLinkExtractionBytes` | 1,000,000 | Only this much of a page is scanned for links. |
 

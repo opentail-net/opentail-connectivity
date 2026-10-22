@@ -28,7 +28,8 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
     private readonly WebCrawlOptions _options;
     private readonly bool _ownsClient;
     private readonly HtmlTextExtractor _extractor = new();
-    private readonly Dictionary<string, byte[]> _fetchCache = new(StringComparer.OrdinalIgnoreCase);
+    // Keyed by Uri.AbsoluteUri, which already lowercases scheme and host; paths keep their case (/Manual is not /manual).
+    private readonly Dictionary<string, byte[]> _fetchCache = new(StringComparer.Ordinal);
     private int _failedFetches;
 
     public int FailedFetchCount => _failedFetches;
@@ -53,6 +54,22 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
         _startUri = new Uri(startUrl);
         _tenantContext = tenantContext;
         _options = options ?? new WebCrawlOptions();
+    }
+
+    /// <summary>
+    /// Builds a crawler on <paramref name="handler"/>, refusing a handler that follows redirects itself (an
+    /// <see cref="HttpClientHandler"/> or <see cref="SocketsHttpHandler"/>, also behind <see cref="DelegatingHandler"/>s, with
+    /// <c>AllowAutoRedirect</c> on), so every hop is checked before it is requested. The crawler owns the handler.
+    /// </summary>
+    public static SiteCrawlConnector Create(HttpMessageHandler handler, string startUrl, string tenantContext, WebCrawlOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        for (var current = handler; current is not null; current = (current as DelegatingHandler)?.InnerHandler)
+        {
+            if (current is HttpClientHandler { AllowAutoRedirect: true } or SocketsHttpHandler { AllowAutoRedirect: true })
+                throw new ArgumentException("The crawler handler must have AllowAutoRedirect = false so each redirect can be checked.", nameof(handler));
+        }
+        return new SiteCrawlConnector(new HttpClient(handler, disposeHandler: true), startUrl, tenantContext, options, ownsClient: true);
     }
 
     public static HttpClient CreateHttpClient(TimeSpan? timeout = null)
@@ -82,7 +99,7 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
             ? await RobotsTxtParser.FetchAsync(_client, _startUri, MaxResponseBytes, cancellationToken)
             : new RobotsTxtParser();
 
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
         var queue = new Queue<(Uri Uri, int Depth)>();
 
         if (_options.UseSitemap)
@@ -290,7 +307,20 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
 
     private bool WithinPathPrefixes(Uri uri)
         => _options.AllowedPathPrefixes is not { Count: > 0 } prefixes
-           || prefixes.Any(prefix => uri.AbsolutePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+           || prefixes.Any(prefix => PathWithinPrefix(uri.AbsolutePath, prefix));
+
+    /// <summary>
+    /// Whether <paramref name="path"/> (a <see cref="Uri.AbsolutePath"/>: dot segments removed, percent-encoded) is the prefix
+    /// or below it, segment by segment and case-sensitively: <c>/docs</c> matches <c>/docs</c> and <c>/docs/a</c>, not
+    /// <c>/docs-private</c>. The prefix gets a leading slash, duplicate slashes collapse and a trailing slash is ignored.
+    /// </summary>
+    internal static bool PathWithinPrefix(string path, string prefix)
+    {
+        var segments = prefix.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0) return true; // "/" or "": the whole site
+        var normalised = "/" + string.Join('/', segments);
+        return path == normalised || path.StartsWith(normalised + "/", StringComparison.Ordinal);
+    }
 
     internal static bool HasSameOrigin(Uri a, Uri b)
     {

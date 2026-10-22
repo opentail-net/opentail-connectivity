@@ -94,4 +94,6 @@ limit the app to specific mailboxes (RBAC for Applications, or the older applica
 ## Web crawling
 
 `SiteCrawlConnector` honours `robots.txt` (`RespectRobotsTxt`, default on), only follows links on the start host, and can be limited with
-`AllowedPathPrefixes`, `MaxPages`, `MaxDepth` and `RequestDelay`. Only crawl sites you have the right to crawl.
+`AllowedPathPrefixes` (whole path segments), `MaxPages`, `MaxDepth` and `RequestDelay`. Only crawl sites you have the right to crawl.
+The same-origin check is complete only with a client that does not follow redirects itself (`CreateHttpClient`, or
+`SiteCrawlConnector.Create(handler, ...)`); start URLs are trusted configuration, with no private-address blocking.

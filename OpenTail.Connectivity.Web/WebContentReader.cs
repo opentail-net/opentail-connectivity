@@ -15,6 +15,7 @@ internal static class WebContentReader
             var response = await client.GetAsync(current, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!IsRedirect(response.StatusCode) || response.Headers.Location is not { } location)
             {
+                // A client that follows redirects itself has already sent the request when this check runs.
                 var finalUri = response.RequestMessage?.RequestUri ?? current;
                 if (SiteCrawlConnector.HasSameOrigin(finalUri, origin))
                     return response;

@@ -323,6 +323,46 @@ public sealed class SiteCrawlBoundaryTests
         Assert.Equal("http://example.com/", items[0].Id);
     }
 
+    [Fact]
+    public async Task Paths_that_differ_only_by_case_are_two_pages()
+    {
+        using var client = new HttpClient(new BoundaryHandler(request => request.RequestUri!.AbsolutePath switch
+        {
+            "/" => Html("""<a href="/Manual">a</a><a href="/manual">b</a>"""),
+            "/Manual" => Html("upper"),
+            "/manual" => Html("lower"),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound),
+        }));
+        var connector = new SiteCrawlConnector(client, "http://example.com/", "t", new WebCrawlOptions(RespectRobotsTxt: false, MaxRetries: 0));
+
+        var items = await connector.DiscoverAsync().ToListAsync();
+        var upper = items.Single(i => i.Id.EndsWith("/Manual", StringComparison.Ordinal));
+        var lower = items.Single(i => i.Id.EndsWith("/manual", StringComparison.Ordinal));
+
+        Assert.Equal("upper", Encoding.UTF8.GetString(await connector.FetchAsync(upper)));
+        Assert.Equal("lower", Encoding.UTF8.GetString(await connector.FetchAsync(lower)));
+    }
+
+    [Theory]
+    [InlineData("/docs/page", "/docs", true)]
+    [InlineData("/docs", "/docs", true)]
+    [InlineData("/docs", "/docs/", true)]
+    [InlineData("/docs/page", "docs//", true)]
+    [InlineData("/docs-private", "/docs", false)]
+    [InlineData("/docs-admin/x", "/docs/", false)]
+    [InlineData("/Docs/page", "/docs", false)]
+    [InlineData("/anything", "/", true)]
+    [InlineData("/docs%2Dprivate", "/docs", false)]
+    public void Path_prefixes_match_whole_segments(string path, string prefix, bool expected) =>
+        Assert.Equal(expected, SiteCrawlConnector.PathWithinPrefix(path, prefix));
+
+    [Fact]
+    public void Create_refuses_a_handler_that_follows_redirects()
+    {
+        Assert.Throws<ArgumentException>(() => SiteCrawlConnector.Create(new HttpClientHandler(), "http://example.com/", "t"));
+        using var ok = SiteCrawlConnector.Create(new SocketsHttpHandler { AllowAutoRedirect = false }, "http://example.com/", "t");
+    }
+
     private static HttpResponseMessage Html(string body) => new(HttpStatusCode.OK)
     {
         Content = new StringContent(body, Encoding.UTF8, "text/html")
