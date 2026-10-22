@@ -173,9 +173,9 @@ public sealed class GoogleDriveConnectorTests
     [Fact]
     public async Task Binary_files_download_with_the_drive_flags_and_google_files_export()
     {
-        var api = new StubApi(req => Url(req).Contains("/export?") || Url(req).Contains("alt=media")
+        var api = new StubApi(req => FileMeta(req) ?? (Url(req).Contains("/export?") || Url(req).Contains("alt=media")
             ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("content") }
-            : null);
+            : null));
         var connector = Shared(api);
 
         Assert.Equal("content", Encoding.UTF8.GetString(await connector.FetchAsync(Item("bin", "application/pdf"))));
@@ -192,11 +192,26 @@ public sealed class GoogleDriveConnectorTests
     {
         var api = new StubApi(req => Url(req).Contains("/files/gone")
             ? new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("{}") }
-            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[2048]) });
+            : FileMeta(req) ?? new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[2048]) });
         var connector = Connector(api, new GoogleDriveTarget.SharedDrive("sd1"), new GoogleDriveOptions(Filter: new FileFilterOptions(MaxFileSizeBytes: 1024)));
 
         await Assert.ThrowsAsync<InvalidDataException>(() => connector.FetchAsync(Item("big", "application/pdf")));
         await Assert.ThrowsAsync<FileNotFoundException>(() => connector.FetchAsync(Item("gone", "application/pdf")));
+    }
+
+    [Fact]
+    public async Task Fetch_refuses_an_item_outside_the_configured_drive()
+    {
+        var api = new StubApi(req => Url(req).Contains("fields=mimeType,driveId,ownedByMe")
+            ? Json("""{"mimeType":"application/pdf","driveId":"other","ownedByMe":true}""")
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("secret") });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Shared(api).FetchAsync(Item("forged", "application/pdf")));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Connector(new StubApi(req => Url(req).Contains("fields=mimeType")
+                ? Json("""{"mimeType":"application/pdf","ownedByMe":false}""") : null), new GoogleDriveTarget.MyDrive())
+                .FetchAsync(Item("shared-with-me", "application/pdf")));
+        Assert.DoesNotContain(api.Requests, r => r.Contains("alt=media"));
     }
 
     // ---- token scope and rate limits
@@ -240,6 +255,7 @@ public sealed class GoogleDriveConnectorTests
         var api = new StubApi(req =>
         {
             var u = Url(req);
+            if (FileMeta(req) is { } meta) return meta;
             if (u.Contains("changes/startPageToken")) return Json("""{"startPageToken":"S1"}""");
             if (u.Contains("/files?")) return Json("""{"files":[{"id":"a","name":"a.txt","mimeType":"text/plain","size":"70","driveId":"sd1"},{"id":"b","name":"b.txt","mimeType":"text/plain","size":"70","driveId":"sd1"}]}""");
             if (u.Contains("alt=media")) return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("a plain text file that is long enough to pass the document validator") };
@@ -274,6 +290,18 @@ public sealed class GoogleDriveConnectorTests
 
     private static SourceItem Item(string id, string mime)
         => new(id, id, "pdf", 5, DateTimeOffset.UnixEpoch, "acme", new Dictionary<string, string> { ["gdrive.mimeType"] = mime });
+
+    // Answers FetchAsync's metadata lookup: every file is in shared drive sd1; the id picks the mime type.
+    private static HttpResponseMessage? FileMeta(HttpRequestMessage req)
+    {
+        var u = Url(req);
+        if (!u.Contains("fields=mimeType,driveId,ownedByMe")) return null;
+        var mime = u.Contains("/files/doc?") ? "application/vnd.google-apps.document"
+            : u.Contains("/files/sheet?") ? "application/vnd.google-apps.spreadsheet"
+            : u.Contains("/files/bin?") || u.Contains("/files/big?") ? "application/pdf"
+            : "text/plain";
+        return Json($$"""{"mimeType":"{{mime}}","driveId":"sd1"}""");
+    }
 
     private static string Url(HttpRequestMessage req) => Uri.UnescapeDataString(req.RequestUri!.ToString());
 

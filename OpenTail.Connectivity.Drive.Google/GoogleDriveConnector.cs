@@ -171,9 +171,17 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
     public async Task<byte[]> FetchAsync(SourceItem item, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(item);
-        var mime = item.Metadata?.GetValueOrDefault("gdrive.mimeType")
-                   ?? (await GetAsync($"files/{Uri.EscapeDataString(item.Id)}?supportsAllDrives=true&fields=mimeType", cancellationToken, notFound: true).ConfigureAwait(false))
-                   ["mimeType"]?.GetValue<string>() ?? string.Empty;
+        // Read the file's own metadata rather than trusting the item: the target is an access boundary for fetches too.
+        var file = await GetAsync($"files/{Uri.EscapeDataString(item.Id)}?supportsAllDrives=true&fields=mimeType,driveId,ownedByMe",
+            cancellationToken, notFound: true).ConfigureAwait(false);
+        var inTarget = _target switch
+        {
+            GoogleDriveTarget.SharedDrive s => file["driveId"]?.GetValue<string>() == s.DriveId,
+            _ => file["ownedByMe"]?.GetValue<bool>() == true,
+        };
+        if (!inTarget)
+            throw new InvalidOperationException($"{item.DisplayName} is not in the configured drive.");
+        var mime = file["mimeType"]?.GetValue<string>() ?? string.Empty;
         var path = _exports.TryGetValue(mime, out var exportAs)
             ? $"files/{Uri.EscapeDataString(item.Id)}/export?mimeType={Uri.EscapeDataString(exportAs)}"
             : $"files/{Uri.EscapeDataString(item.Id)}?alt=media&supportsAllDrives=true";

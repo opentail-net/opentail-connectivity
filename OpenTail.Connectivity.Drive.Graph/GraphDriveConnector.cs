@@ -150,6 +150,9 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
     {
         ArgumentNullException.ThrowIfNull(item);
         var (driveId, itemId) = SplitId(item.Id);
+        // The target is an access boundary for fetches too, not only for discovery.
+        if (!string.Equals(driveId, await ResolveDriveAsync(cancellationToken).ConfigureAwait(false), StringComparison.Ordinal))
+            throw new InvalidOperationException($"{item.DisplayName} is not in the configured drive.");
         for (var attempt = 0; ; attempt++)
         {
             var url = await DownloadUrlAsync(driveId, itemId, cancellationToken).ConfigureAwait(false);

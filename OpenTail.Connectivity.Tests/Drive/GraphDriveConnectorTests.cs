@@ -128,6 +128,18 @@ public sealed class GraphDriveConnectorTests
     }
 
     [Fact]
+    public async Task Fetch_refuses_an_item_from_another_drive_without_calling_graph()
+    {
+        var graph = new StubHttp(_ => Json("""{ "id": "f1", "@microsoft.graph.downloadUrl": "https://files.example/dl" }"""));
+        var download = new StubHttp(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent("secret"u8.ToArray()) });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Connector(graph, download: download).FetchAsync(Item("other-drive:f1")));
+
+        Assert.Empty(graph.Authorizations);
+        Assert.Empty(download.Authorizations);
+    }
+
+    [Fact]
     public async Task Downloads_stop_at_the_size_limit_and_a_vanished_item_throws_cleanly()
     {
         var graph = new StubHttp(req => req.RequestUri!.AbsolutePath.EndsWith("/gone", StringComparison.Ordinal)
