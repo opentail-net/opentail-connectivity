@@ -67,6 +67,9 @@ public static class WorkQueueConformance
             Check("failures that are not the resource's do not open the circuit", capabilities.ConcurrencyLimits, OrdinaryFailuresAsync),
             Check("the maximum run time is carried, or the default given", true, MaxRunTimeAsync),
             Check("dead letters past their retention are removed", true, DeadLetterRetentionAsync),
+            Check("looking at dead letters and pending jobs many times destroys nothing", true, LookingDestroysNothingAsync),
+            Check("a job that keeps crashing its worker ends in the dead letters", capabilities.Durable && capabilities.LeaseExpiry, CrashLoopAsync),
+            Check("a long run of jobs for one full resource does not hide other resources", capabilities.ConcurrencyLimits, NoStarvationAsync),
         ];
     }
 
@@ -473,6 +476,59 @@ public static class WorkQueueConformance
         Ensure((await q.DeadLettersAsync(Q)).Count == 1, "the dead letter is missing");
         await clock.AdvanceAsync(TimeSpan.FromSeconds(5));
         Ensure((await q.DeadLettersAsync(Q)).Count == 0, "a dead letter outlived its retention");
+    }
+
+    private static async Task LookingDestroysNothingAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        await q.EnqueueAsync(Job("dead"));
+        Ensure(await q.DeadLetterAsync(Single(await q.LeaseAsync(Q, 1, Lease)), "bad"), "dead-lettering failed");
+        await q.EnqueueAsync(Job("delayed", notBefore: clock.GetUtcNow() + TimeSpan.FromMinutes(5)));
+        for (var i = 0; i < 25; i++)
+        {
+            await q.DeadLettersAsync(Q);
+            await q.PendingAsync(Q);
+        }
+
+        Ensure((await q.DeadLettersAsync(Q)).Count == 1, "looking at the dead letters 25 times lost one");
+        Ensure((await q.PendingAsync(Q)).Count(p => p.State == PendingState.Delayed) == 1, "looking at pending jobs 25 times lost the delayed one");
+    }
+
+    private static async Task CrashLoopAsync(WorkQueueOpener open, Clock clock)
+    {
+        var options = new WorkQueueOptions(MaxAttempts: 3);
+        await using (var first = open(clock, options))
+            await first.EnqueueAsync(Job("poison"));
+        for (var crash = 1; crash <= 3; crash++)
+        {
+            var worker = open(clock, options);
+            var job = Single(await worker.LeaseAsync(Q, 1, Lease));
+            Ensure(job.Attempt == crash, $"crash {crash}: the job came back as attempt {job.Attempt}");
+            await worker.DisposeAsync(); // the worker dies holding the job
+            await clock.AdvanceAsync(Lease + TimeSpan.FromSeconds(1));
+        }
+
+        await using var last = open(clock, options);
+        Ensure((await last.LeaseAsync(Q, 1, Lease)).Count == 0, "a job that crashed its worker every time ran again past its attempts");
+        Ensure((await last.DeadLettersAsync(Q)).Count == 1, "the crash-looping job is not in the dead letters");
+    }
+
+    private static async Task NoStarvationAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions(ConcurrencyLimits: new Dictionary<string, int> { ["db:a"] = 1 }));
+        for (var i = 0; i < 600; i++)
+            await q.EnqueueAsync(Keyed("db:a"));
+        await q.EnqueueAsync(Keyed("db:b", "behind"));
+        Ensure((await q.LeaseAsync(Q, 1, TimeSpan.FromMinutes(5))).Count == 1, "the first db:a job was not leased");
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(5)); // a broker parks jobs over the limit for a few seconds
+        var found = false;
+        for (var round = 0; round < 40 && !found; round++)
+        {
+            found = (await q.LeaseAsync(Q, 1, TimeSpan.FromMinutes(5))).Any(j => j.Body == "behind");
+            if (!found) await clock.AdvanceAsync(TimeSpan.FromSeconds(1));
+        }
+
+        Ensure(found, "a job for a free resource stayed hidden behind 600 jobs for a full one");
     }
 
     private static async Task Refused(Func<Task> act, string what)

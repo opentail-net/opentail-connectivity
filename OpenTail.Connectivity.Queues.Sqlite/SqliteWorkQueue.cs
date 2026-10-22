@@ -131,17 +131,32 @@ public sealed class SqliteWorkQueue : IWorkQueue
             while (reader.Read())
                 running[reader.GetString(0)] = reader.GetInt32(1);
 
+        // Keys that cannot release anything now are left out of the query itself, so a long run of jobs for one full or failing
+        // resource at the head of the queue cannot hide jobs for other resources behind the scan limit.
+        var circuits = new Dictionary<string, CircuitRecord?>(StringComparer.Ordinal);
+        using (var select = Command(connection, tx, "SELECT conc_key, failures, open_until, next_cooldown, probe_token, probe_until FROM circuits WHERE queue = $queue",
+                   ("$queue", queue)))
+        using (var reader = select.ExecuteReader())
+            while (reader.Read())
+                circuits[reader.GetString(0)] = new CircuitRecord(reader.GetInt32(1), reader.GetInt64(2), reader.GetInt64(3), NullableString(reader, 4), reader.GetInt64(5));
+        var excluded = skipConcurrencyKeys
+            .Concat(running.Where(r => r.Value >= (_options.LimitFor(r.Key) ?? int.MaxValue)).Select(r => r.Key))
+            .Concat(circuits.Where(c => !Circuits.MayRelease(c.Value, now, _options).Allowed).Select(c => c.Key))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var exclusion = excluded.Count == 0 ? "" : $" AND (conc_key IS NULL OR conc_key NOT IN ({string.Join(", ", excluded.Select((_, i) => "$x" + i))}))";
+
         var due = new List<Row>();
         using (var select = Command(connection, tx, $"""
             SELECT {JobColumns} FROM jobs
-            WHERE queue = $queue AND ((state = $ready AND not_before <= $now) OR (state = $leased AND leased_until <= $now))
+            WHERE queue = $queue AND ((state = $ready AND not_before <= $now) OR (state = $leased AND leased_until <= $now)){exclusion}
             ORDER BY not_before, seq LIMIT $limit
-            """, ("$queue", queue), ("$ready", Ready), ("$leased", Leased), ("$now", now), ("$limit", ScanLimit)))
+            """, [("$queue", queue), ("$ready", Ready), ("$leased", Leased), ("$now", now), ("$limit", ScanLimit),
+                .. excluded.Select((k, i) => ("$x" + i, (object?)k))]))
         using (var reader = select.ExecuteReader())
             while (reader.Read())
                 due.Add(ReadRow(reader));
 
-        var circuits = new Dictionary<string, CircuitRecord?>(StringComparer.Ordinal);
         foreach (var row in due)
         {
             if (leased.Count == max)

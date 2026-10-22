@@ -261,7 +261,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         {
             var m = Read(got, countReturned: false); // peeking returns them, which is not an attempt
             dead.Add(new DeadLetter(queue, m.Id, m.Tenant, m.Body, m.Key, m.Headers, m.Attempts, At(m.EnqueuedAt),
-                At(LongHeader(got.BasicProperties.Headers, "dead-at") ?? 0), StringHeader(got.BasicProperties.Headers, "reason") ?? "", m.LastError, m.Source,
+                At(LongHeader(got.BasicProperties.Headers, "dead-at") ?? 0), StringHeader(got.BasicProperties.Headers, "reason") ?? "the broker gave up after too many deliveries (the worker kept crashing)", m.LastError, m.Source,
                 m.ConcurrencyKey));
         }
 
@@ -591,8 +591,9 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         foreach (var (name, _) in h ?? new Dictionary<string, object?>())
             if (name.StartsWith(Prefix + "h-", StringComparison.Ordinal))
                 headers[name[(Prefix.Length + 2)..]] = StringHeader(h, name[Prefix.Length..])!;
-        // Returned by the broker after a crash: the copy's count misses that delivery, so count it here.
-        var returned = countReturned && got.Redelivered ? 1 : 0;
+        // Returned by the broker after a crash (the worker's channel closed): our count misses those deliveries. Quorum queues
+        // count them in x-delivery-count; without it, at least this one.
+        var returned = !countReturned ? 0 : LongHeaderRaw(h, "x-delivery-count") is { } delivered ? (int)delivered : got.Redelivered ? 1 : 0;
         return new Message(
             got.BasicProperties.MessageId ?? throw new InvalidDataException("A work queue message has no message id."),
             StringHeader(h, "tenant") ?? throw new InvalidDataException("A work queue message has no tenant."),
@@ -613,6 +614,9 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             ? value switch { byte[] bytes => Encoding.UTF8.GetString(bytes), string s => s, null => null, _ => value.ToString() }
             : null;
 
+    private static long? LongHeaderRaw(IDictionary<string, object?>? headers, string name)
+        => headers?.TryGetValue(name, out var value) == true ? value switch { long l => l, int i => i, _ => null } : null;
+
     private static long? LongHeader(IDictionary<string, object?>? headers, string name)
         => headers?.TryGetValue(Prefix + name, out var value) == true
             ? value switch { long l => l, int i => i, byte[] bytes => long.Parse(Encoding.UTF8.GetString(bytes), System.Globalization.CultureInfo.InvariantCulture), _ => null }
@@ -623,9 +627,24 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         if (!_declared.Add(Name(queue)))
             return;
         var quorum = new Dictionary<string, object?> { ["x-queue-type"] = "quorum" };
-        await channel.QueueDeclareAsync(Name(queue), durable: true, exclusive: false, autoDelete: false, arguments: quorum, cancellationToken: ct).ConfigureAwait(false);
-        // Dead letters expire after the retention period; the broker drops them (unlike the other queues, nothing is audited).
-        var dead = new Dictionary<string, object?>(quorum) { ["x-message-ttl"] = (long)_options.DeadLetterRetentionOrDefault.TotalMilliseconds };
+        // Quorum queues drop a message returned more than 20 times (RabbitMQ 4 default) unless told otherwise. Our own attempt limit
+        // (counted from x-delivery-count) catches a crash loop first; the broker's limit is a backstop that dead-letters, never drops.
+        var main = new Dictionary<string, object?>(quorum)
+        {
+            ["x-delivery-limit"] = Math.Max(_options.MaxAttempts * 2, 10),
+            ["x-dead-letter-exchange"] = "",
+            ["x-dead-letter-routing-key"] = DeadName(queue),
+            ["x-dead-letter-strategy"] = "at-least-once",
+            ["x-overflow"] = "reject-publish",
+        };
+        await channel.QueueDeclareAsync(Name(queue), durable: true, exclusive: false, autoDelete: false, arguments: main, cancellationToken: ct).ConfigureAwait(false);
+        // Dead letters expire after the retention period; the broker drops them (unlike the other queues, nothing is audited). Listing
+        // them takes and returns them, which must never count towards a limit: none here.
+        var dead = new Dictionary<string, object?>(quorum)
+        {
+            ["x-message-ttl"] = (long)_options.DeadLetterRetentionOrDefault.TotalMilliseconds,
+            ["x-delivery-limit"] = -1,
+        };
         await channel.QueueDeclareAsync(DeadName(queue), durable: true, exclusive: false, autoDelete: false, arguments: dead, cancellationToken: ct).ConfigureAwait(false);
     }
 
@@ -643,6 +662,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             ["x-dead-letter-routing-key"] = Name(queue),
             ["x-dead-letter-strategy"] = "at-least-once",
             ["x-overflow"] = "reject-publish",
+            ["x-delivery-limit"] = -1, // listing and run-now take and return messages here
         };
         await channel.QueueDeclareAsync(WaitName(queue, seconds), durable: true, exclusive: false, autoDelete: false, arguments: arguments, cancellationToken: ct)
             .ConfigureAwait(false);
