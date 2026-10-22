@@ -761,8 +761,10 @@ part of it. Plug and play (scheduler, event sources, store, sink, each with a co
 - [ ] T1 contracts; T2 durable firing log with the kill test; T3 scheduler; T4 Host sink; T5 webhooks and Host events; T6 watches;
   T7 rule management ([steps](design/triggers.md#steps)).
 
-- [ ] **[Owner]** Messaging, queues and the scheduler: ideas written down for a later talk with the owner, nothing planned
-  ([messaging and queues](design/messaging-and-queues.md), 2026-10-22).
+- [x] **[C]** Work queues, steps 1-2: `IWorkQueue`, in-memory queue, conformance suite (17 checks), SQLite queue
+  ([messaging and queues](design/messaging-and-queues.md)). *Built 2026-10-22; owner: groundwork for an unknown next project.*
+- [ ] **[C]** Work queues, step 3: RabbitMQ adapter passing the suite (owner chose RabbitMQ first). Container in CI.
+- [ ] **[C]** Later: worker loop helper; triggers' scheduler enqueues jobs; the Host's work items on `IWorkQueue` (owner decides).
 
 ## 22. External review, 2026-10-20
 
@@ -892,13 +894,13 @@ except where noted. Breaking changes are marked **B**; the Host adopts them the 
   contract; tenant isolation; deployment-wide email limits; clear-text NuGet token.
 - [ ] **[Owner]** Live-provider integration suites (Graph, Gmail, object storage): need dedicated test accounts and least-privilege
   credentials from the owner. Until then, everything that talks to a provider stays labelled Tested.
-- [ ] **[H]** The Host's Email and Calendar modules must adopt the breaking changes above (write policies, commit mode) when
+- [x] **[H]** The Host's Email and Calendar modules must adopt the breaking changes above (write policies, commit mode) when
   they take the next Connectivity packages.
 - [x] **[C]** Conformance suite for the Drive connectors and `ObjectStorageConnector`. *Done 2026-10-22; it found that both
   Drive connectors ignored cancellation inside a page (fixed).*
 - [x] **[C]** **B** Split `IEmailSender` (send only) and `IMailboxManager` (delete, move, mark read), with
   `PolicyEnforcingMailboxManager`. *Done 2026-10-22; the provider senders implement both.*
-- [ ] **[H]** The Host adopts the split with the other breaking changes (Email module, `Deferred`, IMAP factory, test fakes).
+- [x] **[H]** The Host adopts the split with the other breaking changes (Email module, `Deferred`, IMAP factory, test fakes). *Done 2026-10-22 with the republished 0.0.1; calendar adapters get `AllowAll` unless the module is ReadOnly.*
 
 ## Background, no action planned
 

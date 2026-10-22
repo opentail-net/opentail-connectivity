@@ -1,7 +1,7 @@
 # Ideas: messaging, queues and the scheduler
 
-**Status:** notes for discussion, 2026-10-22. Nothing is planned or built. The owner asked for the ideas to be written down and
-talked through later. Related: [triggers](triggers.md) (the *when*), the Host's work items and continuations (plan section 17).
+**Status:** steps 1 and 2 built 2026-10-22 (see [Built](#built)); RabbitMQ is the first broker (step 3, next). The owner's reason:
+the next project is unknown, and a resilient queue is reasonably likely to be needed, so it is groundwork worth having ready. Related: [triggers](triggers.md) (the *when*), the Host's work items and continuations (plan section 17).
 
 ## The suggestion
 
@@ -80,7 +80,22 @@ IEventSink    publish an event                      (new) tell an outside bus wh
   the queue.
 - **Retries bounded by age as well as count,** as already decided for triggers.
 
-## Where I would push back
+## Built
+
+- **`OpenTail.Connectivity.Queues`:** `IWorkQueue` (enqueue with a key and a not-before time; lease, complete, retry, dead-letter,
+  extend; list and redrive dead letters), `WorkQueueOptions` (max attempts 5, max age 24 hours, key retention 7 days, body cap
+  256 KB), `InMemoryWorkQueue`, and `WorkQueueConformance`: 17 checks, run on a manual clock, or in real time for a broker.
+- **`OpenTail.Connectivity.Queues.Sqlite`:** one table, every change in an immediate transaction, WAL with `synchronous=FULL`.
+  Passes all 17 checks; a separate test runs four worker instances on one file.
+- **Capabilities** declare what an implementation guarantees beyond at-least-once: `Durable`, `DelayedDelivery`, `LeaseExpiry`,
+  `DeduplicatesKeys`. Checks for an undeclared capability are skipped. They exist for RabbitMQ: it has no native delayed delivery
+  (a plugin, or TTL and dead-letter exchanges), no lease that expires while the consumer stays connected (unacknowledged messages
+  return when the channel closes, or after `consumer_timeout`), and no deduplication on publish. Which of these the adapter can
+  offer, and how, is step 3's first question. *To verify against RabbitMQ's documentation before building.*
+- Not built yet: a worker loop helper (lease, run, complete or retry with backoff), the scheduler enqueueing jobs, the Host's
+  work items on the queue.
+
+## Where I pushed back (before the owner's reason above)
 
 - The "synchronous HTTP is fragile" argument fits a mesh of microservices. OpenTail is mostly in-process libraries and an MCP
   server; most calls are not between services we own. The real gains here are durable pending work, a swappable scheduler, and

@@ -18,6 +18,8 @@
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="Microsoft.SemanticKernel.Connectors.InMemory" />
     <ProjectReference Include="..\OpenTail.Connectivity.Files\OpenTail.Connectivity.Files.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Queues\OpenTail.Connectivity.Queues.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Queues.Sqlite\OpenTail.Connectivity.Queues.Sqlite.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Web\OpenTail.Connectivity.Web.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Sql\OpenTail.Connectivity.Sql.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.Email\OpenTail.Connectivity.Email.csproj" />

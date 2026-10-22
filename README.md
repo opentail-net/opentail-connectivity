@@ -34,6 +34,8 @@ They are used by the OpenTail Host's modules and by OpenTail itself.
 | `OpenTail.Connectivity.Memory` | Memory: records with typed provenance and policy, the `IMemoryBackend` contract, governance that reads fields and never text, governed retrieval, ingestion, a conformance suite and a quality gate. In-memory and Markdown-files backends included. See [memory](docs/design/memory.md). | Verified |
 | `OpenTail.Connectivity.Memory.Sqlite` | Memory backend in one SQLite file: FTS5 keyword search, every governance rule applied in SQL before ranking. | Verified |
 | `OpenTail.Connectivity.Memory.VectorData` | Memory backend over any `Microsoft.Extensions.VectorData` collection (Postgres with pgvector, Qdrant, Azure AI Search ...), the caller's embedding model. | Verified |
+| `OpenTail.Connectivity.Queues` | Work queues: the `IWorkQueue` contract (at-least-once, leases, delays, idempotency keys, dead letters), an in-memory queue and a conformance suite every implementation must pass. | Tested |
+| `OpenTail.Connectivity.Queues.Sqlite` | Work queue in one SQLite file: survives crashes and power cuts (WAL, `synchronous=FULL`), safe for several workers and processes on one machine. | Tested |
 
 **Verification legend:**
 - **Verified**: Exercised against the real thing in CI (local filesystem, real SQLite, pgvector in CI containers).

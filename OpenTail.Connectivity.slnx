@@ -17,6 +17,8 @@
     <Project Path="OpenTail.Connectivity.Memory/OpenTail.Connectivity.Memory.csproj" />
     <Project Path="OpenTail.Connectivity.Memory.Sqlite/OpenTail.Connectivity.Memory.Sqlite.csproj" />
     <Project Path="OpenTail.Connectivity.Memory.VectorData/OpenTail.Connectivity.Memory.VectorData.csproj" />
+    <Project Path="OpenTail.Connectivity.Queues/OpenTail.Connectivity.Queues.csproj" />
+    <Project Path="OpenTail.Connectivity.Queues.Sqlite/OpenTail.Connectivity.Queues.Sqlite.csproj" />
     <Project Path="OpenTail.Connectivity.Social/OpenTail.Connectivity.Social.csproj" />
     <Project Path="OpenTail.Connectivity.Inbox.Imap/OpenTail.Connectivity.Inbox.Imap.csproj" />
     <Project Path="OpenTail.Connectivity.Drive.Google/OpenTail.Connectivity.Drive.Google.csproj" />

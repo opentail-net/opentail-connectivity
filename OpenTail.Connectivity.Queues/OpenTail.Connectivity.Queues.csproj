@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Description>OpenTail Connectivity — work queues: the IWorkQueue contract (at-least-once, leases, delays, keys, dead letters), an in-memory queue for tests and a conformance suite any implementation must pass. Verification: Tested.</Description>
+    <PackageTags>opentail;connectivity;queue;work-queue</PackageTags>
+  </PropertyGroup>
+</Project>
