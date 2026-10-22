@@ -77,6 +77,63 @@ public sealed class SftpObjectStoreClientTests
     }
 
     [Fact]
+    public async Task Read_and_head_refuse_a_symlinked_parent_directory()
+    {
+        var session = new FakeSession();
+        session.AddDirectory("/exports", Entry("linked-dir", directory: true, symlink: true));
+        session.AddFile("/exports/linked-dir/secret.txt", "outside the root");
+        var client = Client(session);
+
+        await Assert.ThrowsAsync<SymbolicLinkRefusedException>(() => client.ReadAsync("linked-dir/secret.txt", 100));
+        Assert.Null(await client.HeadAsync("linked-dir/secret.txt"));
+        Assert.Empty(session.Opened);
+    }
+
+    [Fact]
+    public async Task Read_refuses_a_symlinked_file()
+    {
+        var session = new FakeSession();
+        session.AddFile("/exports/a.txt", "x");
+        session.AddDirectory("/exports", Entry("a.txt", regular: true, symlink: true));
+        var client = Client(session);
+
+        await Assert.ThrowsAsync<SymbolicLinkRefusedException>(() => client.ReadAsync("a.txt", 100));
+        Assert.Empty(session.Opened);
+    }
+
+    [Fact]
+    public async Task Prefix_listing_starts_at_the_prefix_directory_and_prunes_other_branches()
+    {
+        var session = new FakeSession();
+        session.AddDirectory("/exports", Entry("big", directory: true), Entry("sub", directory: true), Entry("subway", directory: true));
+        session.AddDirectory("/exports/big", Entry("x.txt", regular: true));
+        session.AddDirectory("/exports/sub", Entry("deep", directory: true), Entry("other", directory: true), Entry("c.txt", regular: true));
+        session.AddDirectory("/exports/sub/deep", Entry("d.txt", regular: true));
+        session.AddDirectory("/exports/sub/other", Entry("o.txt", regular: true));
+        var client = Client(session);
+
+        var page = await client.ListAsync("sub/deep", null, 10);
+        Assert.Equal(["/exports/sub", "/exports/sub/deep"], session.Listed);
+        session.Listed.Clear();
+        var resumed = await client.ListAsync("sub/", "sub/deep/d.txt", 10);
+
+        Assert.Equal(["sub/deep/d.txt"], page.Objects.Select(o => o.Key));
+        Assert.Equal(["sub/other/o.txt"], resumed.Objects.Select(o => o.Key));
+        Assert.Equal(["/exports/sub", "/exports/sub/deep", "/exports/sub/other"], session.Listed.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task Prefix_listing_of_a_missing_directory_is_empty()
+    {
+        var session = new FakeSession();
+        session.AddDirectory("/exports", Entry("a.txt", regular: true));
+
+        var page = await Client(session).ListAsync("nope/", null, 10);
+
+        Assert.Empty(page.Objects);
+    }
+
+    [Fact]
     public async Task Head_returns_null_for_missing_file_and_read_throws_object_not_found()
     {
         var client = Client(new FakeSession());
@@ -171,6 +228,8 @@ public sealed class SftpObjectStoreClientTests
         public bool Disposed { get; private set; }
         public int ConnectCount { get; private set; }
         public Func<string, bool>? FingerprintValidator { get; set; }
+        public List<string> Listed { get; } = [];
+        public List<string> Opened { get; } = [];
 
         public void AddDirectory(string path, params SftpEntry[] entries)
         {
@@ -204,6 +263,7 @@ public sealed class SftpObjectStoreClientTests
         public async IAsyncEnumerable<SftpEntry> ListDirectoryAsync(string path, [EnumeratorCancellation] CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            Listed.Add(path);
             if (!_directories.TryGetValue(path, out var entries))
                 throw new SftpPathNotFoundException(path);
             foreach (var entry in entries)
@@ -222,9 +282,13 @@ public sealed class SftpObjectStoreClientTests
                 : Task.FromException<SftpEntry>(new SftpPathNotFoundException(path));
         }
 
-        public Stream OpenRead(string path) => _contents.TryGetValue(path, out var bytes)
-            ? new MemoryStream(bytes, writable: false)
-            : throw new SftpPathNotFoundException(path);
+        public Stream OpenRead(string path)
+        {
+            Opened.Add(path);
+            return _contents.TryGetValue(path, out var bytes)
+                ? new MemoryStream(bytes, writable: false)
+                : throw new SftpPathNotFoundException(path);
+        }
 
         public void Dispose()
         {

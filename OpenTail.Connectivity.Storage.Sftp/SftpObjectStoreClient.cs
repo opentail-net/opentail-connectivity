@@ -54,7 +54,20 @@ public sealed class SftpObjectStoreClient : IObjectStoreClient, IDisposable
         await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
         var files = new List<SftpEntry>();
         var pending = new Stack<(string RemotePath, string RelativePath)>();
-        pending.Push((_root, ""));
+        // Start the walk at the deepest directory the prefix names, so a narrow prefix does not walk the whole root.
+        var startDirectory = prefix.LastIndexOf('/') is var slash and > 0 ? prefix[..slash] : "";
+        if (startDirectory.Length > 0)
+        {
+            try
+            {
+                await EnsureNoSymbolicLinksAsync(startDirectory, cancellationToken).ConfigureAwait(false);
+            }
+            catch (ObjectNotFoundException)
+            {
+                return new ObjectListingPage([], null);
+            }
+        }
+        pending.Push((startDirectory.Length == 0 ? _root : JoinRemote(_root, startDirectory), startDirectory));
         var visited = 0;
         while (pending.Count > 0)
         {
@@ -78,9 +91,11 @@ public sealed class SftpObjectStoreClient : IObjectStoreClient, IDisposable
                 var key = relativeDirectory.Length == 0 ? child.Name : relativeDirectory + "/" + child.Name;
                 if (child.IsDirectory && !child.IsSymbolicLink)
                 {
-                    pending.Push((JoinRemote(directory, child.Name), key));
+                    if (DirectoryCanMatch(key + "/", prefix, resumeToken))
+                        pending.Push((JoinRemote(directory, child.Name), key));
                 }
-                else if (child.IsRegularFile && !child.IsSymbolicLink)
+                else if (child.IsRegularFile && !child.IsSymbolicLink && key.StartsWith(prefix, StringComparison.Ordinal) &&
+                         (resumeToken is null || string.CompareOrdinal(key, resumeToken) > 0))
                 {
                     files.Add(child with { RelativePath = key });
                 }
@@ -89,8 +104,6 @@ public sealed class SftpObjectStoreClient : IObjectStoreClient, IDisposable
 
         var page = files
             .OrderBy(file => file.RelativePath, StringComparer.Ordinal)
-            .Where(file => file.RelativePath.StartsWith(prefix, StringComparison.Ordinal))
-            .Where(file => resumeToken is null || string.CompareOrdinal(file.RelativePath, resumeToken) > 0)
             .Take(pageSize + 1)
             .ToList();
         var hasMore = page.Count > pageSize;
@@ -106,10 +119,10 @@ public sealed class SftpObjectStoreClient : IObjectStoreClient, IDisposable
         await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var entry = await _session.GetAttributesAsync(JoinRemote(_root, key), cancellationToken).ConfigureAwait(false);
-            return entry.IsRegularFile && !entry.IsSymbolicLink ? ToInfo(entry with { RelativePath = key }) : null;
+            var entry = await EnsureNoSymbolicLinksAsync(key, cancellationToken).ConfigureAwait(false);
+            return entry.IsRegularFile ? ToInfo(entry with { RelativePath = key }) : null;
         }
-        catch (SftpPathNotFoundException)
+        catch (Exception ex) when (ex is ObjectNotFoundException or SymbolicLinkRefusedException)
         {
             return null;
         }
@@ -122,6 +135,9 @@ public sealed class SftpObjectStoreClient : IObjectStoreClient, IDisposable
         ArgumentOutOfRangeException.ThrowIfGreaterThan(maxBytes, Array.MaxLength - 1L);
         await EnsureConnectedAsync(cancellationToken).ConfigureAwait(false);
 
+        var entry = await EnsureNoSymbolicLinksAsync(key, cancellationToken).ConfigureAwait(false);
+        if (!entry.IsRegularFile)
+            throw new ObjectNotFoundException(key);
         try
         {
             using var stream = _session.OpenRead(JoinRemote(_root, key));
@@ -226,6 +242,39 @@ public sealed class SftpObjectStoreClient : IObjectStoreClient, IDisposable
             throw new ArgumentException("The SFTP key cannot be empty.", parameterName);
         if (key.StartsWith('/') || key.Contains('\\') || key.Split('/').Any(segment => segment == ".."))
             throw new ArgumentException("SFTP keys must be relative and cannot contain backslashes or '..' path segments.", parameterName);
+    }
+
+    // Checks every path component below the root with lstat and refuses symbolic links, so a link inside the root
+    // cannot lead outside it. A link swapped in between this check and the open can still be followed: SFTP has no
+    // no-follow open. Use a chrooted account when the root must be a hard boundary.
+    private async Task<SftpEntry> EnsureNoSymbolicLinksAsync(string key, CancellationToken cancellationToken)
+    {
+        var path = _root;
+        SftpEntry? entry = null;
+        foreach (var segment in key.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            path = JoinRemote(path, segment);
+            try
+            {
+                entry = await _session.GetAttributesAsync(path, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SftpPathNotFoundException)
+            {
+                throw new ObjectNotFoundException(key);
+            }
+            if (entry.IsSymbolicLink)
+                throw new SymbolicLinkRefusedException(key);
+        }
+        return entry ?? throw new ObjectNotFoundException(key);
+    }
+
+    // Whether any key under directoryKey (ending in '/') can match the prefix and sort after the resume token.
+    private static bool DirectoryCanMatch(string directoryKey, string prefix, string? resumeToken)
+    {
+        if (!directoryKey.StartsWith(prefix, StringComparison.Ordinal) && !prefix.StartsWith(directoryKey, StringComparison.Ordinal))
+            return false;
+        return resumeToken is null || resumeToken.StartsWith(directoryKey, StringComparison.Ordinal) ||
+               string.CompareOrdinal(directoryKey, resumeToken) > 0;
     }
 
     private static string JoinRemote(string directory, string child) =>
@@ -361,6 +410,10 @@ internal interface ISftpSession : IDisposable
     Task<SftpEntry> GetAttributesAsync(string path, CancellationToken cancellationToken);
     Stream OpenRead(string path);
 }
+
+/// <summary>A key whose path goes through a symbolic link. The SFTP client never follows links.</summary>
+public sealed class SymbolicLinkRefusedException(string key)
+    : InvalidOperationException($"The SFTP path '{key}' goes through a symbolic link, which is not followed.");
 
 internal sealed record SftpEntry(
     string Name,

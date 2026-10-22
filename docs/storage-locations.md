@@ -159,11 +159,15 @@ Package `OpenTail.Connectivity.Storage.Sftp`, depending on `SSH.NET` (D6) and `S
   fails: surface it as `InvalidOperationException("The SFTP server's host key does not match the pinned fingerprint.")`.
 - **Root confinement (D4):** keys are relative to `Root`. Refuse (`ArgumentException`) any key or prefix containing `..`
   segments, a leading `/`, or a backslash. Build paths by joining `Root` and the key with `/`.
+  `HeadAsync` and `ReadAsync` lstat every path component below `Root` and refuse symlinks (`SymbolicLinkRefusedException`).
+  A link swapped in between that check and the open can still be followed (SFTP has no no-follow open): when the root must be
+  a hard boundary, use a chrooted account.
 - `Scheme = "sftp"`, `Container = Host + Root` (for example `files.example.com/exports`).
 - `ListAsync(prefix, resumeToken, pageSize)`: SFTP has no paging, so walk the directory tree under `Root` (recursively,
   depth-first, children sorted by name, ordinal) and return the entries whose key starts with `prefix`, in key order. The resume
   token is the last key returned; the next page starts after it. Skip directories, symlinks and special files: regular files only.
-  Cap the walk at 100,000 entries per call (`InvalidOperationException` beyond, naming the cap).
+  The walk starts at the deepest directory the prefix names and skips directories that cannot hold a matching key after the
+  resume token. Cap the walk at 100,000 entries per call (`InvalidOperationException` beyond, naming the cap).
 - Map each file: `Size`, `LastModified = LastWriteTimeUtc` (as UTC), `ETag = $"{size}-{mtime.Ticks}"` (D5, weak: say so in the doc
   comment). `StorageClass` null, both cost flags false.
 - `HeadAsync`: stat the path; a missing file gives null.
