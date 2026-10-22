@@ -9,7 +9,11 @@ public interface IObjectStoreClient
     /// <summary>"s3", "azblob", "gs", or "memory".</summary>
     string Scheme { get; }
 
-    /// <summary>The bucket or container name.</summary>
+    /// <summary>
+    /// Names the physical container stably and without secrets, so two sources never share item ids or sync state: the bucket
+    /// for AWS S3 and GCS (global names), the endpoint host and bucket for an S3-compatible store, the account and container for
+    /// Azure. Where the client cannot tell accounts apart (Dropbox), set <c>ObjectStorageOptions.Namespace</c>.
+    /// </summary>
     string Container { get; }
 
     /// <summary>One page of objects whose keys start with <paramref name="prefix"/>, in key order. <paramref name="resumeToken"/> is null for the first page.</summary>

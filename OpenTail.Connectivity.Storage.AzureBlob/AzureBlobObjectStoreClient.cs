@@ -24,7 +24,8 @@ public sealed class AzureBlobObjectStoreClient : IObjectStoreClient
 
     public string Scheme => "azblob";
 
-    public string Container => _container.Name;
+    // Container names repeat across storage accounts, so the account is part of the identity.
+    public string Container => string.IsNullOrEmpty(_container.AccountName) ? _container.Name : _container.AccountName + "/" + _container.Name;
 
     public async Task<ObjectListingPage> ListAsync(string prefix, string? resumeToken, int pageSize, CancellationToken cancellationToken = default)
     {

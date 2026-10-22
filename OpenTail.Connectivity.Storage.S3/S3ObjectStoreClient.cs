@@ -20,7 +20,8 @@ public sealed class S3ObjectStoreClient : IObjectStoreClient
         ArgumentNullException.ThrowIfNull(s3);
         ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
         this.s3 = s3;
-        Container = bucket;
+        // AWS bucket names are global; an S3-compatible endpoint has its own namespace, so its host is part of the identity.
+        Container = Uri.TryCreate(s3.Config?.ServiceURL, UriKind.Absolute, out var endpoint) ? endpoint.Authority + "/" + bucket : bucket;
     }
 
     public string Scheme => "s3";

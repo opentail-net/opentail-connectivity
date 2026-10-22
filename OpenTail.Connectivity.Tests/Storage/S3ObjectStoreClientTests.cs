@@ -20,6 +20,22 @@ public sealed class S3ObjectStoreClientTests
     }
 
     [Fact]
+    public void An_s3_compatible_endpoint_is_part_of_the_container_identity()
+    {
+        static S3ObjectStoreClient On(string? serviceUrl)
+        {
+            var config = new AmazonS3Config { AuthenticationRegion = "eu-west-1" };
+            if (serviceUrl is null) config.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
+            else config.ServiceURL = serviceUrl;
+            return new S3ObjectStoreClient(S3ObjectStoreClient.CreateSdkClient(new HttpClient(), config, new BasicAWSCredentials("a", "b")), "docs");
+        }
+
+        Assert.Equal("minio.one:9000/docs", On("https://minio.one:9000").Container);
+        Assert.NotEqual(On("https://minio.one:9000").Container, On("https://r2.two").Container);
+        Assert.Equal("docs", On(null).Container);
+    }
+
+    [Fact]
     public async Task Lists_a_page_through_the_supplied_http_client()
     {
         var (client, handler) = Create(_ => Xml("""

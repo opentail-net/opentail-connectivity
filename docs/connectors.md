@@ -153,6 +153,11 @@ var source = new ObjectStorageConnector(objects, tenantContext,
     new ObjectStorageOptions(Prefix: "monthly/"));
 ```
 
+Item ids and the sync scope are built from the client's scheme and `Container`, which names the physical source without
+secrets: the bucket for AWS S3 and GCS, `endpoint-host/bucket` for an S3-compatible service URL, `account/container` for Azure.
+Where accounts cannot be told apart (two Dropbox accounts both read `/`), set `ObjectStorageOptions.Namespace` to a stable
+account name.
+
 The adapter reports the GCS object generation as the version token. Standard objects have no retrieval surcharge; Nearline,
 Coldline and Archive set `CostsExtraToRead`. These tiers remain directly readable and do not require a restore operation. This
 package has stubbed-service unit tests; it has not been verified against a live GCS bucket.

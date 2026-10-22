@@ -19,12 +19,23 @@ public sealed class AzureBlobObjectStoreClientTests
     }
 
     [Fact]
-    public void Container_name_from_client()
+    public void Container_is_account_and_name()
     {
         var container = new FakeBlobContainerClient("my-bucket");
         var client = new AzureBlobObjectStoreClient(container);
 
-        Assert.Equal("my-bucket", client.Container);
+        Assert.Equal("acct/my-bucket", client.Container);
+    }
+
+    [Fact]
+    public void Same_container_name_in_two_accounts_gives_two_scopes()
+    {
+        var one = new ObjectStorageConnector(new AzureBlobObjectStoreClient(new FakeBlobContainerClient("documents", "one")), "t");
+        var two = new ObjectStorageConnector(new AzureBlobObjectStoreClient(new FakeBlobContainerClient("documents", "two")), "t");
+        var again = new ObjectStorageConnector(new AzureBlobObjectStoreClient(new FakeBlobContainerClient("documents", "one")), "t");
+
+        Assert.NotEqual(one.SyncScope, two.SyncScope);
+        Assert.Equal(one.SyncScope, again.SyncScope);
     }
 
     [Fact]
@@ -207,9 +218,17 @@ public sealed class AzureBlobObjectStoreClientTests
         private readonly string _name;
         private readonly List<FakeBlob> _blobs = [];
 
-        public FakeBlobContainerClient(string name) => _name = name;
+        private readonly string _account;
+
+        public FakeBlobContainerClient(string name, string account = "acct")
+        {
+            _name = name;
+            _account = account;
+        }
 
         public override string Name => _name;
+
+        public override string AccountName => _account;
 
         public void AddBlob(string name, long size, AccessTier tier, ArchiveStatus? archiveStatus = null)
         {

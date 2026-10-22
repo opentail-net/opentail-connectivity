@@ -35,9 +35,10 @@ public sealed class ObjectStorageConnector : IIncrementalSourceConnector
 
         var filter = _options.Filter ?? new FileFilterOptions();
         _filter = new FileFilter(filter with { MaxFileSizeBytes = filter.MaxFileSizeBytes ?? DefaultMaxFileSizeBytes });
-        _idPrefix = $"{client.Scheme}://{client.Container}/";
-        _containerScope = client.Container + (_options.Prefix.Length == 0 ? "" : "/" + _options.Prefix.Trim('/'));
-        SyncScope = $"storage:{tenantContext}:{client.Scheme}://{client.Container}/{_options.Prefix}";
+        var container = string.IsNullOrWhiteSpace(_options.Namespace) ? client.Container : _options.Namespace.Trim('/') + "/" + client.Container;
+        _idPrefix = $"{client.Scheme}://{container}/";
+        _containerScope = container + (_options.Prefix.Length == 0 ? "" : "/" + _options.Prefix.Trim('/'));
+        SyncScope = $"storage:{tenantContext}:{client.Scheme}://{container}/{_options.Prefix}";
     }
 
     public string SyncScope { get; }
@@ -209,10 +210,14 @@ public sealed class ObjectStorageConnector : IIncrementalSourceConnector
     private sealed record Cursor(DateTimeOffset? Watermark, DateTimeOffset? MaxSeen, string? ResumeToken, string? LastKey);
 }
 
+/// <param name="Namespace">A stable, non-secret name for the account behind the client (for example a Dropbox account id),
+/// put before <see cref="IObjectStoreClient.Container"/> in item ids and the sync scope. Set it when two sources could otherwise
+/// have the same scheme and container.</param>
 public sealed record ObjectStorageOptions(
     string Prefix = "",
     FileFilterOptions? Filter = null,
     TimeSpan? WatermarkOverlap = null,
     long? MaxBytesPerRun = null,
     bool ReadColdStorage = false,
-    int PageSize = 1000);
+    int PageSize = 1000,
+    string? Namespace = null);
