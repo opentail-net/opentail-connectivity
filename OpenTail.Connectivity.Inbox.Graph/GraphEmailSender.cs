@@ -2,7 +2,7 @@ using Microsoft.Graph.Users.Item.Messages.Item.Move;
 
 namespace OpenTail.Connectivity.Inbox.Graph;
 
-public sealed class GraphEmailSender : IEmailSender
+public sealed class GraphEmailSender : IEmailSender, IMailboxManager
 {
     private readonly GraphSettings _settings;
     private GraphServiceClient? _client;

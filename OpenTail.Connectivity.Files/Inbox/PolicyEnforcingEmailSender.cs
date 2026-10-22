@@ -1,9 +1,9 @@
 namespace OpenTail.Connectivity.Files.Inbox;
 
 /// <summary>
-/// Wraps any <see cref="IEmailSender"/> and enforces <see cref="EmailSenderPolicy"/> before every send, delete, move and
-/// mark-read; a refused operation throws <see cref="EmailSendPolicyException"/> without calling the provider. The raw senders
-/// (Graph, Gmail, IMAP) are not guarded themselves: hand automation only this wrapper.
+/// Wraps any <see cref="IEmailSender"/> and enforces <see cref="EmailSenderPolicy"/> before every send; a refused send throws
+/// <see cref="EmailSendPolicyException"/> without calling the provider. The raw senders (Graph, Gmail, IMAP) are not guarded
+/// themselves: hand automation only this wrapper, and <see cref="PolicyEnforcingMailboxManager"/> for mailbox changes.
 /// Rate-limit state is per limiter instance. Share one <see cref="InProcessEmailRateLimiter"/> between senders in a process;
 /// across processes, inject an <see cref="IEmailRateLimiter"/> backed by shared state.
 /// </summary>
@@ -73,27 +73,6 @@ public sealed class PolicyEnforcingEmailSender : IEmailSender
         => new(_approvalStore ?? throw new InvalidOperationException("This sender has no approval store, so it queues nothing to approve."),
             _inner, _policy, _rateLimiter);
 
-    public Task DeleteAsync(string messageId, CancellationToken ct = default)
-    {
-        if (!_policy.AllowDelete)
-            throw new EmailSendPolicyException("deleting messages is disabled (AllowDelete = false)");
-        return _inner.DeleteAsync(messageId, ct);
-    }
-
-    public Task MarkReadAsync(string messageId, bool isRead, CancellationToken ct = default)
-    {
-        if (!_policy.AllowMarkRead)
-            throw new EmailSendPolicyException("marking messages read or unread is disabled (AllowMarkRead = false)");
-        return _inner.MarkReadAsync(messageId, isRead, ct);
-    }
-
-    public Task MoveAsync(string messageId, string destinationFolder, CancellationToken ct = default)
-    {
-        if (!_policy.AllowMove)
-            throw new EmailSendPolicyException("moving messages is disabled (AllowMove = false)");
-        return _inner.MoveAsync(messageId, destinationFolder, ct);
-    }
-
     /// <summary>Reply-only and recipient rules: everything but approval and rate. The approval service checks these again at send.</summary>
     internal static void EnforcePolicyExceptApproval(EmailSenderPolicy policy, OutboundEmail email)
     {
@@ -141,5 +120,37 @@ public sealed class PolicyEnforcingEmailSender : IEmailSender
                 return lt >= 0 && gt > lt ? a[(lt + 1)..gt].Trim() : a;
             })
             .Where(a => !string.IsNullOrWhiteSpace(a));
+    }
+}
+
+/// <summary>
+/// Wraps any <see cref="IMailboxManager"/> and enforces <see cref="EmailSenderPolicy.AllowDelete"/>,
+/// <see cref="EmailSenderPolicy.AllowMove"/> and <see cref="EmailSenderPolicy.AllowMarkRead"/>, all off by default. A refused
+/// change throws <see cref="EmailSendPolicyException"/> without calling the provider.
+/// </summary>
+public sealed class PolicyEnforcingMailboxManager(IMailboxManager inner, EmailSenderPolicy policy) : IMailboxManager
+{
+    private readonly IMailboxManager _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+    private readonly EmailSenderPolicy _policy = policy ?? throw new ArgumentNullException(nameof(policy));
+
+    public Task DeleteAsync(string messageId, CancellationToken ct = default)
+    {
+        if (!_policy.AllowDelete)
+            throw new EmailSendPolicyException("deleting messages is disabled (AllowDelete = false)");
+        return _inner.DeleteAsync(messageId, ct);
+    }
+
+    public Task MarkReadAsync(string messageId, bool isRead, CancellationToken ct = default)
+    {
+        if (!_policy.AllowMarkRead)
+            throw new EmailSendPolicyException("marking messages read or unread is disabled (AllowMarkRead = false)");
+        return _inner.MarkReadAsync(messageId, isRead, ct);
+    }
+
+    public Task MoveAsync(string messageId, string destinationFolder, CancellationToken ct = default)
+    {
+        if (!_policy.AllowMove)
+            throw new EmailSendPolicyException("moving messages is disabled (AllowMove = false)");
+        return _inner.MoveAsync(messageId, destinationFolder, ct);
     }
 }

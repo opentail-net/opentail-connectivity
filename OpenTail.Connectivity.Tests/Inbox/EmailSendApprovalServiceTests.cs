@@ -227,8 +227,5 @@ public sealed class EmailSendApprovalServiceTests : IDisposable
             return send(email, ct);
         }
 
-        public Task DeleteAsync(string messageId, CancellationToken ct = default) => Task.CompletedTask;
-        public Task MarkReadAsync(string messageId, bool isRead, CancellationToken ct = default) => Task.CompletedTask;
-        public Task MoveAsync(string messageId, string destinationFolder, CancellationToken ct = default) => Task.CompletedTask;
     }
 }

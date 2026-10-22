@@ -136,8 +136,8 @@ they include code that can change a mailbox or calendar. What can write, and wha
 - `IInboxAdapter` (fetching mail) is read-only. `ReadOnlyInboxGuard.AssertReadOnly(type)` checks by reflection that an
   implementation has no public write-style methods (`Send*`, `Delete*`, `Move*` and similar) and throws if it does. Nothing in the
   library calls it; call it yourself, for example in a test.
-- `IEmailSender` (send, delete, mark read, move) is separate and is gated by `EmailSenderPolicy`: sending is off by default and
-  needs human approval by default.
+- `IEmailSender` (send) and `IMailboxManager` (delete, mark read, move) are separate, and both are gated by `EmailSenderPolicy`:
+  sending is off by default and needs human approval by default; mailbox changes are off by default.
 - `ICalendarAdapter` includes create, update, delete and respond. The Graph and Gmail adapters implement them for real, with
   **no policy gate**; the ICS adapter throws `NotSupportedException`.
 

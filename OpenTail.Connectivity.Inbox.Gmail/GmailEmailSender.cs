@@ -3,7 +3,7 @@ using Google.Apis.Gmail.v1.Data;
 
 namespace OpenTail.Connectivity.Inbox.Gmail;
 
-public sealed class GmailEmailSender : IEmailSender
+public sealed class GmailEmailSender : IEmailSender, IMailboxManager
 {
     private readonly GmailCredentialProvider _credentialProvider;
 

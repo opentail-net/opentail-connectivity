@@ -12,7 +12,7 @@ design is built for composition. It is not built for inheritance. This page says
 | Change documents on their way through | `PipelineOptions.Transformers`: each runs on the normalised document, in order, before validation and export; the content hash is taken after them. | Use it for redaction and enrichment. Wrapping the `ITextExtractor` or an `IConnectivityExporter` still works for changes those hooks cannot make. |
 | Pass facts from a connector | `SourceItem.Metadata` | Carried onto the document (permissions, URLs, `source.version`); see [design/shared-groundwork.md](design/shared-groundwork.md). |
 | Know a document's id in advance | `ConnectivityPipeline.DocumentId(sourceType, tenant, sourceRef)` | Stable across runs; call it rather than reimplementing the hash. |
-| Add a new inbox or calendar provider | Implement `IInboxAdapter`, `ICalendarAdapter` (or only `ICalendarReader`), `IEmailSender`. | Run `ReadOnlyInboxGuard.AssertReadOnly` on inbox adapters in your tests. Check writes against a `CalendarWritePolicy`, as the Graph and Gmail adapters do. |
+| Add a new inbox or calendar provider | Implement `IInboxAdapter`, `ICalendarAdapter` (or only `ICalendarReader`), `IEmailSender` and `IMailboxManager`. | Run `ReadOnlyInboxGuard.AssertReadOnly` on inbox adapters in your tests. Check writes against a `CalendarWritePolicy`, as the Graph and Gmail adapters do. |
 | Label your documents | Pass your own `sourceType` string to `ConnectivityPipeline`. | It is free text, lower-cased. |
 | Stamp run-level facts | `PipelineOptions.ExtraMetadata` | Appears under `run.*`. |
 | Use only what you need | Reference single packages. | Only `Files` is shared; `Web`, `Csv`, `Email`, `Sql`, `Social`, `Inbox.*` and `Calendar.Ics` depend on it, not on each other. |
@@ -29,9 +29,6 @@ These follow from how the code is written today.
   and base metadata are first built is fixed. Transformers can change the result afterwards. Extractor metadata is always stored
   with an `extraction.` prefix.
 - **No dependency-injection helpers.** There is no `AddOpenTail...` extension; you construct objects yourself.
-- **`IEmailSender` mixes sending and mailbox changes.** Calendars are split (`ICalendarReader` for reading), but a consumer that
-  should only send still gets `DeleteAsync`, `MoveAsync` and `MarkReadAsync`; wrap it in `PolicyEnforcingEmailSender`, which
-  refuses them unless allowed. See [safety-and-credentials.md](safety-and-credentials.md).
 - **Packages are on GitHub Packages**, which needs a token even to read. Consumers outside the organisation need their own
   access setup (see the README).
 - **Dependencies come along.** `Files` pulls in `Transformations.Text`, and each inbox package pulls in its provider SDK.
@@ -69,7 +66,7 @@ This sketch has not been compiled.
 These are proposals for the maintainers. Source-item metadata, stable document IDs and the transformer hook, proposed here
 earlier, are implemented (see the table above).
 
-1. Split `IEmailSender` into send and manage. `ICalendarReader` is split out already. The Host's Email module uses this
-   contract, so the split has to land in both repositories together.
+1. *Done for 0.3.0:* `IEmailSender` is send only and `IMailboxManager` holds delete, move and mark-read, as `ICalendarReader`
+   is split from calendar writes. The Host's Email module adopts it when it moves to 0.3.0.
 2. Add an optional `Microsoft.Extensions.DependencyInjection` extension package, kept separate so `Files` stays light.
 3. Declare which types are public API and stable, and treat the rest as internal, ahead of a 1.0.

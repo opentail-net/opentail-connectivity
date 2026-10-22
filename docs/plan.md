@@ -895,7 +895,9 @@ except where noted. Breaking changes for 0.3.0 are marked **B**.
   they move to Connectivity 0.3.0.
 - [x] **[C]** Conformance suite for the Drive connectors and `ObjectStorageConnector`. *Done 2026-10-22; it found that both
   Drive connectors ignored cancellation inside a page (fixed).*
-- [ ] **[C]** **[H]** Split `IEmailSender` into send and manage, in step with the Host.
+- [x] **[C]** **B** Split `IEmailSender` (send only) and `IMailboxManager` (delete, move, mark read), with
+  `PolicyEnforcingMailboxManager`. *Done 2026-10-22; the provider senders implement both.*
+- [ ] **[H]** The Host adopts the split with the rest of 0.3.0 (Email module, `Deferred`, IMAP factory, test fakes).
 
 ## Background, no action planned
 

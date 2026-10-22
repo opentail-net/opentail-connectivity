@@ -81,7 +81,7 @@ public sealed class PolicyEnforcingEmailSenderTests
         }
     }
 
-    private sealed class FakeSender(Func<OutboundEmail, CancellationToken, Task<string>> send) : IEmailSender
+    private sealed class FakeSender(Func<OutboundEmail, CancellationToken, Task<string>> send) : IEmailSender, IMailboxManager
     {
         private int _sendCount;
         public int SendCount => Volatile.Read(ref _sendCount);
@@ -99,10 +99,19 @@ public sealed class PolicyEnforcingEmailSenderTests
     }
 
     [Fact]
+    public void A_send_only_consumer_cannot_reach_mailbox_changes()
+    {
+        IEmailSender sender = new PolicyEnforcingEmailSender(new FakeSender((_, _) => Task.FromResult("id")),
+            new EmailSenderPolicy { SendingEnabled = true, AllowDelete = true });
+
+        Assert.False(sender is IMailboxManager); // the wrapper hides the provider's mailbox methods even when the policy allows them
+    }
+
+    [Fact]
     public async Task Mailbox_changes_are_denied_by_default_without_a_provider_call()
     {
         var inner = new FakeSender((_, _) => Task.FromResult("id"));
-        var sender = new PolicyEnforcingEmailSender(inner, EmailSenderPolicy.Disabled);
+        var sender = new PolicyEnforcingMailboxManager(inner, EmailSenderPolicy.Disabled);
 
         await Assert.ThrowsAsync<EmailSendPolicyException>(() => sender.DeleteAsync("m1"));
         await Assert.ThrowsAsync<EmailSendPolicyException>(() => sender.MarkReadAsync("m1", true));
@@ -115,7 +124,7 @@ public sealed class PolicyEnforcingEmailSenderTests
     public async Task Allowed_mailbox_changes_pass_their_arguments_once()
     {
         var inner = new FakeSender((_, _) => Task.FromResult("id"));
-        var sender = new PolicyEnforcingEmailSender(inner,
+        var sender = new PolicyEnforcingMailboxManager(inner,
             new EmailSenderPolicy { AllowDelete = true, AllowMarkRead = true, AllowMove = true });
 
         await sender.DeleteAsync("m1");

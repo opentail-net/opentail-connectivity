@@ -3,7 +3,7 @@ using MimeKit.Text;
 
 namespace OpenTail.Connectivity.Inbox.Imap;
 
-public sealed class ImapEmailSender : IEmailSender
+public sealed class ImapEmailSender : IEmailSender, IMailboxManager
 {
     private readonly SmtpSettings _smtp;
     private readonly ImapSettings _imap;

@@ -8,7 +8,7 @@ guards each one, and what it leaves to you.
 | Capability | Where | Guard |
 |---|---|---|
 | Fetch mail | `IInboxAdapter` (IMAP, Graph, Gmail) | Read-only contract. `ReadOnlyInboxGuard.AssertReadOnly(type)` fails if an adapter has public methods named like `Send`, `Delete`, `Move`, `Mark` and so on; it checks names only, and only when you call it. IMAP opens folders with `FolderAccess.ReadOnly`. |
-| Send mail, delete, mark read, move | `IEmailSender` (IMAP/SMTP, Graph, Gmail) | `PolicyEnforcingEmailSender` and `EmailSenderPolicy` (below). Delete, move and mark-read are refused unless `AllowDelete`, `AllowMove` or `AllowMarkRead` is set (all off by default), before any provider call. The raw senders are not guarded: hand automation only the wrapper. |
+| Send mail; delete, mark read, move | `IEmailSender` and `IMailboxManager` (IMAP/SMTP, Graph, Gmail; one class implements both) | `PolicyEnforcingEmailSender`, `PolicyEnforcingMailboxManager` and `EmailSenderPolicy` (below). A send-only consumer given the sender wrapper cannot reach mailbox changes at all. Delete, move and mark-read are refused unless `AllowDelete`, `AllowMove` or `AllowMarkRead` is set (all off by default), before any provider call. The raw senders are not guarded: hand automation only the wrapper. |
 | Create, update, delete, respond to events | `ICalendarAdapter` on Graph and Gmail | `CalendarWritePolicy`, passed to the adapter's constructor, checked before any provider call. The default, `Disabled`, refuses every write (`CalendarWriteDeniedException`). Opt in per kind (`AllowCreate`, `AllowUpdate`, `AllowDelete`, `AllowRespond`) and add `Approve` for a person's sign-off. `Respond` tells the organiser (`SendsExternalResponse`). The ICS adapter refuses all writes (`NotSupportedException`). |
 | Everything else (folders, web, CSV, `.eml`, SQL, social) | Source connectors | Read only. |
 
@@ -41,7 +41,7 @@ Limits to be aware of:
   approved sends use the same policy and limiter; a separately constructed service can split the rate cap.
 - `InMemoryPendingSendStore` is in memory unless you pass it a `filePath`, in which case it also saves to and loads from that file.
   Use that, or your own `IPendingSendStore`, if pending sends must survive a restart.
-- The policy only guards the `IEmailSender` you wrapped. Nothing stops code that holds a raw sender or the provider SDK.
+- The policy only guards the `IEmailSender` or `IMailboxManager` you wrapped. Nothing stops code that holds a raw sender or the provider SDK.
 
 ## OAuth scopes (Gmail)
 
