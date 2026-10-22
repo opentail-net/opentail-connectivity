@@ -221,7 +221,7 @@ for example with `InboxEmailDocumentMapper`.
 | `Inbox.Imap` | `ImapSettings.Create(host, port, useSsl, username, password)`; port defaults to 993 and SSL to on. Sending uses `SmtpSettings`. | Folders open read-only. |
 | `Inbox.Graph` | `GraphSettings.Create(tenantId, clientId, clientSecret, userEmail)` | Client-credentials flow (Azure.Identity). Mail, calendar, attachments, threads. |
 | `Inbox.Gmail` | `GmailSettings.Create(clientId, clientSecret, refreshToken, userEmail)` | Mail, calendar, attachments, threads. What it can do is set by the scopes the refresh token was granted; see [OAuth scopes](safety-and-credentials.md#oauth-scopes-gmail). |
-| `Calendar.Ics` | `new IcsCalendarAdapter(icsUrl, calendarId, tenantContext, httpClient, cacheTtl)` | Read-only. |
+| `Calendar.Ics` | `new IcsCalendarAdapter(icsUrl, calendarId, tenantContext, httpClient, cacheTtl)` | Read-only. With a `Start`/`End` window, recurring events are expanded into occurrences (EXDATE and overrides applied; occurrence ids are `uid_yyyyMMddTHHmmssZ`); without one, each event comes once as stored. `MaxEvents` (at least 1) caps the result, earliest first. A missing DTEND follows RFC 5545 (DURATION, else one day for a date, else zero length). |
 
 `InboxFetchOptions` selects `Folder` ("INBOX"), `MaxMessages` (100) and `Since`. Graph applies `Since` as a `receivedDateTime`
 filter on its first delta request (the delta link keeps it). `SyncToken` is reserved and not read by any adapter.

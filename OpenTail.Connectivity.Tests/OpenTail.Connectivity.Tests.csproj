@@ -28,6 +28,7 @@
     <ProjectReference Include="..\OpenTail.Connectivity.Inbox.Graph\OpenTail.Connectivity.Inbox.Graph.csproj" />
 
     <ProjectReference Include="..\OpenTail.Connectivity.Csv\OpenTail.Connectivity.Csv.csproj" />
+    <ProjectReference Include="..\OpenTail.Connectivity.Calendar.Ics\OpenTail.Connectivity.Calendar.Ics.csproj" />
 
     <ProjectReference Include="..\OpenTail.Connectivity.Social\OpenTail.Connectivity.Social.csproj" />
     <ProjectReference Include="..\OpenTail.Connectivity.RichText\OpenTail.Connectivity.RichText.csproj" />

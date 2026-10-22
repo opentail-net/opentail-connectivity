@@ -1,9 +1,17 @@
+using System.Globalization;
+
 namespace OpenTail.Connectivity.Calendar.Ics;
 
 /// <summary>
 /// Read-only adapter for ICS feeds or CalDAV calendar URLs.
 /// Mutating methods throw <see cref="NotSupportedException"/> — ICS feeds are read-only.
 /// </summary>
+/// <remarks>
+/// With a time window, <see cref="GetEventsAsync"/> returns occurrences: recurring events are expanded inside the window
+/// (EXDATE and overrides applied). A window with one side open is closed one year from the given side. With no window, it
+/// returns each event once as stored, so a recurring event appears as its series. At most <c>MaxEvents</c> are returned,
+/// earliest first.
+/// </remarks>
 public sealed class IcsCalendarAdapter : ICalendarAdapter
 {
     private readonly string _icsUrl;
@@ -48,23 +56,50 @@ public sealed class IcsCalendarAdapter : ICalendarAdapter
         CalendarFetchOptions options,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var ics = await GetIcsAsync(ct);
-        var events = IcsSerializer.Deserialize(ics, _tenantContext);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxEvents, 1, nameof(options.MaxEvents));
+        if (options.CalendarId is not null && options.CalendarId != _calendarId)
+            yield break;
 
-        foreach (var ev in events)
+        var ics = await GetIcsAsync(ct);
+        IEnumerable<CalendarEvent> events;
+        if (options.Start is null && options.End is null)
         {
-            if (options.Start.HasValue && ev.End < options.Start.Value) continue;
-            if (options.End.HasValue && ev.Start > options.End.Value) continue;
-            yield return ev with { CalendarId = _calendarId };
+            events = IcsSerializer.Deserialize(ics, _tenantContext).OrderBy(e => e.Start);
         }
+        else
+        {
+            var from = options.Start ?? options.End!.Value.AddYears(-1);
+            var to = options.End ?? options.Start!.Value.AddYears(1);
+            events = IcsSerializer.Occurrences(ics, _tenantContext, from, to);
+        }
+
+        foreach (var ev in events.Take(options.MaxEvents))
+            yield return ev with { CalendarId = _calendarId };
     }
 
     public async Task<CalendarEvent?> GetEventAsync(
         string calendarId, string eventId, CancellationToken ct = default)
     {
+        if (calendarId != _calendarId)
+            return null;
         var ics = await GetIcsAsync(ct);
-        return IcsSerializer.Deserialize(ics, _tenantContext)
-            .FirstOrDefault(e => e.EventId == eventId);
+        var ev = IcsSerializer.Deserialize(ics, _tenantContext).FirstOrDefault(e => e.EventId == eventId);
+        if (ev is null && OccurrenceStart(eventId) is { } start)
+        {
+            // An occurrence id (uid_yyyyMMddTHHmmssZ) from GetEventsAsync.
+            ev = IcsSerializer.Occurrences(ics, _tenantContext, start, start).FirstOrDefault(e => e.EventId == eventId);
+        }
+        return ev is null ? null : ev with { CalendarId = _calendarId };
+    }
+
+    private static DateTimeOffset? OccurrenceStart(string eventId)
+    {
+        var cut = eventId.LastIndexOf('_');
+        return cut > 0 && DateTimeOffset.TryParseExact(eventId[(cut + 1)..], "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var start)
+            ? start
+            : null;
     }
 
     private async Task<string> GetIcsAsync(CancellationToken ct)
