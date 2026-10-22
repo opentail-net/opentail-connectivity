@@ -780,9 +780,8 @@ part of it. Plug and play (scheduler, event sources, store, sink, each with a co
 - [x] **[C]** **[H]** Queue research ([queue-research-2026-10-22](design/queue-research-2026-10-22.md)): two defects fixed
   (74b427c); built 1 to 4 and 7 (066b95b, d70d7fa; Host Jobs view): heartbeats, rate limits, key scopes, trace context, redrive
   pacing, grouped dead jobs, equal jitter.
-- [ ] **[Owner]** Still open from the research: a Postgres queue (SKIP LOCKED, transactional enqueue), a ratio circuit, later items.
-- [ ] **[C]** **[H]** Not now (owner, 2026-10-22): queue pause/resume with resume-at, and Postpone for one job; pausing sources
-  waits for triggers.
+- Not needed yet (owner, 2026-10-22): the Postgres queue, the ratio circuit and the later research items are in
+  [optional-todo.md](optional-todo.md), each with when it would be worth doing.
 - [ ] **[H]** Optional `CallTimeout` for in-process Host modules, matching isolated ones.
 - [ ] **[C]** Later: triggers' scheduler enqueues jobs.
 - [ ] **[Owner]** Host work items on `IWorkQueue`: not moved (2026-10-22); work items are records that are read by id, listed and

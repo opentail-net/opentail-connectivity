@@ -87,7 +87,7 @@ Less common, and worth keeping: a conformance suite every backend must pass, and
   reason on the Jobs page with "Bring back this group"; equal jitter (half fixed, half random) instead of ±20%.
 - **Conformance:** 42 checks. RabbitMQ passes all 35 that apply on `rabbitmq:4.1` (36 tests with the lease cap; 7 skipped by design).
 
-Not built (owner's choice): the Postgres queue, the ratio circuit, later items.
+Not built (owner's choice): the Postgres queue, the ratio circuit and the later items, kept in [optional-todo.md](../optional-todo.md).
 
 ## Suggested order
 
