@@ -58,6 +58,15 @@ public static class WorkQueueConformance
             Check("pending lists waiting and delayed jobs, with source, without bodies, without using up attempts", true, PendingAsync),
             Check("pending lists running jobs", capabilities.ListsRunningJobs, PendingRunningAsync),
             Check("a dead letter can be deleted", true, DeleteDeadLetterAsync),
+            Check("a concurrency key never runs more than its limit, across workers", capabilities.ConcurrencyLimits, KeyLimitAsync),
+            Check("a full key does not hold up other keys", capabilities.ConcurrencyLimits, FullKeyDoesNotBlockAsync),
+            Check("an expired lease frees its slot", capabilities.ConcurrencyLimits && capabilities.LeaseExpiry, ExpiredLeaseFreesSlotAsync),
+            Check("prefix limits and the default limit apply", capabilities.ConcurrencyLimits, PrefixAndDefaultLimitAsync),
+            Check("skipped keys are not leased", capabilities.ConcurrencyLimits, SkippedKeysAsync),
+            Check("an open circuit releases nothing and uses no attempts, then lets one through", capabilities.ConcurrencyLimits, CircuitAsync),
+            Check("failures that are not the resource's do not open the circuit", capabilities.ConcurrencyLimits, OrdinaryFailuresAsync),
+            Check("the maximum run time is carried, or the default given", true, MaxRunTimeAsync),
+            Check("dead letters past their retention are removed", true, DeadLetterRetentionAsync),
         ];
     }
 
@@ -351,6 +360,119 @@ public static class WorkQueueConformance
         Ensure((await q.DeadLettersAsync(Q)).Count == 0, "the deleted dead letter is still listed");
         Ensure(!await q.DeleteDeadLetterAsync(Q, id), "a dead letter was deleted twice");
         Ensure((await q.LeaseAsync(Q, 1, Lease)).Count == 0, "a deleted dead letter ran");
+    }
+
+    private static EnqueueRequest Keyed(string key, string body = "{}") => new(Q, "acme", body, ConcurrencyKey: key);
+
+    private static async Task KeyLimitAsync(WorkQueueOpener open, Clock clock)
+    {
+        var options = new WorkQueueOptions(ConcurrencyLimits: new Dictionary<string, int> { ["db:a"] = 2 });
+        await using var a = open(clock, options);
+        await using var b = open(clock, options);
+        for (var i = 0; i < 6; i++)
+            await a.EnqueueAsync(Keyed("db:a"));
+        var first = await a.LeaseAsync(Q, 5, TimeSpan.FromMinutes(5));
+        Ensure(first.Count == 2, $"the first worker got {first.Count} jobs for a key limited to 2");
+        Ensure((await b.LeaseAsync(Q, 5, TimeSpan.FromMinutes(5))).Count == 0, "a second worker went over the key's limit");
+        Ensure(await a.CompleteAsync(first[0]), "completing failed");
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(5)); // a broker parks jobs over the limit for a few seconds
+        Ensure((await b.LeaseAsync(Q, 5, TimeSpan.FromMinutes(5))).Count == 1, "finishing a job did not free its slot for another worker");
+    }
+
+    private static async Task FullKeyDoesNotBlockAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions(ConcurrencyLimits: new Dictionary<string, int> { ["db:a"] = 1 }));
+        for (var i = 0; i < 3; i++)
+            await q.EnqueueAsync(Keyed("db:a"));
+        await q.EnqueueAsync(Keyed("db:b"));
+        await q.EnqueueAsync(Job("no key"));
+        var jobs = await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5));
+        Ensure(jobs.Count == 3 && jobs.Count(j => j.ConcurrencyKey == "db:a") == 1 && jobs.Any(j => j.ConcurrencyKey == "db:b") && jobs.Any(j => j.ConcurrencyKey is null),
+            $"leased [{string.Join(", ", jobs.Select(j => j.ConcurrencyKey ?? "none"))}], not one of each");
+    }
+
+    private static async Task ExpiredLeaseFreesSlotAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions(ConcurrencyLimits: new Dictionary<string, int> { ["db:a"] = 1 }));
+        await q.EnqueueAsync(Keyed("db:a"));
+        await q.EnqueueAsync(Keyed("db:a"));
+        Ensure((await q.LeaseAsync(Q, 5, Lease)).Count == 1, "the limit of 1 was not kept");
+        await clock.AdvanceAsync(Lease + TimeSpan.FromSeconds(1));
+        Ensure((await q.LeaseAsync(Q, 5, Lease)).Count == 1, "a lapsed lease still held its slot");
+    }
+
+    private static async Task PrefixAndDefaultLimitAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions(ConcurrencyLimits: new Dictionary<string, int> { ["db:*"] = 1 }, DefaultConcurrencyLimit: 2));
+        for (var i = 0; i < 3; i++)
+        {
+            await q.EnqueueAsync(Keyed("db:x"));
+            await q.EnqueueAsync(Keyed("erp:y"));
+        }
+
+        var jobs = await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5));
+        Ensure(jobs.Count(j => j.ConcurrencyKey == "db:x") == 1 && jobs.Count(j => j.ConcurrencyKey == "erp:y") == 2,
+            "the prefix limit (1) or the default limit (2) was not applied");
+    }
+
+    private static async Task SkippedKeysAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions());
+        await q.EnqueueAsync(Keyed("db:a"));
+        await q.EnqueueAsync(Keyed("db:b"));
+        var jobs = await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5), ["db:a"]);
+        Ensure(jobs.Count == 1 && jobs[0].ConcurrencyKey == "db:b", "a skipped key was leased");
+    }
+
+    private static async Task CircuitAsync(WorkQueueOpener open, Clock clock)
+    {
+        var options = new WorkQueueOptions(CircuitFailures: 2, CircuitCooldown: TimeSpan.FromSeconds(3));
+        await using var q = open(clock, options);
+        for (var i = 0; i < 4; i++)
+            await q.EnqueueAsync(Keyed("db:r"));
+        for (var i = 0; i < 2; i++)
+            Ensure(await q.RetryAsync(Single(await q.LeaseAsync(Q, 1, Lease)), TimeSpan.Zero, "connection refused", resourceFailure: true), "retry failed");
+        var state = (await q.ConcurrencyKeysAsync(Q)).SingleOrDefault(k => k.ConcurrencyKey == "db:r");
+        Ensure(state is { Circuit: CircuitState.Open }, "two resource failures in a row did not open the circuit");
+        Ensure((await q.LeaseAsync(Q, 10, Lease)).Count == 0, "an open circuit released a job");
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(6));
+        var probe = await q.LeaseAsync(Q, 10, Lease);
+        Ensure(probe.Count == 1, $"half-open let {probe.Count} jobs through, not 1");
+        Ensure(probe[0].Attempt <= 3, "jobs used attempts while the circuit was open");
+        Ensure(await q.CompleteAsync(probe[0]), "completing the probe failed");
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(5));
+        var rest = await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5));
+        Ensure(rest.Count == 3, $"after the probe succeeded {rest.Count} jobs were released, not the 3 left");
+        Ensure(rest.All(j => j.Attempt <= 2), "jobs that waited behind the open circuit used up attempts");
+    }
+
+    private static async Task OrdinaryFailuresAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions(CircuitFailures: 2));
+        await q.EnqueueAsync(Keyed("db:r"));
+        for (var i = 0; i < 2; i++)
+            Ensure(await q.RetryAsync(Single(await q.LeaseAsync(Q, 1, Lease)), TimeSpan.Zero, "bad input", resourceFailure: false), "retry failed");
+        Ensure((await q.LeaseAsync(Q, 1, Lease)).Count == 1, "failures that were not the resource's opened the circuit");
+    }
+
+    private static async Task MaxRunTimeAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions(DefaultMaxRunTime: TimeSpan.FromMinutes(3)));
+        await q.EnqueueAsync(new EnqueueRequest(Q, "acme", "own", MaxRunTime: TimeSpan.FromMinutes(7)));
+        await q.EnqueueAsync(Job("default"));
+        var jobs = await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5));
+        Ensure(jobs.Single(j => j.Body == "own").MaxRunTime == TimeSpan.FromMinutes(7), "the job's maximum run time was lost");
+        Ensure(jobs.Single(j => j.Body == "default").MaxRunTime == TimeSpan.FromMinutes(3), "the queue's default maximum run time was not given");
+    }
+
+    private static async Task DeadLetterRetentionAsync(WorkQueueOpener open, Clock clock)
+    {
+        await using var q = open(clock, new WorkQueueOptions(DeadLetterRetention: TimeSpan.FromSeconds(3)));
+        await q.EnqueueAsync(Job());
+        Ensure(await q.DeadLetterAsync(Single(await q.LeaseAsync(Q, 1, Lease)), "bad"), "dead-lettering failed");
+        Ensure((await q.DeadLettersAsync(Q)).Count == 1, "the dead letter is missing");
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(5));
+        Ensure((await q.DeadLettersAsync(Q)).Count == 0, "a dead letter outlived its retention");
     }
 
     private static async Task Refused(Func<Task> act, string what)

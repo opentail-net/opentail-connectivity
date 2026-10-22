@@ -19,9 +19,12 @@ namespace OpenTail.Connectivity.Queues.RabbitMQ;
 /// before its time waits again. A delayed job is never handed out early, and is at most about a second late.</para>
 /// <para><b>Keys</b> are carried, not deduplicated: RabbitMQ keeps no index of past messages. Handlers must be idempotent anyway
 /// (delivery is at least once); use the key for that.</para>
-/// <para><b>Cancelling</b> needs <see cref="RabbitMqWorkQueueOptions.CancelledJobs"/>, a store every worker shares: RabbitMQ cannot
+/// <para><b>Cancelling, concurrency limits and circuits</b> need <see cref="RabbitMqWorkQueueOptions.Control"/>, a store every
+/// worker shares (<see cref="IQueueControl"/>): RabbitMQ cannot
 /// remove a message from the middle of a queue, so a cancelled job is dropped when a worker meets it (leasing, settling, or
-/// renewing its lease). Without the store, <see cref="CancelAsync"/> throws. A cancel of an unknown id is recorded and returns true.</para>
+/// renewing its lease). A job over its key's limit, or whose circuit is open, waits a few seconds in a wait queue and is looked at
+/// again; for a large backlog on one resource, a queue of its own with as many consumers as the limit churns less. Without the
+/// store, <see cref="CancelAsync"/> throws and jobs with a concurrency key are refused. A cancel of an unknown id is recorded and returns true.</para>
 /// <para><b>Listing</b> (<see cref="PendingAsync"/>) shows waiting and delayed jobs, not jobs other workers hold. Reading a queue
 /// means taking its messages, so waiting jobs are listed by replacing each with a copy (attempts unchanged); listed jobs move to the
 /// back of the queue.</para>
@@ -30,10 +33,17 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
 {
     /// <summary>What this queue guarantees; known without connecting.</summary>
     public static WorkQueueCapabilities SupportedCapabilities { get; } =
-        new(Durable: true, DelayedDelivery: true, LeaseExpiry: true, DeduplicatesKeys: false, Cancellation: false, ListsRunningJobs: false);
+        new(Durable: true, DelayedDelivery: true, LeaseExpiry: true, DeduplicatesKeys: false, Cancellation: false, ListsRunningJobs: false,
+            ConcurrencyLimits: false);
 
-    /// <summary>What this queue guarantees with a shared <see cref="ICancelledJobs"/> store.</summary>
-    public static WorkQueueCapabilities CapabilitiesWithCancellation { get; } = SupportedCapabilities with { Cancellation = true };
+    /// <summary>What this queue guarantees with a shared <see cref="IQueueControl"/> store.</summary>
+    public static WorkQueueCapabilities CapabilitiesWithControl { get; } = SupportedCapabilities with { Cancellation = true, ConcurrencyLimits = true };
+
+    // A job over its key's limit, or behind an open circuit, waits this long before it is looked at again.
+    private const long ParkMs = 4_000;
+
+    // At most this many jobs are moved to wait per lease call, so one busy key does not churn the whole queue at once.
+    private const int MaxParksPerLease = 20;
 
     private const string Prefix = "x-ot-";
     private static readonly long[] WaitTiersSeconds = [1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144];
@@ -74,7 +84,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         _time = time ?? TimeProvider.System;
     }
 
-    public WorkQueueCapabilities Capabilities => _rabbit.CancelledJobs is null ? SupportedCapabilities : CapabilitiesWithCancellation;
+    public WorkQueueCapabilities Capabilities => _rabbit.Control is null ? SupportedCapabilities : CapabilitiesWithControl;
 
     public async Task<EnqueueResult> EnqueueAsync(EnqueueRequest request, CancellationToken ct = default)
     {
@@ -82,7 +92,10 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         var now = Now;
         var job = new Message(Guid.NewGuid().ToString("N"), request.Tenant, request.Body, request.Key,
             new Dictionary<string, string>(request.Headers ?? new Dictionary<string, string>(), StringComparer.Ordinal),
-            Attempts: 0, EnqueuedAt: now, NotBefore: request.NotBefore?.ToUnixTimeMilliseconds() ?? now, LastError: null, Source: request.Source);
+            Attempts: 0, EnqueuedAt: now, NotBefore: request.NotBefore?.ToUnixTimeMilliseconds() ?? now, LastError: null, Source: request.Source,
+            ConcurrencyKey: request.ConcurrencyKey, MaxRunMs: request.MaxRunTime is { } run ? (long)run.TotalMilliseconds : null);
+        if (request.ConcurrencyKey is not null && _rabbit.Control is null)
+            throw new NotSupportedException("Concurrency keys on RabbitMQ need RabbitMqWorkQueueOptions.Control, a store all workers share.");
         await LockedAsync(async channel =>
         {
             await DeclareAsync(channel, request.Queue, ct).ConfigureAwait(false);
@@ -93,9 +106,14 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
     }
 
     public Task<IReadOnlyList<LeasedJob>> LeaseAsync(string queue, int max, TimeSpan lease, CancellationToken ct = default)
+        => LeaseAsync(queue, max, lease, [], ct);
+
+    public Task<IReadOnlyList<LeasedJob>> LeaseAsync(string queue, int max, TimeSpan lease, IReadOnlyCollection<string> skipConcurrencyKeys,
+        CancellationToken ct = default)
     {
         WorkQueueOptions.ValidateQueueName(queue);
         WorkQueueOptions.ValidateLease(max, lease);
+        ArgumentNullException.ThrowIfNull(skipConcurrencyKeys);
         if (lease > _rabbit.MaxLeaseTotalOrDefault)
             throw new ArgumentOutOfRangeException(nameof(lease), $"A RabbitMQ lease is at most {_rabbit.MaxLeaseTotalOrDefault} (the broker's consumer_timeout).");
 
@@ -104,7 +122,8 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             await DeclareAsync(channel, queue, ct).ConfigureAwait(false);
             await ReturnExpiredAsync(channel, ct).ConfigureAwait(false);
             var leased = new List<LeasedJob>();
-            while (leased.Count < max)
+            var parks = 0;
+            while (leased.Count < max && parks < MaxParksPerLease)
             {
                 var got = await channel.BasicGetAsync(Name(queue), autoAck: false, ct).ConfigureAwait(false);
                 if (got is null)
@@ -125,18 +144,55 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                     continue;
                 }
 
+                var token = Guid.NewGuid().ToString("N");
+                var until = now + (long)lease.TotalMilliseconds;
+                if (message.ConcurrencyKey is { } ck && _rabbit.Control is { } control)
+                {
+                    // A slot first, then the circuit; either refusing means the job waits a while, using no attempt.
+                    var release = !skipConcurrencyKeys.Contains(ck)
+                                  && await control.TryTakeSlotAsync(queue, ck, _options.LimitFor(ck) ?? int.MaxValue, token, At(until), ct).ConfigureAwait(false);
+                    if (release)
+                    {
+                        var allowed = false;
+                        await control.UpdateCircuitAsync(queue, ck, c =>
+                        {
+                            var (ok, probe) = Circuits.MayRelease(c, now, _options);
+                            allowed = ok;
+                            return ok && probe ? Circuits.ProbeReleased(c!, token, until) : c;
+                        }, ct).ConfigureAwait(false);
+                        if (!allowed)
+                        {
+                            await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
+                            release = false;
+                        }
+                    }
+
+                    if (!release)
+                    {
+                        await PublishDueOrWaitingAsync(channel, queue, message with { NotBefore = now + ParkMs }, now, ct).ConfigureAwait(false);
+                        await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+                        parks++;
+                        continue;
+                    }
+                }
+
                 if (WorkQueueRules.DeadReason(message.Attempts, At(message.EnqueuedAt), At(now), _options) is { } reason)
                 {
                     await PublishDeadAsync(channel, queue, message, reason, now, ct).ConfigureAwait(false);
                     await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+                    if (message.ConcurrencyKey is { } key && _rabbit.Control is { } c2)
+                    {
+                        await c2.ReleaseSlotAsync(queue, key, token, ct).ConfigureAwait(false);
+                        await c2.UpdateCircuitAsync(queue, key, c => Circuits.Settled(c, token), ct).ConfigureAwait(false);
+                    }
+
                     continue;
                 }
 
-                var token = Guid.NewGuid().ToString("N");
-                var until = now + (long)lease.TotalMilliseconds;
                 var job = message with { Attempts = message.Attempts + 1 };
-                _leases[token] = new Lease(queue, job, got.DeliveryTag, channel, now, until);
-                leased.Add(new LeasedJob(queue, job.Id, job.Tenant, job.Body, job.Key, job.Headers, job.Attempts, At(job.EnqueuedAt), At(until), token, job.Source));
+                _leases[token] = new Lease(queue, job, got.DeliveryTag, channel, now, until, token);
+                leased.Add(new LeasedJob(queue, job.Id, job.Tenant, job.Body, job.Key, job.Headers, job.Attempts, At(job.EnqueuedAt), At(until), token,
+                    job.Source, job.ConcurrencyKey, RunTime(job.MaxRunMs)));
             }
 
             return leased;
@@ -145,15 +201,23 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
 
     public Task<bool> CompleteAsync(LeasedJob job, CancellationToken ct = default)
         => WithLeaseAsync(job, async (channel, lease) =>
-            await channel.BasicAckAsync(lease.DeliveryTag, multiple: false, ct).ConfigureAwait(false), ct);
+        {
+            await channel.BasicAckAsync(lease.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+            await SettleKeyAsync(lease, _ => null, ct).ConfigureAwait(false); // the resource worked
+        }, ct);
 
     public Task<bool> RetryAsync(LeasedJob job, TimeSpan delay, string? error = null, CancellationToken ct = default)
+        => RetryAsync(job, delay, error, resourceFailure: false, ct);
+
+    public Task<bool> RetryAsync(LeasedJob job, TimeSpan delay, string? error, bool resourceFailure, CancellationToken ct = default)
         => WithLeaseAsync(job, async (channel, lease) =>
         {
             var now = Now;
             var again = lease.Job with { NotBefore = now + (long)Math.Max(0, delay.TotalMilliseconds), LastError = error };
             await PublishDueOrWaitingAsync(channel, lease.Queue, again, now, ct).ConfigureAwait(false);
             await channel.BasicAckAsync(lease.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+            await SettleKeyAsync(lease, c => resourceFailure ? Circuits.ResourceFailed(c, now, _options) : Circuits.Settled(c, lease.Token), ct)
+                .ConfigureAwait(false);
         }, ct);
 
     public Task<bool> DeadLetterAsync(LeasedJob job, string reason, CancellationToken ct = default)
@@ -163,19 +227,21 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         {
             await PublishDeadAsync(channel, lease.Queue, lease.Job, reason, Now, ct).ConfigureAwait(false);
             await channel.BasicAckAsync(lease.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+            await SettleKeyAsync(lease, c => Circuits.Settled(c, lease.Token), ct).ConfigureAwait(false);
         }, ct);
     }
 
     public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
-        return WithLeaseAsync(job, (_, held) =>
+        return WithLeaseAsync(job, async (_, held) =>
         {
             var until = Now + (long)lease.TotalMilliseconds;
             if (until - held.LeasedAt > (long)_rabbit.MaxLeaseTotalOrDefault.TotalMilliseconds)
                 throw new ArgumentOutOfRangeException(nameof(lease), $"A RabbitMQ lease, extensions included, is at most {_rabbit.MaxLeaseTotalOrDefault} (the broker's consumer_timeout).");
             held.Until = until;
-            return Task.CompletedTask;
+            if (held.Job.ConcurrencyKey is { } key && _rabbit.Control is { } control)
+                await control.RenewSlotAsync(held.Queue, key, held.Token, At(until), ct).ConfigureAwait(false);
         }, ct, keepLease: true);
     }
 
@@ -195,7 +261,8 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         {
             var m = Read(got, countReturned: false); // peeking returns them, which is not an attempt
             dead.Add(new DeadLetter(queue, m.Id, m.Tenant, m.Body, m.Key, m.Headers, m.Attempts, At(m.EnqueuedAt),
-                At(LongHeader(got.BasicProperties.Headers, "dead-at") ?? 0), StringHeader(got.BasicProperties.Headers, "reason") ?? "", m.LastError, m.Source));
+                At(LongHeader(got.BasicProperties.Headers, "dead-at") ?? 0), StringHeader(got.BasicProperties.Headers, "reason") ?? "", m.LastError, m.Source,
+                m.ConcurrencyKey));
         }
 
         await peek.CloseAsync(ct).ConfigureAwait(false);
@@ -240,15 +307,16 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
     {
         WorkQueueOptions.ValidateQueueName(queue);
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        var store = _rabbit.CancelledJobs
-                    ?? throw new NotSupportedException("Cancelling on RabbitMQ needs RabbitMqWorkQueueOptions.CancelledJobs, a store all workers share.");
-        await store.MarkAsync(queue, id, reason, ct).ConfigureAwait(false);
+        var store = _rabbit.Control
+                    ?? throw new NotSupportedException("Cancelling on RabbitMQ needs RabbitMqWorkQueueOptions.Control, a store all workers share.");
+        await store.MarkCancelledAsync(queue, id, reason, ct).ConfigureAwait(false);
         // A job this instance holds is dropped now; other holders drop it when they next renew or settle its lease.
         await LockedAsync(async channel =>
         {
             foreach (var (token, lease) in _leases.Where(l => l.Value.Queue == queue && l.Value.Job.Id == id).ToList())
             {
                 _leases.Remove(token);
+                await SettleKeyAsync(lease, c => Circuits.Settled(c, token), ct).ConfigureAwait(false);
                 if (ReferenceEquals(lease.Channel, channel))
                     await channel.BasicAckAsync(lease.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
             }
@@ -288,7 +356,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         var pending = new List<PendingJob>();
         PendingJob Row(Message m, PendingState state, long? until)
             => new(queue, m.Id, m.Tenant, m.Key, m.Source, m.Headers, state, m.Attempts, At(m.EnqueuedAt), until is { } u ? At(u) : null, m.LastError,
-                Encoding.UTF8.GetByteCount(m.Body));
+                Encoding.UTF8.GetByteCount(m.Body), m.ConcurrencyKey, RunTime(m.MaxRunMs));
 
         // Waiting jobs: take each, publish a copy (so the attempt count is not touched by a redelivery), then acknowledge it.
         await using (var main = await connection.CreateChannelAsync(Confirmed, ct).ConfigureAwait(false))
@@ -330,6 +398,21 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         return pending.OrderBy(p => p.EnqueuedAt).ToList();
     }
 
+    /// <summary>Running counts and circuits come from the shared store; waiting counts are not known without reading the queue (0).</summary>
+    public async Task<IReadOnlyList<ConcurrencyKeyState>> ConcurrencyKeysAsync(string queue, CancellationToken ct = default)
+    {
+        WorkQueueOptions.ValidateQueueName(queue);
+        if (_rabbit.Control is not { } control)
+            return [];
+        var now = Now;
+        return (await control.KeysAsync(queue, ct).ConfigureAwait(false)).Select(k =>
+        {
+            var state = Circuits.State(k.Circuit, now, _options);
+            return new ConcurrencyKeyState(queue, k.Key, k.Running, 0, _options.LimitFor(k.Key), state,
+                state == CircuitState.Open ? At(k.Circuit!.OpenUntilMs) : null, k.Circuit?.Failures ?? 0);
+        }).ToList();
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _stopping.CancelAsync().ConfigureAwait(false);
@@ -348,8 +431,19 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
 
     private long Now => _time.GetUtcNow().ToUnixTimeMilliseconds();
 
+    private TimeSpan? RunTime(long? ms) => ms is { } m ? TimeSpan.FromMilliseconds(m) : _options.DefaultMaxRunTime;
+
     private async Task<bool> IsCancelledAsync(string queue, string id, CancellationToken ct)
-        => _rabbit.CancelledJobs is { } store && await store.IsCancelledAsync(queue, id, ct).ConfigureAwait(false);
+        => _rabbit.Control is { } store && await store.IsCancelledAsync(queue, id, ct).ConfigureAwait(false);
+
+    /// <summary>Frees the lease's concurrency slot and updates its key's circuit.</summary>
+    private async Task SettleKeyAsync(Lease lease, Func<CircuitRecord?, CircuitRecord?> circuit, CancellationToken ct)
+    {
+        if (lease.Job.ConcurrencyKey is not { } key || _rabbit.Control is not { } control)
+            return;
+        await control.ReleaseSlotAsync(lease.Queue, key, lease.Token, ct).ConfigureAwait(false);
+        await control.UpdateCircuitAsync(lease.Queue, key, circuit, ct).ConfigureAwait(false);
+    }
 
     /// <summary>The wait queues that exist for <paramref name="queue"/> (any worker may have made them).</summary>
     private async Task<List<string>> WaitQueuesAsync(string queue, CancellationToken ct)
@@ -424,6 +518,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                 // Cancelled while this worker held it: drop it, and tell the worker it lost the job.
                 _leases.Remove(job.LeaseToken);
                 await channel.BasicAckAsync(lease.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+                await SettleKeyAsync(lease, c => Circuits.Settled(c, lease.Token), ct).ConfigureAwait(false);
                 return false;
             }
             await act(channel, lease).ConfigureAwait(false);
@@ -440,6 +535,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         foreach (var (token, lease) in _leases.Where(l => l.Value.Until <= now).ToList())
         {
             _leases.Remove(token);
+            await SettleKeyAsync(lease, c => Circuits.Settled(c, token), ct).ConfigureAwait(false);
             if (!ReferenceEquals(lease.Channel, channel))
                 continue; // that channel is gone, and the broker already gave its deliveries back
             if (!await IsCancelledAsync(lease.Queue, lease.Job.Id, ct).ConfigureAwait(false))
@@ -478,6 +574,8 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         if (m.Key is not null) headers[Prefix + "key"] = m.Key;
         if (m.LastError is not null) headers[Prefix + "last-error"] = m.LastError;
         if (m.Source is not null) headers[Prefix + "source"] = m.Source;
+        if (m.ConcurrencyKey is not null) headers[Prefix + "conc"] = m.ConcurrencyKey;
+        if (m.MaxRunMs is not null) headers[Prefix + "max-run"] = m.MaxRunMs.Value;
         foreach (var (name, value) in m.Headers) headers[Prefix + "h-" + name] = value;
         foreach (var (name, value) in extra ?? []) headers[name] = value;
         var properties = new BasicProperties { MessageId = m.Id, Persistent = true, ContentType = "application/octet-stream", Headers = headers };
@@ -505,7 +603,9 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             LongHeader(h, "enqueued") ?? 0,
             LongHeader(h, "not-before") ?? 0,
             StringHeader(h, "last-error"),
-            StringHeader(h, "source"));
+            StringHeader(h, "source"),
+            StringHeader(h, "conc"),
+            LongHeader(h, "max-run"));
     }
 
     private static string? StringHeader(IDictionary<string, object?>? headers, string name)
@@ -524,7 +624,9 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             return;
         var quorum = new Dictionary<string, object?> { ["x-queue-type"] = "quorum" };
         await channel.QueueDeclareAsync(Name(queue), durable: true, exclusive: false, autoDelete: false, arguments: quorum, cancellationToken: ct).ConfigureAwait(false);
-        await channel.QueueDeclareAsync(DeadName(queue), durable: true, exclusive: false, autoDelete: false, arguments: quorum, cancellationToken: ct).ConfigureAwait(false);
+        // Dead letters expire after the retention period; the broker drops them (unlike the other queues, nothing is audited).
+        var dead = new Dictionary<string, object?>(quorum) { ["x-message-ttl"] = (long)_options.DeadLetterRetentionOrDefault.TotalMilliseconds };
+        await channel.QueueDeclareAsync(DeadName(queue), durable: true, exclusive: false, autoDelete: false, arguments: dead, cancellationToken: ct).ConfigureAwait(false);
     }
 
     private async Task DeclareWaitAsync(IChannel channel, string queue, long seconds, CancellationToken ct)
@@ -606,10 +708,11 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
 
     private sealed record Message(
         string Id, string Tenant, string Body, string? Key, IReadOnlyDictionary<string, string> Headers, int Attempts, long EnqueuedAt, long NotBefore,
-        string? LastError, string? Source);
+        string? LastError, string? Source, string? ConcurrencyKey = null, long? MaxRunMs = null);
 
-    private sealed class Lease(string queue, Message job, ulong deliveryTag, IChannel channel, long leasedAt, long until)
+    private sealed class Lease(string queue, Message job, ulong deliveryTag, IChannel channel, long leasedAt, long until, string token)
     {
+        public string Token { get; } = token;
         public string Queue { get; } = queue;
         public Message Job { get; } = job;
         public ulong DeliveryTag { get; } = deliveryTag;
@@ -622,9 +725,9 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
 /// <param name="QueuePrefix">Put before every RabbitMQ queue name. Default <c>ot.</c>.</param>
 /// <param name="MaxLeaseTotal">The longest a job may stay leased, extensions included. Keep it below the broker's
 /// <c>consumer_timeout</c> (30 minutes by default). Default 25 minutes.</param>
-/// <param name="CancelledJobs">Where cancelled job ids are kept; every worker of a queue must share it. Without it, jobs cannot
-/// be cancelled.</param>
-public sealed record RabbitMqWorkQueueOptions(string QueuePrefix = "ot.", TimeSpan? MaxLeaseTotal = null, ICancelledJobs? CancelledJobs = null)
+/// <param name="Control">Cancelled job ids, concurrency slots and circuits; every worker of a queue must share it. Without it, jobs
+/// cannot be cancelled and jobs with a concurrency key are refused.</param>
+public sealed record RabbitMqWorkQueueOptions(string QueuePrefix = "ot.", TimeSpan? MaxLeaseTotal = null, IQueueControl? Control = null)
 {
     public TimeSpan MaxLeaseTotalOrDefault => MaxLeaseTotal ?? TimeSpan.FromMinutes(25);
 }

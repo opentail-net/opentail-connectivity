@@ -9,6 +9,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly Lock _gate = new();
     private readonly List<Entry> _entries = [];
+    private readonly Dictionary<(string Queue, string Key), CircuitRecord> _circuits = [];
     private long _sequence;
 
     public WorkQueueCapabilities Capabilities { get; } = new(Durable: false, DelayedDelivery: true, LeaseExpiry: true, DeduplicatesKeys: true);
@@ -19,7 +20,7 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         var now = _time.GetUtcNow();
         lock (_gate)
         {
-            _entries.RemoveAll(e => e.State is State.Done or State.Cancelled && e.FinishedAt + _options.KeyRetentionOrDefault <= now);
+            Purge(now);
             if (request.Key is { } key && _entries.FirstOrDefault(e => e.Queue == request.Queue && e.Key == key) is { } existing)
                 return Task.FromResult(new EnqueueResult(existing.Id, Duplicate: true));
             var entry = new Entry(request.Queue, Guid.NewGuid().ToString("N"), request.Tenant, request.Body, request.Key,
@@ -27,6 +28,8 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
             {
                 NotBefore = request.NotBefore ?? now,
                 Source = request.Source,
+                ConcurrencyKey = request.ConcurrencyKey,
+                MaxRunTime = request.MaxRunTime,
             };
             _entries.Add(entry);
             return Task.FromResult(new EnqueueResult(entry.Id, Duplicate: false));
@@ -34,13 +37,23 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
     }
 
     public Task<IReadOnlyList<LeasedJob>> LeaseAsync(string queue, int max, TimeSpan lease, CancellationToken ct = default)
+        => LeaseAsync(queue, max, lease, [], ct);
+
+    public Task<IReadOnlyList<LeasedJob>> LeaseAsync(string queue, int max, TimeSpan lease, IReadOnlyCollection<string> skipConcurrencyKeys,
+        CancellationToken ct = default)
     {
         WorkQueueOptions.ValidateQueueName(queue);
         WorkQueueOptions.ValidateLease(max, lease);
+        ArgumentNullException.ThrowIfNull(skipConcurrencyKeys);
         var now = _time.GetUtcNow();
+        var nowMs = now.ToUnixTimeMilliseconds();
         var leased = new List<LeasedJob>();
         lock (_gate)
         {
+            var running = _entries
+                .Where(e => e.Queue == queue && e.State == State.Leased && e.LeasedUntil > now && e.ConcurrencyKey is not null)
+                .GroupBy(e => e.ConcurrencyKey!)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
             var due = _entries
                 .Where(e => e.Queue == queue && ((e.State == State.Ready && e.NotBefore <= now) || (e.State == State.Leased && e.LeasedUntil <= now)))
                 .OrderBy(e => e.NotBefore).ThenBy(e => e.Sequence)
@@ -49,6 +62,16 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
             {
                 if (leased.Count == max)
                     break;
+                var probe = false;
+                if (e.ConcurrencyKey is { } ck)
+                {
+                    if (skipConcurrencyKeys.Contains(ck) || running.GetValueOrDefault(ck) >= (_options.LimitFor(ck) ?? int.MaxValue))
+                        continue;
+                    (var allowed, probe) = Circuits.MayRelease(_circuits.GetValueOrDefault((queue, ck)), nowMs, _options);
+                    if (!allowed)
+                        continue; // not released: no attempt used
+                }
+
                 if (WorkQueueRules.DeadReason(e.Attempts, e.EnqueuedAt, now, _options) is { } reason)
                 {
                     e.Kill(reason, now);
@@ -57,9 +80,18 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
 
                 e.State = State.Leased;
                 e.Attempts++;
+                e.LeasedAt = now;
                 e.LeasedUntil = now + lease;
                 e.LeaseToken = Guid.NewGuid().ToString("N");
-                leased.Add(new LeasedJob(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, e.Attempts, e.EnqueuedAt, e.LeasedUntil, e.LeaseToken, e.Source));
+                if (e.ConcurrencyKey is { } key)
+                {
+                    running[key] = running.GetValueOrDefault(key) + 1;
+                    if (probe)
+                        _circuits[(queue, key)] = Circuits.ProbeReleased(_circuits[(queue, key)], e.LeaseToken, e.LeasedUntil.ToUnixTimeMilliseconds());
+                }
+
+                leased.Add(new LeasedJob(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, e.Attempts, e.EnqueuedAt, e.LeasedUntil, e.LeaseToken,
+                    e.Source, e.ConcurrencyKey, e.MaxRunTime ?? _options.DefaultMaxRunTime));
             }
         }
 
@@ -71,19 +103,37 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         {
             e.State = State.Done;
             e.FinishedAt = _time.GetUtcNow();
+            if (e.ConcurrencyKey is { } key)
+                _circuits.Remove((e.Queue, key)); // the resource worked
         });
 
     public Task<bool> RetryAsync(LeasedJob job, TimeSpan delay, string? error = null, CancellationToken ct = default)
+        => RetryAsync(job, delay, error, resourceFailure: false, ct);
+
+    public Task<bool> RetryAsync(LeasedJob job, TimeSpan delay, string? error, bool resourceFailure, CancellationToken ct = default)
         => WithLease(job, e =>
         {
+            var now = _time.GetUtcNow();
+            if (e.ConcurrencyKey is { } key)
+            {
+                var circuit = _circuits.GetValueOrDefault((e.Queue, key));
+                var next = resourceFailure ? Circuits.ResourceFailed(circuit, now.ToUnixTimeMilliseconds(), _options) : Circuits.Settled(circuit, job.LeaseToken);
+                if (next is null) _circuits.Remove((e.Queue, key));
+                else _circuits[(e.Queue, key)] = next;
+            }
+
             e.State = State.Ready;
-            e.NotBefore = _time.GetUtcNow() + (delay < TimeSpan.Zero ? TimeSpan.Zero : delay);
+            e.NotBefore = now + (delay < TimeSpan.Zero ? TimeSpan.Zero : delay);
             e.LeaseToken = null;
             e.LastError = error;
         });
 
     public Task<bool> DeadLetterAsync(LeasedJob job, string reason, CancellationToken ct = default)
-        => WithLease(job, e => e.Kill(reason, _time.GetUtcNow()));
+        => WithLease(job, e =>
+        {
+            FreeProbe(e, job.LeaseToken);
+            e.Kill(reason, _time.GetUtcNow());
+        });
 
     public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, CancellationToken ct = default)
     {
@@ -95,11 +145,13 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
     {
         lock (_gate)
         {
+            Purge(_time.GetUtcNow());
             return Task.FromResult<IReadOnlyList<DeadLetter>>(_entries
                 .Where(e => e.Queue == queue && e.State == State.Dead)
                 .OrderBy(e => e.FinishedAt).ThenBy(e => e.Sequence)
                 .Take(max)
-                .Select(e => new DeadLetter(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, e.Attempts, e.EnqueuedAt, e.FinishedAt, e.DeadReason!, e.LastError, e.Source))
+                .Select(e => new DeadLetter(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, e.Attempts, e.EnqueuedAt, e.FinishedAt, e.DeadReason!,
+                    e.LastError, e.Source, e.ConcurrencyKey))
                 .ToList());
         }
     }
@@ -112,7 +164,10 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
             if (_entries.FirstOrDefault(e => e.Queue == queue && e.Id == id && e.State == State.Dead) is not { } e)
                 return Task.FromResult(false);
             _entries.Remove(e);
-            _entries.Add(new Entry(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, now, ++_sequence) { NotBefore = now, Source = e.Source });
+            _entries.Add(new Entry(e.Queue, e.Id, e.Tenant, e.Body, e.Key, e.Headers, now, ++_sequence)
+            {
+                NotBefore = now, Source = e.Source, ConcurrencyKey = e.ConcurrencyKey, MaxRunTime = e.MaxRunTime,
+            });
             return Task.FromResult(true);
         }
     }
@@ -131,6 +186,8 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         {
             if (_entries.FirstOrDefault(e => e.Queue == queue && e.Id == id && e.State is State.Ready or State.Leased) is not { } e)
                 return Task.FromResult(false);
+            if (e.LeaseToken is { } token)
+                FreeProbe(e, token);
             e.State = State.Cancelled;
             e.DeadReason = reason;
             e.FinishedAt = now;
@@ -160,16 +217,57 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
                 .Where(e => e.Queue == queue && e.State is State.Ready or State.Leased)
                 .OrderBy(e => e.EnqueuedAt).ThenBy(e => e.Sequence)
                 .Take(max)
-                .Select(e => new PendingJob(e.Queue, e.Id, e.Tenant, e.Key, e.Source, e.Headers,
-                    e.State == State.Leased && e.LeasedUntil > now ? PendingState.Running : e.NotBefore > now ? PendingState.Delayed : PendingState.Waiting,
-                    e.Attempts, e.EnqueuedAt,
-                    e.State == State.Leased && e.LeasedUntil > now ? e.LeasedUntil : e.NotBefore > now ? e.NotBefore : null,
-                    e.LastError, System.Text.Encoding.UTF8.GetByteCount(e.Body)))
+                .Select(e =>
+                {
+                    var running = e.State == State.Leased && e.LeasedUntil > now;
+                    return new PendingJob(e.Queue, e.Id, e.Tenant, e.Key, e.Source, e.Headers,
+                        running ? PendingState.Running : e.NotBefore > now ? PendingState.Delayed : PendingState.Waiting,
+                        e.Attempts, e.EnqueuedAt, running ? e.LeasedUntil : e.NotBefore > now ? e.NotBefore : null,
+                        e.LastError, System.Text.Encoding.UTF8.GetByteCount(e.Body), e.ConcurrencyKey, e.MaxRunTime ?? _options.DefaultMaxRunTime,
+                        running ? e.LeasedAt : null);
+                })
                 .ToList());
         }
     }
 
+    public Task<IReadOnlyList<ConcurrencyKeyState>> ConcurrencyKeysAsync(string queue, CancellationToken ct = default)
+    {
+        var now = _time.GetUtcNow();
+        var nowMs = now.ToUnixTimeMilliseconds();
+        lock (_gate)
+        {
+            var keys = _entries.Where(e => e.Queue == queue && e.ConcurrencyKey is not null && e.State is State.Ready or State.Leased)
+                .Select(e => e.ConcurrencyKey!)
+                .Concat(_circuits.Keys.Where(k => k.Queue == queue).Select(k => k.Key))
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal);
+            return Task.FromResult<IReadOnlyList<ConcurrencyKeyState>>(keys.Select(k =>
+            {
+                var jobs = _entries.Where(e => e.Queue == queue && e.ConcurrencyKey == k).ToList();
+                var circuit = _circuits.GetValueOrDefault((queue, k));
+                var state = Circuits.State(circuit, nowMs, _options);
+                return new ConcurrencyKeyState(queue, k,
+                    jobs.Count(e => e.State == State.Leased && e.LeasedUntil > now),
+                    jobs.Count(e => e.State == State.Ready || (e.State == State.Leased && e.LeasedUntil <= now)),
+                    _options.LimitFor(k), state, state == CircuitState.Open ? DateTimeOffset.FromUnixTimeMilliseconds(circuit!.OpenUntilMs) : null,
+                    circuit?.Failures ?? 0);
+            }).ToList());
+        }
+    }
+
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    private void FreeProbe(Entry e, string token)
+    {
+        if (e.ConcurrencyKey is { } key && Circuits.Settled(_circuits.GetValueOrDefault((e.Queue, key)), token) is { } settled)
+            _circuits[(e.Queue, key)] = settled;
+    }
+
+    /// <summary>Drops finished jobs past key retention and dead letters past dead-letter retention.</summary>
+    private void Purge(DateTimeOffset now)
+        => _entries.RemoveAll(e =>
+            (e.State is State.Done or State.Cancelled && e.FinishedAt + _options.KeyRetentionOrDefault <= now)
+            || (e.State == State.Dead && e.FinishedAt + _options.DeadLetterRetentionOrDefault <= now));
 
     private Task<bool> WithLease(LeasedJob job, Action<Entry> change)
     {
@@ -200,12 +298,15 @@ public sealed class InMemoryWorkQueue(WorkQueueOptions? options = null, TimeProv
         public State State { get; set; }
         public DateTimeOffset NotBefore { get; set; }
         public int Attempts { get; set; }
+        public DateTimeOffset LeasedAt { get; set; }
         public DateTimeOffset LeasedUntil { get; set; }
         public string? LeaseToken { get; set; }
         public DateTimeOffset FinishedAt { get; set; }
         public string? DeadReason { get; set; }
         public string? LastError { get; set; }
         public string? Source { get; init; }
+        public string? ConcurrencyKey { get; init; }
+        public TimeSpan? MaxRunTime { get; init; }
 
         public void Kill(string reason, DateTimeOffset now)
         {

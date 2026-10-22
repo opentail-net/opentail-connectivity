@@ -116,7 +116,7 @@ public sealed class WorkQueueWorkerTests
         var started = new TaskCompletionSource();
         var events = new ConcurrentQueue<WorkerEvent>();
         using var stop = new CancellationTokenSource();
-        var worker = new WorkQueueWorker(queue, Options(), async (_, ct) =>
+        var worker = new WorkQueueWorker(queue, Options(drain: TimeSpan.Zero), async (_, ct) =>
         {
             started.SetResult();
             await Task.Delay(Timeout.Infinite, ct);
@@ -129,6 +129,137 @@ public sealed class WorkQueueWorkerTests
 
         Assert.Equal("worker stopped", Assert.Single(events, e => e.Kind == WorkerEventKind.Retried).Detail);
         Assert.Equal(2, Assert.Single(await queue.LeaseAsync(Q, 1, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken)).Attempt);
+    }
+
+    [Fact]
+    public async Task A_handler_past_its_maximum_run_time_is_cancelled_and_the_job_retried_as_a_resource_failure()
+    {
+        var queue = new InMemoryWorkQueue();
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "slow", ConcurrencyKey: "db:a"), TestContext.Current.CancellationToken);
+        var calls = 0;
+
+        var events = await RunUntilAsync(queue, Options(retryBase: TimeSpan.FromMilliseconds(50), maxRun: TimeSpan.FromMilliseconds(150)), async (_, ct) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+                await Task.Delay(TimeSpan.FromSeconds(10), ct); // honours the token
+        }, e => e.Any(x => x.Kind == WorkerEventKind.Completed));
+
+        Assert.StartsWith("timed out after", Assert.Single(events, e => e.Kind == WorkerEventKind.TimedOut).Detail);
+        Assert.Equal(2, Assert.Single(events, e => e.Kind == WorkerEventKind.Completed).Attempt);
+        Assert.DoesNotContain(events, e => e.Kind == WorkerEventKind.Zombie);
+    }
+
+    [Fact]
+    public async Task A_handler_that_ignores_cancellation_is_a_zombie_and_its_key_is_not_leased_until_it_ends()
+    {
+        var queue = new InMemoryWorkQueue(new WorkQueueOptions(ConcurrencyLimits: new Dictionary<string, int> { ["db:a"] = 1 }));
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "stubborn", ConcurrencyKey: "db:a"), TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "next", ConcurrencyKey: "db:a"), TestContext.Current.CancellationToken);
+        var calls = 0;
+
+        var events = await RunUntilAsync(queue, Options(concurrency: 2, retryBase: TimeSpan.FromMilliseconds(50), maxRun: TimeSpan.FromMilliseconds(100)),
+            async (job, _) =>
+            {
+                if (job.Body == "stubborn" && Interlocked.Increment(ref calls) == 1)
+                    await Task.Delay(800, CancellationToken.None); // ignores its token
+            },
+            e => e.Count(x => x.Kind == WorkerEventKind.Completed) == 2);
+
+        var zombie = events.FindIndex(e => e.Kind == WorkerEventKind.Zombie && e.Detail != "ended");
+        var ended = events.FindIndex(e => e.Kind == WorkerEventKind.Zombie && e.Detail == "ended");
+        Assert.True(zombie >= 0 && ended > zombie, "no zombie was reported, or it never ended");
+        Assert.All(events.Select((e, i) => (e, i)).Where(x => x.e.Kind == WorkerEventKind.Completed), x => Assert.True(x.i > ended,
+            "a job with the zombie's key ran while the zombie still loaded the resource"));
+    }
+
+    [Fact]
+    public async Task A_resource_failure_counts_towards_the_circuit_and_an_ordinary_one_does_not()
+    {
+        var queue = new InMemoryWorkQueue(new WorkQueueOptions(CircuitFailures: 3));
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "down", ConcurrencyKey: "db:a"), TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "bad", ConcurrencyKey: "db:b"), TestContext.Current.CancellationToken);
+
+        await RunUntilAsync(queue, Options(concurrency: 2), (job, _) => job.Body == "down"
+                ? throw new ResourceUnavailableException("the server refused the connection")
+                : throw new FormatException("not a number"),
+            e => e.Count(x => x.Kind == WorkerEventKind.Retried) == 2);
+
+        var keys = (await queue.ConcurrencyKeysAsync(Q, TestContext.Current.CancellationToken)).ToDictionary(k => k.ConcurrencyKey);
+        Assert.Equal(1, keys["db:a"].Failures);
+        Assert.Equal(0, keys["db:b"].Failures);
+    }
+
+    [Fact]
+    public async Task Stopping_lets_running_handlers_finish_within_the_drain_time()
+    {
+        var queue = new InMemoryWorkQueue();
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "nearly done"), TestContext.Current.CancellationToken);
+        var started = new TaskCompletionSource();
+        var events = new ConcurrentQueue<WorkerEvent>();
+        using var stop = new CancellationTokenSource();
+        var worker = new WorkQueueWorker(queue, Options(drain: TimeSpan.FromSeconds(5)), async (_, ct) =>
+        {
+            started.SetResult();
+            await Task.Delay(300, ct);
+        }, events.Enqueue);
+
+        var run = worker.RunAsync(stop.Token);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await stop.CancelAsync();
+        await run.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.Contains(events, e => e.Kind == WorkerEventKind.Completed);
+        Assert.DoesNotContain(events, e => e.Kind == WorkerEventKind.Retried);
+    }
+
+    [Fact]
+    public async Task Redriving_after_an_outage_releases_the_dead_jobs_through_their_key_limit()
+    {
+        var queue = new InMemoryWorkQueue(new WorkQueueOptions(MaxAttempts: 1, ConcurrencyLimits: new Dictionary<string, int> { ["db:*"] = 2 }));
+        for (var i = 0; i < 6; i++)
+            await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "report " + i, ConcurrencyKey: "db:reports"), TestContext.Current.CancellationToken);
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "other", ConcurrencyKey: "erp:acme"), TestContext.Current.CancellationToken);
+        while ((await queue.LeaseAsync(Q, 10, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken)) is { Count: > 0 } batch)
+            foreach (var j in batch)
+                await queue.RetryAsync(j, TimeSpan.Zero, "connection refused", resourceFailure: false, TestContext.Current.CancellationToken);
+        await queue.LeaseAsync(Q, 10, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken); // out of attempts: all dead now
+        Assert.Equal(7, (await queue.DeadLettersAsync(Q, ct: TestContext.Current.CancellationToken)).Count);
+
+        var filter = new DeadLetterFilter(ConcurrencyKey: "db:*", ReasonContains: "attempts");
+        Assert.Equal(6, await WorkQueueOperations.RedriveMatchingAsync(queue, Q, filter, dryRun: true, TestContext.Current.CancellationToken));
+        Assert.Equal(6, await WorkQueueOperations.RedriveMatchingAsync(queue, Q, filter, ct: TestContext.Current.CancellationToken));
+
+        Assert.Single(await queue.DeadLettersAsync(Q, ct: TestContext.Current.CancellationToken)); // the erp job stays dead
+        Assert.Equal(2, (await queue.LeaseAsync(Q, 10, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken)).Count); // trickles, 2 at a time
+    }
+
+    [Fact]
+    public async Task Health_reports_long_waits_dead_letter_bursts_stuck_jobs_and_open_circuits()
+    {
+        var clock = new ManualClock(DateTimeOffset.UtcNow);
+        var queue = new InMemoryWorkQueue(new WorkQueueOptions(CircuitFailures: 1, DefaultMaxRunTime: TimeSpan.FromMinutes(1)), clock);
+        var ct = TestContext.Current.CancellationToken;
+        Assert.Equal(QueueHealthStatus.Healthy, (await WorkQueueHealth.CheckAsync(queue, Q, time: clock, ct: ct)).Status);
+
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "running"), ct);
+        await queue.LeaseAsync(Q, 1, TimeSpan.FromHours(1), ct);
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "flaky", ConcurrencyKey: "db:a"), ct);
+        await queue.RetryAsync(Assert.Single(await queue.LeaseAsync(Q, 1, TimeSpan.FromHours(1), ct)), TimeSpan.Zero, "down", resourceFailure: true, ct);
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "waiting"), ct);
+        clock.Advance(TimeSpan.FromMinutes(20));
+
+        var health = await WorkQueueHealth.CheckAsync(queue, Q, new WorkQueueHealthThresholds(DeadPerHour: 0), time: clock, ct: ct);
+        Assert.Equal(QueueHealthStatus.Degraded, health.Status);
+        Assert.Equal(1, health.StuckRunning);
+        Assert.True(health.OldestWaiting >= TimeSpan.FromMinutes(20));
+        Assert.Contains(health.Reasons, r => r.Contains("db:a", StringComparison.Ordinal));
+    }
+
+    private sealed class ManualClock(DateTimeOffset start) : TimeProvider
+    {
+        private DateTimeOffset _now = start;
+        public override DateTimeOffset GetUtcNow() => _now;
+        public void Advance(TimeSpan by) => _now += by;
     }
 
     [Theory]
@@ -149,8 +280,10 @@ public sealed class WorkQueueWorkerTests
     public void A_worker_must_serve_a_tenant()
         => Assert.Throws<ArgumentException>(() => new WorkQueueWorker(new InMemoryWorkQueue(), new WorkQueueWorkerOptions(Q, new HashSet<string>()), (_, _) => Task.CompletedTask));
 
-    private static WorkQueueWorkerOptions Options(int concurrency = 1, TimeSpan? lease = null, TimeSpan? retryBase = null)
-        => new(Q, Acme, concurrency, lease ?? TimeSpan.FromMinutes(1), IdleWait: TimeSpan.FromMilliseconds(20), RetryBaseDelay: retryBase);
+    private static WorkQueueWorkerOptions Options(int concurrency = 1, TimeSpan? lease = null, TimeSpan? retryBase = null, TimeSpan? maxRun = null,
+        TimeSpan? drain = null)
+        => new(Q, Acme, concurrency, lease ?? TimeSpan.FromMinutes(1), IdleWait: TimeSpan.FromMilliseconds(20), RetryBaseDelay: retryBase,
+            MaxRunTime: maxRun, ZombieGrace: TimeSpan.FromMilliseconds(100), DrainTime: drain);
 
     /// <summary>Runs a worker until the events satisfy <paramref name="done"/> (or 10 seconds pass), then stops it.</summary>
     private static async Task<List<WorkerEvent>> RunUntilAsync(
@@ -184,6 +317,9 @@ public sealed class WorkQueueWorkerTests
         public Task<bool> CancelAsync(string queue, string id, string reason, CancellationToken ct = default) => inner.CancelAsync(queue, id, reason, ct);
         public Task<bool> RunNowAsync(string queue, string id, CancellationToken ct = default) => inner.RunNowAsync(queue, id, ct);
         public Task<IReadOnlyList<PendingJob>> PendingAsync(string queue, int max = 100, CancellationToken ct = default) => inner.PendingAsync(queue, max, ct);
+        public Task<IReadOnlyList<LeasedJob>> LeaseAsync(string queue, int max, TimeSpan lease, IReadOnlyCollection<string> skip, CancellationToken ct = default) => inner.LeaseAsync(queue, max, lease, skip, ct);
+        public Task<bool> RetryAsync(LeasedJob job, TimeSpan delay, string? error, bool resourceFailure, CancellationToken ct = default) => inner.RetryAsync(job, delay, error, resourceFailure, ct);
+        public Task<IReadOnlyList<ConcurrencyKeyState>> ConcurrencyKeysAsync(string queue, CancellationToken ct = default) => inner.ConcurrencyKeysAsync(queue, ct);
         public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 }
