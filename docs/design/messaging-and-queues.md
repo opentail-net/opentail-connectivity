@@ -114,7 +114,7 @@ IEventSink    publish an event                      (new) tell an outside bus wh
   **Jobs** page of its admin view (user-facing word: *job*, for work items, continuations and queue jobs alike).
 - Not built yet: the scheduler enqueueing jobs, the Host's work items on the queue.
 
-## Next: running jobs safely (designed 2026-10-22, not built)
+## Running jobs safely (designed and built 2026-10-22)
 
 The owner raised two problems from real systems: SSRS reports that deadlock their database when 200 start at once, and jobs that
 hang without anyone noticing. Thinking them through turned up others that usually arrive with them. They are designed here
@@ -213,6 +213,26 @@ faster than a threshold, so an alert fires before someone asks where their repor
 One tenant enqueueing 10,000 jobs holds up everyone behind it, and an urgent report waits behind the nightly batch. The simplest
 answers reuse what is above: a concurrency key per tenant caps one tenant's share, and a separate queue (with its own workers)
 is a priority lane. Weighted fair scheduling inside one queue is not planned.
+
+### Built (2026-10-22)
+
+All of 1 to 5, plus bringing dead jobs back after an outage (owner's request). Connectivity 147a4f0, Host Jobs view after it.
+- **Contract:** `EnqueueRequest.ConcurrencyKey` and `MaxRunTime`; `WorkQueueOptions.ConcurrencyLimits` (exact, `prefix*`,
+  `DefaultConcurrencyLimit`), `DefaultMaxRunTime`, `CircuitFailures` (5), `CircuitCooldown` (1 min, doubling to
+  `CircuitMaxCooldown`, 15 min), `DeadLetterRetention` (30 days); a `LeaseAsync` overload that skips keys; a `RetryAsync`
+  overload with `resourceFailure`; `ConcurrencyKeysAsync`; `JobHeaders` (`type`, `v`). The circuit rules live once, in `Circuits`.
+- **Bringing dead jobs back:** `WorkQueueOperations.RedriveMatchingAsync` with `DeadLetterFilter` (resource, reason, source, died
+  since; dry run counts). The jobs go through their key's limit and circuit, so they trickle back.
+- **Worker:** maximum run time (cancel, stop renewing, give back as a resource failure), zombies (key skipped by that worker until
+  the handler ends; reported), `ResourceUnavailableException` and timeouts, HTTP and socket errors feed the circuit, drain time on
+  stop (10 s).
+- **Health and metrics:** `WorkQueueHealth.CheckAsync` (oldest waiting job, dead letters per hour, stuck jobs, open circuits) and
+  `WorkQueueMetrics` (meter `OpenTail.Connectivity.Queues`, counter `opentail.queue.worker.events`). The Host feeds each registered
+  queue into `/healthz` and shows it on the Jobs page.
+- **RabbitMQ:** `IQueueControl` (in-memory, `SqliteQueueControl`) replaces the cancelled-jobs store and also holds slots (expiring
+  with the lease) and circuits. Jobs over a limit or behind an open circuit wait 4 seconds and are looked at again (at most 20 per
+  lease call). Dead letters expire through the dead queue's TTL (not audited). Waiting counts per key are not known (0).
+- **Conformance:** 33 checks. In-memory and SQLite pass all that apply; RabbitMQ passes its 29 on `rabbitmq:4.1`.
 
 ### Paused, for the record
 

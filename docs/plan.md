@@ -771,12 +771,12 @@ part of it. Plug and play (scheduler, event sources, store, sink, each with a co
   check, graceful stop that hands running jobs back, `WorkerEvent` callback.*
 - [x] **[C]** **[H]** Stopping jobs: queue cancel, run now, pending list, dead-letter delete, job source; the Host's admin
   **Jobs** view over work items, continuations and registered queues. *Built 2026-10-22 (connectivity 285268c, host a3c297f).*
-- [ ] **[C]** Running jobs safely ([design](design/messaging-and-queues.md#next-running-jobs-safely-designed-2026-10-22-not-built),
+- [x] **[C]** **[H]** Running jobs safely ([design](design/messaging-and-queues.md#running-jobs-safely-designed-and-built-2026-10-22),
   in this order): (1) maximum run time, zombie handlers, "running for" and "stuck" on the Jobs page; (2) concurrency keys and
   limits across workers (the SSRS case), `IQueueControl` for RabbitMQ; (3) circuit breaker per key, so an outage does not empty
   the queue into the dead letters; (4) metrics and health thresholds (oldest waiting job, dead letters per hour); (5) job
-  type/version convention, dead-letter retention, drain time on shutdown, one retry layer. *Designed 2026-10-22; owner: design
-  and plan only for now.*
+  type/version convention, dead-letter retention, drain time on shutdown, one retry layer; plus bringing dead jobs back after
+  an outage. *Built 2026-10-22 (connectivity 147a4f0; Host Jobs view: resources, health, stuck, bring back dead jobs).*
 - [ ] **[C]** **[H]** Not now (owner, 2026-10-22): queue pause/resume with resume-at, and Postpone for one job; pausing sources
   waits for triggers.
 - [ ] **[H]** Optional `CallTimeout` for in-process Host modules, matching isolated ones.
