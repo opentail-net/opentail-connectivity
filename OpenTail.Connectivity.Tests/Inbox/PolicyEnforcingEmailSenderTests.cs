@@ -92,9 +92,37 @@ public sealed class PolicyEnforcingEmailSenderTests
             return send(email, ct);
         }
 
-        public Task DeleteAsync(string messageId, CancellationToken ct = default) => Task.CompletedTask;
-        public Task MarkReadAsync(string messageId, bool isRead, CancellationToken ct = default) => Task.CompletedTask;
-        public Task MoveAsync(string messageId, string destinationFolder, CancellationToken ct = default) => Task.CompletedTask;
+        public List<string> Mutations { get; } = [];
+        public Task DeleteAsync(string messageId, CancellationToken ct = default) { Mutations.Add("delete " + messageId); return Task.CompletedTask; }
+        public Task MarkReadAsync(string messageId, bool isRead, CancellationToken ct = default) { Mutations.Add($"read {messageId} {isRead}"); return Task.CompletedTask; }
+        public Task MoveAsync(string messageId, string destinationFolder, CancellationToken ct = default) { Mutations.Add($"move {messageId} {destinationFolder}"); return Task.CompletedTask; }
+    }
+
+    [Fact]
+    public async Task Mailbox_changes_are_denied_by_default_without_a_provider_call()
+    {
+        var inner = new FakeSender((_, _) => Task.FromResult("id"));
+        var sender = new PolicyEnforcingEmailSender(inner, EmailSenderPolicy.Disabled);
+
+        await Assert.ThrowsAsync<EmailSendPolicyException>(() => sender.DeleteAsync("m1"));
+        await Assert.ThrowsAsync<EmailSendPolicyException>(() => sender.MarkReadAsync("m1", true));
+        await Assert.ThrowsAsync<EmailSendPolicyException>(() => sender.MoveAsync("m1", "Archive"));
+
+        Assert.Empty(inner.Mutations);
+    }
+
+    [Fact]
+    public async Task Allowed_mailbox_changes_pass_their_arguments_once()
+    {
+        var inner = new FakeSender((_, _) => Task.FromResult("id"));
+        var sender = new PolicyEnforcingEmailSender(inner,
+            new EmailSenderPolicy { AllowDelete = true, AllowMarkRead = true, AllowMove = true });
+
+        await sender.DeleteAsync("m1");
+        await sender.MarkReadAsync("m2", false);
+        await sender.MoveAsync("m3", "Archive");
+
+        Assert.Equal(["delete m1", "read m2 False", "move m3 Archive"], inner.Mutations);
     }
 
     private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider

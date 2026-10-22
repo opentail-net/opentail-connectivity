@@ -52,4 +52,13 @@ public sealed class EmailSenderPolicy
     /// Default is true to prevent any accidental automated sending.
     /// </summary>
     public bool RequireHumanApproval { get; init; } = true;
+
+    /// <summary>Allows <see cref="IEmailSender.DeleteAsync"/> (Gmail moves the message to Trash). Off by default.</summary>
+    public bool AllowDelete { get; init; } = false;
+
+    /// <summary>Allows <see cref="IEmailSender.MoveAsync"/> (a label or folder change). Off by default.</summary>
+    public bool AllowMove { get; init; } = false;
+
+    /// <summary>Allows <see cref="IEmailSender.MarkReadAsync"/>. Off by default.</summary>
+    public bool AllowMarkRead { get; init; } = false;
 }
