@@ -131,7 +131,7 @@ The package references `Microsoft.Data.Sqlite`, which brings the native SQLite l
 
 **Incremental runs.** `SqliteSourceConnector` is an `IIncrementalSourceConnector` (see [architecture](architecture.md#incremental-runs)):
 with a table, a `ModifiedField` and a sync store in the pipeline options, it reads rows in (modified, id) order, `incrementalBatchSize`
-(500) at a time, with a checkpoint after each batch. The scope is `sqlite:<database file>/<table>`. A resumed run starts at the
+(500) at a time, with a checkpoint after each batch. The scope is `sqlite:<tenant>:<database file>/<table>#<hash of the id and modified fields>`, so configurations that read rows differently never share a cursor (scopes saved before this change are not found: one full run). A resumed run starts at the
 last committed modified value itself, so rows sharing it are read again rather than missed. Rows with a NULL modified value are
 not read incrementally, and a row written later with an older modified value than one already read is missed, so use a column the
 database sets on every write. Deleted rows are not reported.

@@ -151,8 +151,21 @@ public sealed class SqliteIncrementalTests : IDisposable
         {
             await foreach (var _ in connector.GetChangesAsync(null)) { }
         });
-        Assert.StartsWith("sqlite:", connector.SyncScope);
-        Assert.EndsWith("/tickets", connector.SyncScope);
+        Assert.StartsWith("sqlite:acme:", connector.SyncScope);
+        Assert.Contains("/tickets#", connector.SyncScope);
+    }
+
+    [Fact]
+    public void Scopes_differ_by_tenant_and_row_fields_and_stay_stable()
+    {
+        var baseConfig = new SqlConnectorConfig($"Data Source={_db}", "tickets", "id", "subject", ["body"], ModifiedField: "updated");
+        string Scope(SqlConnectorConfig config, string tenant = "acme") => new SqliteSourceConnector(config, tenant).SyncScope;
+
+        Assert.Equal(Scope(baseConfig), Scope(baseConfig));
+        Assert.NotEqual(Scope(baseConfig), Scope(baseConfig, "other"));
+        Assert.NotEqual(Scope(baseConfig), Scope(baseConfig with { IdField = "ticket_no" }));
+        Assert.NotEqual(Scope(baseConfig), Scope(baseConfig with { ModifiedField = "created" }));
+        Assert.DoesNotContain("Password", Scope(baseConfig with { ConnectionString = $"Data Source={_db};Password=secret" }));
     }
 
     [Fact]
