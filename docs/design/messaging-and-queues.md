@@ -114,6 +114,120 @@ IEventSink    publish an event                      (new) tell an outside bus wh
   **Jobs** page of its admin view (user-facing word: *job*, for work items, continuations and queue jobs alike).
 - Not built yet: the scheduler enqueueing jobs, the Host's work items on the queue.
 
+## Next: running jobs safely (designed 2026-10-22, not built)
+
+The owner raised two problems from real systems: SSRS reports that deadlock their database when 200 start at once, and jobs that
+hang without anyone noticing. Thinking them through turned up others that usually arrive with them. They are designed here
+together, because several share one mechanism (the per-key state below), and listed in the order they would be built.
+
+### What exists today, and where it falls short
+
+| Concern | Today | Gap |
+|---|---|---|
+| How many run at once | `WorkQueueWorker.Concurrency`, per worker process | Not global, and not per resource: three workers at 2 each is 6 jobs on one SSRS server |
+| Host tool calls at once | Nothing; policy has rate limits (calls per window) | A rate limit does not stop 200 calls starting in the same second |
+| Crashed worker | Lease expires, job returns (lease + about a second; SQLite notices on the next lease call) | Fine |
+| Hung handler | The worker keeps renewing the lease | Never detected. RabbitMQ's 25-minute lease cap is the only backstop; SQLite has none |
+| Host module calls | Isolated modules time out (`CallTimeout`, 60 s) | In-process modules have no timeout |
+
+### 1. Concurrency keys (the SSRS case)
+
+A job may carry a **concurrency key** naming the resource it loads, for example `ssrs:reports01`. The queue keeps a **limit per
+key** (`ssrs:reports01` → 2, with a default for keys not listed, and "no key" meaning no limit).
+
+- **Releasing.** A lease hands out a job only while fewer than the limit with its key are running, across every worker and
+  process. A job whose key is full is skipped, not waited on: the lease takes the next job with a free key, so 200 waiting
+  reports do not block everything else in the queue. As each report finishes, the next one is released.
+- **Slots belong to leases.** A slot is taken by a lease and freed by complete, retry, dead-letter, cancel or lease expiry. A
+  crashed worker therefore frees its slot when its lease runs out; no slot leaks for good.
+- **Exactness.** SQLite and in-memory check and take the slot in the same transaction as the lease: exact. RabbitMQ cannot; its
+  slots live in the shared store it already uses for cancellation (renamed from `ICancelledJobs` to a small `IQueueControl`:
+  cancelled ids, slots with expiry, later pause flags). Exact as long as every worker shares the store.
+- **Limits are configuration, not code.** `WorkQueueOptions.ConcurrencyLimits` (key or prefix pattern → limit), so an operator
+  can lower `ssrs:*` to 1 during a bad week without a deploy, through the same proposal flow as policy changes when the Host owns
+  it.
+- **On the Jobs page:** per key, running / limit / waiting ("ssrs:reports01: 2 of 2 running, 198 waiting").
+- **Scheduled jobs that must not overlap** (a nightly run still going when the next fires) get the same tool: key
+  `schedule:nightly` with limit 1. No separate overlap feature.
+
+### 2. Maximum run time (stuck jobs)
+
+- `MaxRunTime` per queue, overridable per job (an SSRS report might get 10 minutes). The worker cancels the handler at the
+  deadline **and stops renewing the lease**, so the job comes back even if the handler ignores the cancel. It is recorded as a
+  timeout and counts as an attempt: a report that always hangs ends in the dead letters, not in a loop.
+- **Zombies.** A handler that ignores cancellation keeps hitting the server after its job was handed to someone else, so the
+  real load is above the limit. The worker keeps a timed-out handler's slot *in its own process* until the handler really ends,
+  and leases nothing more for that key meanwhile; it reports `WorkerEvent` "zombie" so an operator can see the handler that will
+  not stop. (Across processes, the lease has already gone; this is the best a library can do without killing threads.)
+- **Jobs page:** a "running for" column, and **stuck** shown for anything past its maximum run time.
+- **Host:** an optional `CallTimeout` for in-process modules too, matching isolated ones.
+- **Remote work is not cancelled.** Cancelling a job, or timing it out, stops *our* handler. A report already executing on the
+  SSRS server may run to the end. Handlers that can cancel the remote side (an execution id they can kill) should do so on the
+  cancellation token; the docs say plainly that the others cannot.
+
+### 3. Circuit breaker per key (an outage must not empty the queue into the dead letters)
+
+Not raised yet, but the usual next incident: the SSRS server goes down for an hour. Every report fails, retries with backoff, uses
+up its 5 attempts and lands in the dead letters: 200 dead jobs to redrive by hand, and a server that comes back to a stampede of
+redrives.
+
+- After N failures in a row for one key (default 5), the key **opens**: no jobs with that key are released for a cool-down
+  (default 1 minute, doubling to 15), and jobs that are waiting **do not use up attempts** meanwhile. Then one job is let through
+  (half-open); success closes the key, failure opens it again.
+- Failures count only when the handler says the resource failed (a timeout, a connection error), not for bad input: handlers
+  throw `PermanentJobFailureException` for that, as now.
+- The **age limit still applies**, so an outage longer than `MaxAge` still dead-letters; the page warns when a key has been open
+  long enough for its oldest job to reach it.
+- Open keys show at the top of the Jobs page with when they open next. This is also the automatic form of "pause" for one
+  resource; a manual pause per key reuses the same state later.
+
+### 4. Seeing it before users do
+
+Most stuck or runaway queues are noticed late because nothing watches them. Metrics per queue and per key, through the
+existing telemetry: waiting count, running count, **age of the oldest waiting job**, dead letters added per hour, timeouts, open
+circuits. The Host's health check reports *degraded* when the oldest waiting job is older than a threshold or dead letters grow
+faster than a threshold, so an alert fires before someone asks where their report went.
+
+### 5. Things that go wrong on deploys and over time
+
+- **Job formats change between versions.** A deploy changes what a job's body means, and the jobs already queued fail
+  forever, or worse, half-work. Convention: every job names its type and version in its headers (`type`, `v`); a handler that
+  does not know a version throws `PermanentJobFailureException`, so old jobs go to the dead letters at once with a clear reason,
+  to be redriven by a handler that can read them.
+- **Retention.** Dead letters are kept until someone acts, and SQLite keeps them in the file. A retention period (default
+  30 days), after which dead letters are deleted and the deletion audited, keeps the file and the page manageable. Finished jobs
+  are already purged after `KeyRetention`.
+- **Retries multiply.** An SSRS client that retries 3 times, inside a job retried 5 times, inside a Host call retried 3 times, is
+  45 attempts on a struggling server. Rule for handlers: retry in one layer only, the queue's; HTTP clients inside handlers do
+  not retry (or retry only connection set-up).
+- **Draining on shutdown.** Stopping a worker already hands running jobs back. A drain time (wait up to N seconds for running
+  handlers to finish before cancelling them) avoids redoing nearly finished reports on every deploy.
+
+### 6. Fairness and priority (later, if needed)
+
+One tenant enqueueing 10,000 jobs holds up everyone behind it, and an urgent report waits behind the nightly batch. The simplest
+answers reuse what is above: a concurrency key per tenant caps one tenant's share, and a separate queue (with its own workers)
+is a priority lane. Weighted fair scheduling inside one queue is not planned.
+
+### Paused, for the record
+
+Discussed and deliberately not built yet (owner, 2026-10-22): pause and resume per queue, with an optional resume-at time so no
+pause is forgotten, and **Postpone** for one job (a new not-before time; no "paused job" state, which would be a job that never
+runs and never dies). Pausing the *source* (a schedule or rule) belongs to the triggers work. The per-key state above is where a
+manual pause per key would live.
+
+### Order and size
+
+1. Maximum run time, zombie tracking, "running for" and "stuck" on the Jobs page: about half a session.
+2. Concurrency keys and limits (with `IQueueControl` for RabbitMQ), shown per key on the Jobs page: about a session.
+3. Circuit breaker per key: about half a session, on top of 2.
+4. Metrics and health thresholds: about half a session.
+5. Deploy and retention items (type/version convention, dead-letter retention, drain time, retry guidance): small, alongside.
+6. Fairness and priority: only when a real case needs more than per-tenant keys and separate queues.
+
+Each comes with conformance checks where the queue is responsible (slots never exceed the limit across workers; a full key does
+not block other keys; an expired lease frees its slot; an open key releases nothing and burns no attempts).
+
 ## Where I pushed back (before the owner's reason above)
 
 - The "synchronous HTTP is fragile" argument fits a mesh of microservices. OpenTail is mostly in-process libraries and an MCP
