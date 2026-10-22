@@ -31,7 +31,7 @@ public sealed class GmailCalendarAdapterTests
             return Json("{}");
         });
         using var service = CreateService(handler);
-        var adapter = new GmailCalendarAdapter(Settings, service);
+        var adapter = new GmailCalendarAdapter(Settings, service, CalendarWritePolicy.AllowAll);
 
         await adapter.RespondToEventAsync("primary", "event-1", "accepted", "I will attend");
 
@@ -52,7 +52,7 @@ public sealed class GmailCalendarAdapterTests
             return Json("{}");
         });
         using var service = CreateService(handler);
-        var adapter = new GmailCalendarAdapter(Settings, service);
+        var adapter = new GmailCalendarAdapter(Settings, service, CalendarWritePolicy.AllowAll);
 
         await Assert.ThrowsAsync<ArgumentException>(() => adapter.RespondToEventAsync("primary", "event-1", "maybe"));
         Assert.Equal(0, requests);
@@ -79,7 +79,7 @@ public sealed class GmailCalendarAdapterTests
             return Json("{}");
         });
         using var service = CreateService(handler);
-        var adapter = new GmailCalendarAdapter(Settings, service);
+        var adapter = new GmailCalendarAdapter(Settings, service, CalendarWritePolicy.AllowAll);
         var updated = new CalendarEvent("event-1", "primary", "New subject", DateTimeOffset.Parse("2026-10-20T09:00:00Z"),
             DateTimeOffset.Parse("2026-10-20T10:00:00Z"), "UTC", null, null, false, false, null, "busy", "normal", "accepted", true, null,
             "me@example.com", [new EventAttendee("guest@example.com", null, "required", "accepted")], [], "tenant");
@@ -112,7 +112,7 @@ public sealed class GmailCalendarAdapterTests
                     : EventsPage(["1", "2"], "two"));
         });
         using var service = CreateService(handler);
-        var adapter = new GmailCalendarAdapter(Settings, service);
+        var adapter = new GmailCalendarAdapter(Settings, service, CalendarWritePolicy.AllowAll);
 
         var events = new List<CalendarEvent>();
         await foreach (var ev in adapter.GetEventsAsync(new CalendarFetchOptions(MaxEvents: 3)))
@@ -139,7 +139,7 @@ public sealed class GmailCalendarAdapterTests
             return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
         });
         using var service = CreateService(handler);
-        var adapter = new GmailCalendarAdapter(Settings, service);
+        var adapter = new GmailCalendarAdapter(Settings, service, CalendarWritePolicy.AllowAll);
 
         var single = await adapter.GetEventAsync("primary", "event-1");
         var listed = Assert.Single(await adapter.GetEventsAsync(new CalendarFetchOptions()).ToListAsync());

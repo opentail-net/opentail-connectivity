@@ -7,16 +7,19 @@ namespace OpenTail.Connectivity.Inbox.Graph;
 public sealed class GraphCalendarAdapter : ICalendarAdapter
 {
     private readonly GraphSettings _settings;
+    private readonly CalendarWritePolicy _writePolicy;
     private GraphServiceClient? _client;
 
-    public GraphCalendarAdapter(GraphSettings settings)
+    /// <param name="writePolicy">Which writes are allowed. Default <see cref="CalendarWritePolicy.Disabled"/>: read-only.</param>
+    public GraphCalendarAdapter(GraphSettings settings, CalendarWritePolicy? writePolicy = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         _settings = settings;
+        _writePolicy = writePolicy ?? CalendarWritePolicy.Disabled;
     }
 
-    internal GraphCalendarAdapter(GraphSettings settings, GraphServiceClient client)
-        : this(settings)
+    internal GraphCalendarAdapter(GraphSettings settings, GraphServiceClient client, CalendarWritePolicy? writePolicy = null)
+        : this(settings, writePolicy)
         => _client = client ?? throw new ArgumentNullException(nameof(client));
 
     public async IAsyncEnumerable<CalendarInfo> ListCalendarsAsync(
@@ -127,6 +130,7 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
 
     public async Task<string> CreateEventAsync(CalendarEvent draft, CancellationToken ct = default)
     {
+        await _writePolicy.EnsureAllowedAsync(new(CalendarWriteKind.Create, draft.CalendarId, null, false), ct);
         var user = GetClient().Users[_settings.UserEmail];
         var created = IsDefault(draft.CalendarId)
             ? await user.Calendar.Events.PostAsync(ToGraphEvent(draft), cancellationToken: ct)
@@ -136,6 +140,7 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
 
     public async Task UpdateEventAsync(CalendarEvent updated, CancellationToken ct = default)
     {
+        await _writePolicy.EnsureAllowedAsync(new(CalendarWriteKind.Update, updated.CalendarId, updated.EventId, false), ct);
         var user = GetClient().Users[_settings.UserEmail];
         if (IsDefault(updated.CalendarId))
             await user.Calendar.Events[updated.EventId].PatchAsync(ToGraphEvent(updated), cancellationToken: ct);
@@ -146,6 +151,7 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
     public async Task DeleteEventAsync(
         string calendarId, string eventId, CancellationToken ct = default)
     {
+        await _writePolicy.EnsureAllowedAsync(new(CalendarWriteKind.Delete, calendarId, eventId, false), ct);
         var user = GetClient().Users[_settings.UserEmail];
         if (IsDefault(calendarId))
             await user.Calendar.Events[eventId].DeleteAsync(cancellationToken: ct);
@@ -158,6 +164,8 @@ public sealed class GraphCalendarAdapter : ICalendarAdapter
         string response, string? comment = null,
         CancellationToken ct = default)
     {
+        // Graph sends the response to the organiser (SendResponse = true).
+        await _writePolicy.EnsureAllowedAsync(new(CalendarWriteKind.Respond, calendarId, eventId, true, response), ct);
         var user = GetClient().Users[_settings.UserEmail];
 
         switch (response.ToLowerInvariant())

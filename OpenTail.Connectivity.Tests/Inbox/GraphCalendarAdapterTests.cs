@@ -137,10 +137,40 @@ public sealed class GraphCalendarAdapterTests
         Assert.Equal(2, handler.Requests.Count);
     }
 
-    private static GraphCalendarAdapter Create(StubGraph handler)
+    private static GraphCalendarAdapter Create(StubGraph handler, CalendarWritePolicy? policy = null)
     {
         var client = new GraphServiceClient(new HttpClient(handler), new AnonymousAuthenticationProvider());
-        return new GraphCalendarAdapter(Settings, client);
+        return new GraphCalendarAdapter(Settings, client, policy ?? CalendarWritePolicy.AllowAll);
+    }
+
+    [Fact]
+    public async Task Writes_are_refused_by_default_before_any_request()
+    {
+        var handler = new StubGraph(_ => "{}");
+        var client = new GraphServiceClient(new HttpClient(handler), new AnonymousAuthenticationProvider());
+        var adapter = new GraphCalendarAdapter(Settings, client);
+        var draft = Sample("");
+
+        await Assert.ThrowsAsync<CalendarWriteDeniedException>(() => adapter.CreateEventAsync(draft));
+        await Assert.ThrowsAsync<CalendarWriteDeniedException>(() => adapter.UpdateEventAsync(draft));
+        await Assert.ThrowsAsync<CalendarWriteDeniedException>(() => adapter.DeleteEventAsync("", "e1"));
+        var respond = await Assert.ThrowsAsync<CalendarWriteDeniedException>(() => adapter.RespondToEventAsync("", "e1", "accepted"));
+
+        Assert.True(respond.Request.SendsExternalResponse);
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task An_allowed_respond_still_needs_approval_when_the_policy_asks()
+    {
+        var handler = new StubGraph(_ => "{}");
+        var asked = new List<CalendarWriteRequest>();
+        var adapter = Create(handler, new CalendarWritePolicy(AllowRespond: true, Approve: (r, _) => { asked.Add(r); return Task.FromResult(false); }));
+
+        await Assert.ThrowsAsync<CalendarWriteDeniedException>(() => adapter.RespondToEventAsync("", "e1", "declined"));
+
+        Assert.Equal(CalendarWriteKind.Respond, Assert.Single(asked).Kind);
+        Assert.Empty(handler.Requests);
     }
 
     [Fact]

@@ -1,7 +1,7 @@
 namespace OpenTail.Connectivity.Files.Inbox;
 
 /// <summary>A wrapper for handing a calendar to automation that must only read.</summary>
-public sealed class ReadOnlyCalendarAdapter : ICalendarAdapter
+public sealed class ReadOnlyCalendarAdapter : ICalendarAdapter, ICalendarReader
 {
     private readonly ICalendarAdapter _inner;
 

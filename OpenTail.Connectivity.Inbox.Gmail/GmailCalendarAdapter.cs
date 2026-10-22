@@ -9,16 +9,19 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
     private readonly GmailSettings _settings;
     private readonly GmailCredentialProvider _credentialProvider;
     private readonly CalendarService? _service;
+    private readonly CalendarWritePolicy _writePolicy;
 
-    public GmailCalendarAdapter(GmailSettings settings, GmailCredentialProvider? credentialProvider = null)
+    /// <param name="writePolicy">Which writes are allowed. Default <see cref="CalendarWritePolicy.Disabled"/>: read-only.</param>
+    public GmailCalendarAdapter(GmailSettings settings, GmailCredentialProvider? credentialProvider = null, CalendarWritePolicy? writePolicy = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         _settings = settings;
         _credentialProvider = credentialProvider ?? new GmailCredentialProvider(settings);
+        _writePolicy = writePolicy ?? CalendarWritePolicy.Disabled;
     }
 
-    internal GmailCalendarAdapter(GmailSettings settings, CalendarService service)
-        : this(settings)
+    internal GmailCalendarAdapter(GmailSettings settings, CalendarService service, CalendarWritePolicy? writePolicy = null)
+        : this(settings, writePolicy: writePolicy)
         => _service = service ?? throw new ArgumentNullException(nameof(service));
 
     public async IAsyncEnumerable<CalendarInfo> ListCalendarsAsync(
@@ -81,6 +84,7 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
 
     public async Task<string> CreateEventAsync(CalendarEvent draft, CancellationToken ct = default)
     {
+        await _writePolicy.EnsureAllowedAsync(new(CalendarWriteKind.Create, draft.CalendarId, null, false), ct);
         var svc = await BuildServiceAsync(ct);
         var ev = ToGoogleEvent(draft);
         var created = await svc.Events
@@ -96,6 +100,7 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
     /// </summary>
     public async Task UpdateEventAsync(CalendarEvent updated, CancellationToken ct = default)
     {
+        await _writePolicy.EnsureAllowedAsync(new(CalendarWriteKind.Update, updated.CalendarId, updated.EventId, false), ct);
         var svc = await BuildServiceAsync(ct);
         await svc.Events
             .Patch(ToGoogleEvent(updated), updated.CalendarId, updated.EventId)
@@ -105,6 +110,7 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
     public async Task DeleteEventAsync(
         string calendarId, string eventId, CancellationToken ct = default)
     {
+        await _writePolicy.EnsureAllowedAsync(new(CalendarWriteKind.Delete, calendarId, eventId, false), ct);
         var svc = await BuildServiceAsync(ct);
         await svc.Events.Delete(calendarId, eventId).ExecuteAsync(ct);
     }
@@ -121,6 +127,8 @@ public sealed class GmailCalendarAdapter : ICalendarAdapter
             "declined" => "declined",
             _ => throw new ArgumentException($"Unknown response type '{response}'", nameof(response))
         };
+        // Changing the user's attendee status is visible to the organiser.
+        await _writePolicy.EnsureAllowedAsync(new(CalendarWriteKind.Respond, calendarId, eventId, true, responseStatus), ct);
 
         var svc = await BuildServiceAsync(ct);
         var ev = await svc.Events.Get(calendarId, eventId).ExecuteAsync(ct);

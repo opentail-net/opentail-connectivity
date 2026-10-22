@@ -9,11 +9,12 @@ guards each one, and what it leaves to you.
 |---|---|---|
 | Fetch mail | `IInboxAdapter` (IMAP, Graph, Gmail) | Read-only contract. `ReadOnlyInboxGuard.AssertReadOnly(type)` fails if an adapter has public methods named like `Send`, `Delete`, `Move`, `Mark` and so on; it checks names only, and only when you call it. IMAP opens folders with `FolderAccess.ReadOnly`. |
 | Send mail, delete, mark read, move | `IEmailSender` (IMAP/SMTP, Graph, Gmail) | `PolicyEnforcingEmailSender` and `EmailSenderPolicy` (below). Delete, mark-read and move **pass through the policy unchecked**. |
-| Create, update, delete, respond to events | `ICalendarAdapter` on Graph and Gmail | **None.** Calling `CreateEventAsync` and the others acts on the real calendar. Only the ICS adapter refuses (`NotSupportedException`). |
+| Create, update, delete, respond to events | `ICalendarAdapter` on Graph and Gmail | `CalendarWritePolicy`, passed to the adapter's constructor, checked before any provider call. The default, `Disabled`, refuses every write (`CalendarWriteDeniedException`). Opt in per kind (`AllowCreate`, `AllowUpdate`, `AllowDelete`, `AllowRespond`) and add `Approve` for a person's sign-off. `Respond` tells the organiser (`SendsExternalResponse`). The ICS adapter refuses all writes (`NotSupportedException`). |
 | Everything else (folders, web, CSV, `.eml`, SQL, social) | Source connectors | Read only. |
 
-If you wire an agent or other automation to these types, expose only what it needs. `ReadOnlyCalendarAdapter` wraps any adapter
-and refuses every write; use it or the ICS adapter rather than the Graph or Gmail adapter.
+If you wire an agent or other automation to these types, expose only what it needs: hand it an `ICalendarReader` (the read half
+of `ICalendarAdapter`), keep the write policy `Disabled`, or wrap the adapter in `ReadOnlyCalendarAdapter`, which refuses every
+write. When an agent may write, allow only the kinds it needs and route `Delete` and `Respond` through `Approve`.
 
 ## Email send policy
 
