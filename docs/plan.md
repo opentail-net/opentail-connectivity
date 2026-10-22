@@ -885,7 +885,8 @@ except where noted. Breaking changes for 0.3.0 are marked **B**.
   credentials from the owner. Until then, everything that talks to a provider stays labelled Tested.
 - [ ] **[H]** The Host's Email and Calendar modules must adopt the breaking changes above (write policies, commit mode) when
   they move to Connectivity 0.3.0.
-- [ ] **[C]** Conformance suite for the Drive connectors and `ObjectStorageConnector` (not yet covered).
+- [x] **[C]** Conformance suite for the Drive connectors and `ObjectStorageConnector`. *Done 2026-10-22; it found that both
+  Drive connectors ignored cancellation inside a page (fixed).*
 - [ ] **[C]** **[H]** Split `IEmailSender` into send and manage, in step with the Host.
 
 ## Background, no action planned

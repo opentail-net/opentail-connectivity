@@ -105,8 +105,11 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
                             + (pageToken is null ? "" : "&pageToken=" + Uri.EscapeDataString(pageToken));
                 var page = await GetAsync(query, cancellationToken).ConfigureAwait(false);
                 foreach (var file in page["files"]?.AsArray() ?? [])
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (file is not null && await MapFileAsync(file, cancellationToken).ConfigureAwait(false) is { } change)
                         yield return change;
+                }
 
                 pageToken = page["nextPageToken"]?.GetValue<string>();
                 if (pageToken is null)
@@ -137,6 +140,7 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
 
             foreach (var change in page!["changes"]?.AsArray() ?? [])
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (change is null || change["changeType"]?.GetValue<string>() is { } type && type != "file")
                     continue;
                 var fileId = change["fileId"]?.GetValue<string>();

@@ -289,6 +289,55 @@ public sealed class GraphDriveConnectorTests
     private static HttpResponseMessage Json(string body)
         => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 
+    // ---- conformance
+
+    [Fact]
+    public async Task Passes_the_connector_conformance_suite() =>
+        await OpenTail.Connectivity.Files.Conformance.SourceConnectorConformance.RunAsync(new ConformanceFixture());
+
+    /// <summary>A drive of three files on a stubbed Graph: the delta link replays nothing, a removed file is gone (404).</summary>
+    private sealed class ConformanceFixture : OpenTail.Connectivity.Files.Conformance.IConnectorFixture
+    {
+        private readonly HashSet<string> _files = new(StringComparer.Ordinal) { "a", "b", "c" };
+
+        public IReadOnlyList<string> SecretsGiven => [];
+
+        public ISourceConnector Create() => Build(empty: false);
+
+        public ISourceConnector CreateEmpty() => Build(empty: true);
+
+        public Task RemoveOneItemAsync(string sourceRef)
+        {
+            _files.Remove(sourceRef[(sourceRef.IndexOf(':') + 1)..]);
+            return Task.CompletedTask;
+        }
+
+        private GraphDriveConnector Build(bool empty)
+        {
+            var graph = new StubHttp(req =>
+            {
+                var path = req.RequestUri!.AbsolutePath;
+                if (path.Contains("/items/", StringComparison.Ordinal))
+                {
+                    var id = path[(path.LastIndexOf('/') + 1)..];
+                    return _files.Contains(id)
+                        ? Json($$"""{ "id": "{{id}}", "@microsoft.graph.downloadUrl": "https://files.example/{{id}}" }""")
+                        : new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("""{"error":{"code":"itemNotFound"}}""") };
+                }
+                var files = empty || req.RequestUri.Query.Contains("token=", StringComparison.Ordinal)
+                    ? ""
+                    : string.Join(",", _files.Order(StringComparer.Ordinal).Select(id =>
+                        $$"""{ "id": "{{id}}", "name": "{{id}}.txt", "size": 40, "lastModifiedDateTime": "2026-10-20T09:00:00Z", "file": {} }"""));
+                return Json($$"""{ "value": [{{files}}], "@odata.deltaLink": "{{Base}}drives/drv/root/delta?token=T1" }""");
+            });
+            var download = new StubHttp(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent("A file body that is long enough for validation."u8.ToArray()),
+            });
+            return Connector(graph, download: download);
+        }
+    }
+
     private sealed class StubHttp(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         public List<string> Requests { get; } = [];

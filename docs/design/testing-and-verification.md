@@ -9,7 +9,7 @@ The conformance suite covers the connectors listed below (WP7), and all packages
 | Feature | Status | Notes |
 |---|---|---|
 | Conformance suite | ✅ Implemented | `SourceConnectorConformance` in `OpenTail.Connectivity.Files/Conformance/` |
-| Conformance coverage | 🟡 Partial | Folder, CSV, SQLite, EML, Mbox, RSS, SiteCrawl and the four social connectors (fixtures in `OpenTail.Connectivity.Tests/Conformance/`). Not yet run through the suite: the Drive connectors (Graph, Google), `ObjectStorageConnector` and its adapters, and the inbox and calendar adapters, which have their own unit tests. |
+| Conformance coverage | ✅ Source connectors | Folder, CSV, SQLite, EML, Mbox, RSS, SiteCrawl, the four social connectors and `ObjectStorageConnector` (over the in-memory client; check 8 skipped because its watermark overlap re-reads recent objects on purpose) in `OpenTail.Connectivity.Tests/Conformance/`, and the Graph and Google Drive connectors over stubbed APIs (in their own test classes). Not run through the suite: the inbox and calendar adapters, which are not source connectors and have their own unit tests. |
 | Verification labels | ✅ Implemented | All packages labeled in README and package descriptions |
 | Verified packages | ✅ 8 packages | Files, Csv, Email, Sql, Memory, Memory.Sqlite, Memory.VectorData, Calendar.Ics |
 | Tested packages | ✅ 16 packages | Web, Social, Inbox.Imap, Inbox.Graph, Inbox.Gmail, Drive.Graph, Drive.Google, RichText, Storage and its seven adapters (S3, AzureBlob, Sftp, Dropbox, Gcs, WebDav, Box) |
@@ -48,7 +48,7 @@ passes the suite through a fixture implementing `IConnectorFixture`:
 8. ✅ For incremental connectors: a second run from a saved checkpoint returns only changes, resuming from an earlier checkpoint
    repeats the same items, and no change is skipped (see [sync-and-deletions.md](sync-and-deletions.md)).
 
-**Coverage:** Folder, CSV, SQLite, EML, Mbox, RSS, SiteCrawl and the four social connectors (fixtures in `OpenTail.Connectivity.Tests/Conformance/`). Not yet run through the suite: the Drive connectors (Graph, Google), `ObjectStorageConnector` and its adapters, and the inbox and calendar adapters, which have their own unit tests.
+**Coverage:** Folder, CSV, SQLite, EML, Mbox, RSS, SiteCrawl, the four social connectors and `ObjectStorageConnector` (over the in-memory client; check 8 skipped because its watermark overlap re-reads recent objects on purpose) in `OpenTail.Connectivity.Tests/Conformance/`, and the Graph and Google Drive connectors over stubbed APIs (in their own test classes). Not run through the suite: the inbox and calendar adapters, which are not source connectors and have their own unit tests.
 
 **Location:** Conformance fixtures live in `OpenTail.Connectivity.Tests/Conformance/`.
 

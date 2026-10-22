@@ -129,6 +129,7 @@ public sealed class GraphDriveConnector : IIncrementalSourceConnector
             var page = JsonNode.Parse(await response.Message.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false))!;
             foreach (var node in page["value"]?.AsArray() ?? [])
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (node is null) continue;
                 if (Map(node, driveId) is { } change)
                     yield return change;

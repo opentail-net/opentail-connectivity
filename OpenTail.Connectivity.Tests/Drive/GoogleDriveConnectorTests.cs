@@ -325,6 +325,47 @@ public sealed class GoogleDriveConnectorTests
         => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
 
     /// <summary>Answers token info and the drive's name itself; everything else goes to the test's function.</summary>
+    // ---- conformance
+
+    [Fact]
+    public async Task Passes_the_connector_conformance_suite() =>
+        await OpenTail.Connectivity.Files.Conformance.SourceConnectorConformance.RunAsync(new ConformanceFixture());
+
+    /// <summary>A shared drive of three files on a stubbed API: the changes feed reports nothing new, a removed file is a 404.</summary>
+    private sealed class ConformanceFixture : OpenTail.Connectivity.Files.Conformance.IConnectorFixture
+    {
+        private readonly HashSet<string> _files = new(StringComparer.Ordinal) { "a", "b", "c" };
+
+        public IReadOnlyList<string> SecretsGiven => [];
+
+        public ISourceConnector Create() => Build(empty: false);
+
+        public ISourceConnector CreateEmpty() => Build(empty: true);
+
+        public Task RemoveOneItemAsync(string sourceRef)
+        {
+            _files.Remove(sourceRef);
+            return Task.CompletedTask;
+        }
+
+        private GoogleDriveConnector Build(bool empty) => Shared(new StubApi(req =>
+        {
+            var u = Url(req);
+            if (u.Contains("changes/startPageToken")) return Json("""{"startPageToken":"S1"}""");
+            if (u.Contains("/changes?")) return Json("""{"changes":[],"newStartPageToken":"S1"}""");
+            if (u.Contains("/files?"))
+            {
+                var files = empty ? "" : string.Join(",", _files.Order(StringComparer.Ordinal).Select(id =>
+                    $$"""{"id":"{{id}}","name":"{{id}}.txt","mimeType":"text/plain","size":"40","modifiedTime":"2026-10-20T09:00:00Z","driveId":"sd1"}"""));
+                return Json($$"""{"files":[{{files}}]}""");
+            }
+            var id = req.RequestUri!.AbsolutePath[(req.RequestUri.AbsolutePath.LastIndexOf('/') + 1)..];
+            if (!_files.Contains(id)) return new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("{}") };
+            if (FileMeta(req) is { } meta) return meta;
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("A file body that is long enough for validation.") };
+        }));
+    }
+
     private sealed class StubApi(Func<HttpRequestMessage, HttpResponseMessage?> respond, string tokenInfo = ReadOnly) : HttpMessageHandler
     {
         public List<string> Requests { get; } = [];
