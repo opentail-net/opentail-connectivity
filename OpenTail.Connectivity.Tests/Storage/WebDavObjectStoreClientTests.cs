@@ -258,6 +258,39 @@ public sealed class WebDavObjectStoreClientTests
         Assert.EndsWith("(truncated)", error.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Create_refuses_a_handler_that_follows_redirects()
+    {
+        Assert.Throws<ArgumentException>(() => WebDavObjectStoreClient.Create(new Uri(Root), "alice", "app-pass", new HttpClientHandler()));
+        Assert.Throws<ArgumentException>(() => WebDavObjectStoreClient.Create(new Uri(Root), "alice", "app-pass",
+            new PassThrough { InnerHandler = new SocketsHttpHandler() }));
+        using var ok = WebDavObjectStoreClient.Create(new Uri(Root), "alice", "app-pass", new SocketsHttpHandler { AllowAutoRedirect = false });
+    }
+
+    [Fact]
+    public async Task A_supplied_client_that_followed_a_redirect_itself_is_refused()
+    {
+        using var http = new HttpClient(new AutoRedirectingHandler(new Uri(Root + "elsewhere/")));
+        using var client = Client(http);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => client.ListAsync("", null, 10));
+
+        Assert.Contains("followed a redirect", error.Message, StringComparison.Ordinal);
+    }
+
+    private sealed class PassThrough : DelegatingHandler;
+
+    // Answers as a handler that followed a redirect on its own: the response's request is for another URI.
+    private sealed class AutoRedirectingHandler(Uri landedOn) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = Xml(Multi());
+            response.RequestMessage = new HttpRequestMessage(request.Method, landedOn);
+            return Task.FromResult(response);
+        }
+    }
+
     // A stream that cannot report its length, so HttpContent has no Content-Length.
     private sealed class UnknownLengthStream(byte[] data) : MemoryStream(data)
     {

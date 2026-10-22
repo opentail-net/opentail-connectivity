@@ -153,15 +153,15 @@ its key-based resume token is not a snapshot across process restarts. Discovery 
 set `maxSnapshotItems` to raise or lower the cap. Exceeding the cap throws `InvalidOperationException`.
 Each PROPFIND listing body is capped at 16 MB (`maxListingResponseBytes`) before XML parsing, whatever `Content-Length`
 says; a larger body throws `InvalidDataException`. Error bodies are read only up to 1 KB for the exception message.
-When supplying an `HttpClient`, configure its handler with automatic redirects disabled so the adapter can validate each
-redirect before sending credentials to the next request:
+To supply your own transport, pass a handler to `WebDavObjectStoreClient.Create`: it refuses a handler (or a
+`DelegatingHandler` chain ending in one) with automatic redirects on, so the adapter validates each redirect itself before
+sending credentials. A supplied `HttpClient` cannot be inspected; if it follows a redirect on its own the response is refused,
+but that redirected request has already gone out.
 
 ```csharp
-var handler = new HttpClientHandler { AllowAutoRedirect = false };
-var http = new HttpClient(handler);
-var webDav = new WebDavObjectStoreClient(
+var webDav = WebDavObjectStoreClient.Create(
     new Uri("https://cloud.example/remote.php/dav/files/alice/Documents/"),
-    "alice", applicationPassword, http);
+    "alice", applicationPassword, new SocketsHttpHandler { AllowAutoRedirect = false });
 var source = new ObjectStorageConnector(webDav, tenantContext);
 ```
 

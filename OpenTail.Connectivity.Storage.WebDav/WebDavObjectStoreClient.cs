@@ -10,8 +10,9 @@ namespace OpenTail.Connectivity.Storage.WebDav;
 /// <summary>Read-only access to a WebDAV collection using Depth 1 PROPFIND and bounded GET requests.</summary>
 /// <remarks>
 /// The root is a collection URL ending at the allowed namespace. Credentials are sent only to that origin and paths below
-/// that root, including when redirects are followed. If a caller supplies an <see cref="HttpClient"/>, its handler must have
-/// automatic redirects disabled so this class can validate each destination before resending credentials. WebDAV has no
+/// that root, including when redirects are followed. Prefer <see cref="Create"/> with an <see cref="HttpMessageHandler"/>: it
+/// refuses a handler that follows redirects itself. A supplied <see cref="HttpClient"/> cannot be inspected; if its handler
+/// follows a redirect, the response is refused (fail closed), but the redirected request has already been sent. WebDAV has no
 /// snapshot cursor. One in-progress sorted listing is cached so subsequent pages do not traverse the tree again; a token
 /// resumed after process restart falls back to a new traversal from its last key. Discovery is capped at 100,000 items by
 /// default; set <c>maxSnapshotItems</c> to adjust the limit.
@@ -27,7 +28,7 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
     private readonly string _rootPath;
     private readonly string _authorization;
     private readonly HttpClient _http;
-    private readonly bool _ownsHttp;
+    private bool _ownsHttp;
     private readonly int _maxSnapshotItems;
     private readonly int _maxListingResponseBytes;
     private readonly object _snapshotLock = new();
@@ -61,6 +62,32 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
         _maxSnapshotItems = maxSnapshotItems;
         _maxListingResponseBytes = maxListingResponseBytes;
         Container = _root.Authority + _root.AbsolutePath.TrimEnd('/');
+    }
+
+    /// <summary>
+    /// Builds a client on <paramref name="handler"/>, refusing a handler that follows redirects itself (an
+    /// <see cref="HttpClientHandler"/> or <see cref="SocketsHttpHandler"/>, also behind <see cref="DelegatingHandler"/>s, with
+    /// <c>AllowAutoRedirect</c> on). The client owns the handler.
+    /// </summary>
+    public static WebDavObjectStoreClient Create(
+        Uri root,
+        string username,
+        string password,
+        HttpMessageHandler handler,
+        bool allowInsecureHttp = false,
+        int maxSnapshotItems = DefaultMaxSnapshotItems,
+        int maxListingResponseBytes = DefaultMaxListingResponseBytes)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        for (var current = handler; current is not null; current = (current as DelegatingHandler)?.InnerHandler)
+        {
+            if (current is HttpClientHandler { AllowAutoRedirect: true } or SocketsHttpHandler { AllowAutoRedirect: true })
+                throw new ArgumentException("The WebDAV handler must have AllowAutoRedirect = false so each redirect can be checked.", nameof(handler));
+        }
+        var client = new WebDavObjectStoreClient(root, username, password, new HttpClient(handler, disposeHandler: true),
+            allowInsecureHttp, maxSnapshotItems, maxListingResponseBytes);
+        client._ownsHttp = true;
+        return client;
     }
 
     public string Scheme => "webdav";
@@ -282,6 +309,9 @@ public sealed class WebDavObjectStoreClient : IObjectStoreClient, IDisposable
             var effectiveUri = response.RequestMessage?.RequestUri ?? uri;
             try
             {
+                if (effectiveUri != uri)
+                    throw new InvalidOperationException(
+                        "The supplied HttpClient followed a redirect itself. Disable automatic redirects on its handler, or use WebDavObjectStoreClient.Create with a handler.");
                 ValidateUri(effectiveUri);
             }
             catch
