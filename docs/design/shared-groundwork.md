@@ -75,10 +75,19 @@ The pipeline copies metadata into `NormalisedDocument.Metadata` under the `sourc
 | `source.acl.visibility` | `private`, `restricted`, `organisation`, `public`, or `unknown`. |
 | `source.acl.principals` | JSON array of user, group or role identifiers allowed to read the item. |
 | `source.acl.captured` | `true` if the connector actually read permissions from the source. |
+| `source.acl.capturedAt` | UTC time the permissions were read. `DocumentAccessPolicy` denies a document whose capture is older than the caller's limit (`DeniedAclStale`). |
+| `source.acl.truncated` | `true` when the principal list was cut at its cap (500 by default); visibility is then `restricted` and `DocumentAccessPolicy` denies (`DeniedAclTruncated`). |
+
+**What exists and what does not.** Built: these keys travel on every document, `SourceAcl.Captured` / `NotCaptured` write them,
+and `DocumentAccessPolicy.Evaluate` is a fail-closed decision helper for consumers. Not built: no connector yet captures a
+complete ACL from its provider, and nothing in this repository enforces permissions at query time; that is the consumer's job,
+and the remaining work is staged in [source-permissions-and-isolation.md](source-permissions-and-isolation.md). ACL metadata
+support is not permission-aware shared search.
 
 **Rules that matter.**
-- **Absence is not permission.** If `source.acl.captured` is missing or `false`, consumers must treat the item as restricted. State
-  this in the docs and in `IngestionReport` warnings.
+- **Absence is not permission.** If `source.acl.captured` is missing or `false`, consumers must treat the item as restricted
+  (`DocumentAccessPolicy` returns `DeniedAclNotCaptured`). The pipeline does not add an `IngestionReport` warning per item
+  without a captured ACL; that would flag almost every document today.
 - Permissions describe the source at fetch time. Re-ingest to refresh them. A revoked permission is only visible on the next run.
 - Identifiers are the source system's own (an object id or email address) and are not mapped to the consumer's users. Mapping is
   the consumer's job.

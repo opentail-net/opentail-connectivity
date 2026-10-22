@@ -1,7 +1,8 @@
 # Design: object storage (S3, Azure Blob, Google Cloud Storage)
 
-**Status:** `ObjectStorageConnector` and the S3, Azure Blob, GCS, SFTP and Dropbox adapters are built and have stubbed-service or
-unit-test coverage. They have not all been exercised against live cloud services. Vendor details that matter are listed under
+**Status:** `ObjectStorageConnector` and the S3, Azure Blob, GCS, SFTP, Dropbox, WebDAV and Box adapters are built, with
+stubbed-service or unit tests (label: Tested). None has been exercised against a live service; automated tests and live
+verification are kept apart. The current inventory and plan is [storage-locations.md](../storage-locations.md). Vendor details that matter are listed under
 [vendor facts to verify](#vendor-facts-to-verify).
 Depends on [shared-groundwork.md](shared-groundwork.md) (stable IDs, file filters) and
 [sync-and-deletions.md](sync-and-deletions.md) (change stream, checkpoints).
@@ -28,9 +29,12 @@ over that cloud's SDK, so consumers take only the SDK they use and the logic is 
 | `OpenTail.Connectivity.Storage.S3` | `S3ObjectStoreClient` | `AWSSDK.S3` (new). Also serves S3-compatible stores (MinIO, R2 and others) through the SDK's service URL. |
 | `OpenTail.Connectivity.Storage.AzureBlob` | `AzureBlobObjectStoreClient` | `Azure.Storage.Blobs` (new); `Azure.Identity` is already pinned |
 | `OpenTail.Connectivity.Storage.Gcs` | `GcsObjectStoreClient` | `Google.Cloud.Storage.V1` (new) |
+| `OpenTail.Connectivity.Storage.Sftp` | `SftpObjectStoreClient` | `SSH.NET` |
+| `OpenTail.Connectivity.Storage.Dropbox` | `DropboxObjectStoreClient` | HTTP API, no SDK |
+| `OpenTail.Connectivity.Storage.WebDav` | `WebDavObjectStoreClient` | HTTP, no SDK |
+| `OpenTail.Connectivity.Storage.Box` | `BoxObjectStoreClient` | HTTP API, no SDK |
 
-Start with the shared package and S3; add the others on demand. Each new project and package version changes build files, which
-needs the maintainers' agreement first.
+All seven adapters are built; see [storage-locations.md](../storage-locations.md) for what each does and what remains.
 
 ## Public shape (sketch)
 

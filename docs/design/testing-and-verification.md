@@ -1,7 +1,7 @@
 # Design: testing and verification
 
 **Status:** implemented (plan section 26). This was a proposal; the conformance suite and verification labels are now established. 
-All connectors pass the conformance suite (WP7), and all packages carry verification labels (WP8). See 
+The conformance suite covers the connectors listed below (WP7), and all packages carry verification labels (WP8). See 
 [docs/done/ingestion-hardening.md](../done/ingestion-hardening.md) for implementation details.
 
 ## Implementation Status Summary
@@ -9,15 +9,15 @@ All connectors pass the conformance suite (WP7), and all packages carry verifica
 | Feature | Status | Notes |
 |---|---|---|
 | Conformance suite | ✅ Implemented | `SourceConnectorConformance` in `OpenTail.Connectivity.Files/Conformance/` |
-| Conformance coverage | ✅ Complete | All connectors tested: Folder, CSV, SQLite, EML, Mbox, RSS, SiteCrawl, and social connectors |
+| Conformance coverage | 🟡 Partial | Folder, CSV, SQLite, EML, Mbox, RSS, SiteCrawl and the four social connectors (fixtures in `OpenTail.Connectivity.Tests/Conformance/`). Not yet run through the suite: the Drive connectors (Graph, Google), `ObjectStorageConnector` and its adapters, and the inbox and calendar adapters, which have their own unit tests. |
 | Verification labels | ✅ Implemented | All packages labeled in README and package descriptions |
 | Verified packages | ✅ 8 packages | Files, Csv, Email, Sql, Memory, Memory.Sqlite, Memory.VectorData, Calendar.Ics |
-| Tested packages | ✅ 9 packages | Web, Social, Inbox.*, RichText, Storage.* |
+| Tested packages | ✅ 16 packages | Web, Social, Inbox.Imap, Inbox.Graph, Inbox.Gmail, Drive.Graph, Drive.Google, RichText, Storage and its seven adapters (S3, AzureBlob, Sftp, Dropbox, Gcs, WebDav, Box) |
 | Live test automation | ❌ Not implemented | Nightly live workflow and account ownership still to be determined |
 
 ## Where tests stand
 
-`OpenTail.Connectivity.Tests` holds about 40 test files for the existing connectors, using xunit v3 on Microsoft.Testing.Platform.
+`OpenTail.Connectivity.Tests` holds the unit, stubbed-service and conformance tests, using xunit v3 on Microsoft.Testing.Platform.
 CI builds and tests on Ubuntu and Windows, with warnings as errors and the package vulnerability audit on. The SQL Server test file
 is checked in as `.cs_ignored`, which shows the difficulty: tests that need an external service tend to be switched off and then
 forgotten.
@@ -48,7 +48,7 @@ passes the suite through a fixture implementing `IConnectorFixture`:
 8. ✅ For incremental connectors: a second run from a saved checkpoint returns only changes, resuming from an earlier checkpoint
    repeats the same items, and no change is skipped (see [sync-and-deletions.md](sync-and-deletions.md)).
 
-**Coverage:** All connectors tested: Folder, CSV, SQLite, EML, Mbox, RSS, SiteCrawl, and all four social connectors.
+**Coverage:** Folder, CSV, SQLite, EML, Mbox, RSS, SiteCrawl and the four social connectors (fixtures in `OpenTail.Connectivity.Tests/Conformance/`). Not yet run through the suite: the Drive connectors (Graph, Google), `ObjectStorageConnector` and its adapters, and the inbox and calendar adapters, which have their own unit tests.
 
 **Location:** Conformance fixtures live in `OpenTail.Connectivity.Tests/Conformance/`.
 
@@ -76,7 +76,7 @@ Each package states its verification level in the README table and the package d
 | Label | Meaning | Packages |
 |---|---|---|
 | Verified | Unit, contract and a passing live run within a stated period (exercised against the real thing in CI). | Files (folder/local filesystem), Csv, Email (EML/mbox), Sql (SQLite), Memory, Memory.Sqlite, Memory.VectorData (pgvector in CI), Calendar.Ics |
-| Tested | Unit and contract tests only. Not tried against the real service (stubbed service tests). | Web, Social, Inbox.Imap, Inbox.Graph, Inbox.Gmail, RichText, Storage, Storage.S3, Storage.AzureBlob |
+| Tested | Unit and contract tests only. Not tried against the real service (stubbed service tests). | Web, Social, Inbox.Imap, Inbox.Graph, Inbox.Gmail, Drive.Graph, Drive.Google, RichText, Storage, Storage.S3, Storage.AzureBlob, Storage.Sftp, Storage.Dropbox, Storage.Gcs, Storage.WebDav, Storage.Box |
 | Experimental | Incomplete, or relying on assumptions about the vendor API. | *(None currently)* |
 
 **Implementation:** All packages in the README carry verification labels (WP8). New connectors follow the Tested → Verified path 
