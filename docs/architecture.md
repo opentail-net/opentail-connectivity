@@ -102,7 +102,7 @@ The pipeline never infers a deletion from absence itself; it only reports what t
 When a source provides a version token (ETag, content hash, last-modified), the pipeline can skip fetching unchanged items. Set
 `PipelineOptions.VersionStore` to an `IItemVersionStore` (`FileItemVersionStore(path)`). The pipeline stores each exported
 document's `source.version` metadata and skips re-fetching when the token matches. This works across both incremental and full
-runs. Connectors set `source.version` in `SourceItem.Metadata`; RSS feeds use `guid|updated`, web crawlers use HTTP `ETag`.
+runs. Connectors set `source.version` in `SourceItem.Metadata`; RSS and Atom feeds use a hash of every payload field (see [connectors](connectors.md#web)), web crawlers use HTTP `ETag`.
 
 Without a version store, every item is fetched and extracted as before.
 

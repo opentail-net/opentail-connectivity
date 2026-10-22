@@ -1,11 +1,23 @@
 using System.Text.Json;
 using System.Security.Cryptography;
+using System.Xml;
 using System.Xml.Linq;
 
 namespace OpenTail.Connectivity.Web;
 
+/// <summary>Reads an RSS 2.0 or Atom feed: one item per entry, its fields as a small JSON payload.</summary>
+/// <remarks>
+/// An Atom entry is identified by its <c>id</c> (its alternate link when it has none) and dated by <c>updated</c>
+/// (<c>published</c> when it has none); an RSS item by its link and <c>pubDate</c>. An entry with a missing or unreadable date
+/// gets <see cref="UnknownDate"/> and is left out when <c>since</c> is set, since nothing shows it is recent. The response is
+/// read up to <c>maxResponseBytes</c> (default 10 MB) and parsed with DTDs prohibited.
+/// </remarks>
 public sealed class RssFeedConnector : ISourceConnector
 {
+    /// <summary>The <see cref="SourceItem.Modified"/> of an entry without a readable date.</summary>
+    public static readonly DateTimeOffset UnknownDate = DateTimeOffset.UnixEpoch;
+
+    private const int DefaultMaxResponseBytes = 10 * 1024 * 1024;
     private static readonly XNamespace AtomNs = "http://www.w3.org/2005/Atom";
     private static readonly XNamespace RssContentNs = "http://purl.org/rss/1.0/modules/content/";
 
@@ -14,10 +26,14 @@ public sealed class RssFeedConnector : ISourceConnector
     private readonly string _tenant;
     private readonly int _maxItems;
     private readonly DateTimeOffset? _since;
+    private readonly int _maxResponseBytes;
     private readonly Dictionary<string, byte[]> _itemCache = new();
 
-    public RssFeedConnector(HttpClient client, string feedUrl, string tenant, int maxItems = 100, DateTimeOffset? since = null)
+    public RssFeedConnector(HttpClient client, string feedUrl, string tenant, int maxItems = 100, DateTimeOffset? since = null,
+        int maxResponseBytes = DefaultMaxResponseBytes)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maxResponseBytes, 1);
+        _maxResponseBytes = maxResponseBytes;
         ArgumentNullException.ThrowIfNull(client);
         ArgumentException.ThrowIfNullOrWhiteSpace(feedUrl);
         ArgumentException.ThrowIfNullOrWhiteSpace(tenant);
@@ -32,8 +48,13 @@ public sealed class RssFeedConnector : ISourceConnector
     {
         _itemCache.Clear();
 
-        var xml = await _client.GetStringAsync(_feedUrl, cancellationToken);
-        var doc = XDocument.Parse(xml);
+        using var response = await _client.GetAsync(_feedUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        var body = await WebContentReader.ReadBoundedAsync(response.Content, _maxResponseBytes, cancellationToken)
+                   ?? throw new InvalidDataException($"The feed is larger than the {_maxResponseBytes}-byte limit.");
+        var settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };
+        using var reader = XmlReader.Create(new MemoryStream(body), settings);
+        var doc = XDocument.Load(reader);
         var root = doc.Root!;
 
         var entries = root.Name.LocalName.Equals("rss", StringComparison.OrdinalIgnoreCase)
@@ -46,7 +67,7 @@ public sealed class RssFeedConnector : ISourceConnector
         {
             if (count >= _maxItems) break;
             if (!seenIds.Add(id)) continue;
-            if (_since.HasValue && modified < _since.Value) continue;
+            if (_since.HasValue && (modified == UnknownDate || modified < _since.Value)) continue;
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -97,11 +118,14 @@ public sealed class RssFeedConnector : ISourceConnector
             var pubDate = item.Element("pubDate")?.Value?.Trim();
             var guid = item.Element("guid")?.Value?.Trim();
             var content = (item.Element(RssContentNs + "encoded")?.Value ?? string.Empty).Trim();
-            var modified = ParseDate(pubDate);
+            var date = ParseDate(pubDate);
+            var modified = date ?? UnknownDate;
             var categories = string.Join("; ", item.Elements("category")
                 .Select(c => c.Value?.Trim()).Where(v => !string.IsNullOrWhiteSpace(v)));
 
-            var versionFields = string.Join('\u001f', guid ?? string.Empty, link, title, description, content, pubDate ?? string.Empty);
+            // Every field that reaches the payload, so a change to any of them is a new version.
+            var versionFields = string.Join('\u001f', guid ?? string.Empty, link, title, description, content, pubDate ?? string.Empty,
+                author, categories);
             var version = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(versionFields)))
                 .ToLowerInvariant()[..32];
 
@@ -112,7 +136,7 @@ public sealed class RssFeedConnector : ISourceConnector
                 ["description"] = description,
                 ["author"] = author,
                 ["categories"] = categories,
-                ["published"] = modified.ToString("O"),
+                ["published"] = date?.ToString("O") ?? string.Empty,
             });
         }
     }
@@ -121,38 +145,43 @@ public sealed class RssFeedConnector : ISourceConnector
     {
         foreach (var entry in feed.Elements(AtomNs + "entry"))
         {
+            // The content link is rel="alternate", which is also what a link without rel means (RFC 4287 4.2.7.2).
             var link = (entry.Elements(AtomNs + "link")
-                .FirstOrDefault(l => l.Attribute("rel")?.Value != "enclosure")
+                .FirstOrDefault(l => (l.Attribute("rel")?.Value ?? "alternate") == "alternate")
                 ?.Attribute("href")?.Value ?? string.Empty).Trim();
-            if (string.IsNullOrWhiteSpace(link)) continue;
+            var atomId = entry.Element(AtomNs + "id")?.Value?.Trim();
+            // The Atom id is the stable identity; the link can change. Without an id, the link stands in.
+            var id = string.IsNullOrWhiteSpace(atomId) ? link : atomId;
+            if (string.IsNullOrWhiteSpace(id)) continue;
 
-            var title = (entry.Element(AtomNs + "title")?.Value ?? link).Trim();
+            var title = (entry.Element(AtomNs + "title")?.Value ?? (link.Length > 0 ? link : id)).Trim();
             var summary = (entry.Element(AtomNs + "summary")?.Value
                 ?? entry.Element(AtomNs + "content")?.Value
                 ?? string.Empty).Trim();
             var author = (entry.Element(AtomNs + "author")?.Element(AtomNs + "name")?.Value
                 ?? string.Empty).Trim();
             var updated = entry.Element(AtomNs + "updated")?.Value?.Trim();
-            var published = entry.Element(AtomNs + "published")?.Value?.Trim() ?? updated;
-            var id = entry.Element(AtomNs + "id")?.Value?.Trim();
-            var modified = ParseDate(published);
+            var published = entry.Element(AtomNs + "published")?.Value?.Trim();
+            var publishedDate = ParseDate(published);
+            var modified = ParseDate(updated) ?? publishedDate ?? UnknownDate;
             var categories = string.Join("; ", entry.Elements(AtomNs + "category")
                 .Select(c => c.Attribute("term")?.Value?.Trim()).Where(v => !string.IsNullOrWhiteSpace(v)));
 
-            string? version = null;
-            var dateToken = updated ?? published;
-            if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(dateToken))
-                version = $"{id}|{dateToken}";
-
-            yield return (link, title, modified, version, new Dictionary<string, string>
+            var payload = new Dictionary<string, string>
             {
                 ["link"] = link,
                 ["title"] = title,
                 ["summary"] = summary,
                 ["author"] = author,
                 ["categories"] = categories,
-                ["published"] = modified.ToString("O"),
-            });
+                ["published"] = publishedDate?.ToString("O") ?? string.Empty,
+                ["updated"] = modified == UnknownDate ? string.Empty : modified.ToString("O"),
+            };
+            // A hash of the whole payload: a change to any field the extractor sees is a new version.
+            var version = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(
+                id + "\u001f" + string.Join('\u001f', payload.Select(p => p.Key + "=" + p.Value)))))[..32];
+
+            yield return (id, title, modified, version, payload);
         }
     }
 
@@ -162,9 +191,9 @@ public sealed class RssFeedConnector : ISourceConnector
         "d MMM yyyy HH:mm:ss zzz",
     ];
 
-    private static DateTimeOffset ParseDate(string? raw)
+    private static DateTimeOffset? ParseDate(string? raw)
     {
-        if (string.IsNullOrWhiteSpace(raw)) return DateTimeOffset.UtcNow;
+        if (string.IsNullOrWhiteSpace(raw)) return null;
         var s = raw.Trim();
         // ISO 8601 (Atom feeds)
         if (DateTimeOffset.TryParse(s, null, System.Globalization.DateTimeStyles.AllowWhiteSpaces, out var dt))
@@ -177,6 +206,6 @@ public sealed class RssFeedConnector : ISourceConnector
                 System.Globalization.CultureInfo.InvariantCulture,
                 System.Globalization.DateTimeStyles.AllowWhiteSpaces, out dt))
             return dt;
-        return DateTimeOffset.UtcNow;
+        return null;
     }
 }

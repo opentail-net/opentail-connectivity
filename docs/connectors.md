@@ -50,7 +50,7 @@ from the `folderPath` you pass, so moving or re-spelling the root changes every 
 
 ```csharp
 new SiteCrawlConnector(httpClient, startUrl, tenantContext, options: null)
-new RssFeedConnector(httpClient, feedUrl, tenant, maxItems: 100, since: null)
+new RssFeedConnector(httpClient, feedUrl, tenant, maxItems: 100, since: null, maxResponseBytes: 10 * 1024 * 1024)
 ```
 
 You supply the `HttpClient`, so set its timeout, proxy and user agent. `WebCrawlOptions`:
@@ -71,9 +71,13 @@ Only links on the start host are followed, and query strings and fragments are s
 URL as their `Id`, and their `Modified` is the crawl time, not the page's modified date. Pages carry `page.title`,
 `page.description`, `page.keywords` and `page.og_title` metadata where present.
 
-RSS and Atom items use the entry link as their `Id` and carry `feed.author`, `feed.link`, `feed.published` and `feed.categories`
-metadata. `since` filters by publish date; an entry with a missing or unreadable date is given the run time, so it always passes
-the filter.
+RSS items use the entry link as their `Id`; Atom entries use their `<id>` (the alternate link when there is none), and their link
+is the `rel="alternate"` one (or one without `rel`). Items carry `feed.author`, `feed.link`, `feed.published` and
+`feed.categories` metadata. `Modified` is the RSS `pubDate`, or the Atom `updated` (`published` when absent); `since` filters on
+it. An entry with a missing or unreadable date gets `RssFeedConnector.UnknownDate` (the Unix epoch) on every run and is left out
+when `since` is set. The feed is read up to `maxResponseBytes` (`InvalidDataException` beyond) and parsed with DTDs prohibited.
+`source.version` covers every field in the payload: for RSS a hash of guid, link, title, description, content, pubDate, author and
+categories; for Atom a hash of the id and the whole payload.
 
 ## Csv
 

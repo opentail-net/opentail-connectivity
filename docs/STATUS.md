@@ -71,7 +71,7 @@ The consumer contract is **stable and implemented**. Downstream stores can rely 
 | File version store | ✅ Implemented | `FileItemVersionStore` | JSON with atomic writes |
 | Skip logic | ✅ Implemented | Pipeline checks before fetch | Saves fetch + extraction + export |
 | Unchanged counter | ✅ Implemented | `IngestionReport.ItemsUnchanged` | Tracks skipped items |
-| RSS version support | ✅ Implemented | `RssFeedConnector` | GUID + updated timestamp |
+| RSS version support | ✅ Implemented | `RssFeedConnector` | Hash of every payload field |
 | Site crawl version support | ✅ Implemented | `SiteCrawlConnector` | HTTP ETag header |
 
 ### Permissions & Security
@@ -105,7 +105,7 @@ The consumer contract is **stable and implemented**. Downstream stores can rely 
 | Connector | Package | Status | Verification | Incremental | Deletions | Version Tokens |
 |-----------|---------|--------|--------------|-------------|-----------|----------------|
 | Site crawl | `Web` | ✅ Implemented | Tested | No | No | ✅ ETag |
-| RSS/Atom | `Web` | ✅ Implemented | Tested | No | No | ✅ GUID+updated |
+| RSS/Atom | `Web` | ✅ Implemented | Tested | No | No | ✅ payload hash |
 | Sitemap | `Web` | ✅ Implemented | Tested | N/A | N/A | N/A |
 
 ### Email Inboxes

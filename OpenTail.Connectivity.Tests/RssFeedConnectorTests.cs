@@ -355,6 +355,88 @@ public sealed class RssFeedConnectorTests
         Assert.Contains(items, i => i.Id == "https://example.com/valid2");
     }
 
+    private static string Atom(params string[] entries) =>
+        "<feed xmlns=\"http://www.w3.org/2005/Atom\">" + string.Concat(entries) + "</feed>";
+
+    private static async Task<List<SourceItem>> Discover(string xml, DateTimeOffset? since = null, int maxResponseBytes = 1 << 20) =>
+        await new RssFeedConnector(MakeClient(xml), "http://feed.test/f", "tenant", since: since, maxResponseBytes: maxResponseBytes)
+            .DiscoverAsync().ToListAsync();
+
+    private static async Task<string> Payload(string xml)
+    {
+        var connector = new RssFeedConnector(MakeClient(xml), "http://feed.test/f", "tenant");
+        var item = (await connector.DiscoverAsync().ToListAsync()).Single();
+        return Encoding.UTF8.GetString(await connector.FetchAsync(item));
+    }
+
+    [Fact]
+    public async Task Atom_uses_the_alternate_link_and_the_atom_id()
+    {
+        var items = await Discover(Atom(
+            """<entry><id>urn:a</id><title>A</title><link rel="self" href="https://x/self"/><link rel="alternate" href="https://x/page"/><updated>2026-01-01T00:00:00Z</updated></entry>""",
+            """<entry><id>urn:b</id><title>B</title><link href="https://x/page"/><updated>2026-01-01T00:00:00Z</updated></entry>"""));
+
+        Assert.Equal(["urn:a", "urn:b"], items.Select(i => i.Id));
+        Assert.Contains("https://x/page", await Payload(Atom(
+            """<entry><id>urn:a</id><title>A</title><link rel="self" href="https://x/self"/><link rel="alternate" href="https://x/page"/></entry>""")));
+    }
+
+    [Fact]
+    public async Task Atom_id_stays_when_the_link_changes()
+    {
+        var before = (await Discover(Atom("""<entry><id>urn:a</id><title>A</title><link href="https://x/old"/></entry>"""))).Single();
+        var after = (await Discover(Atom("""<entry><id>urn:a</id><title>A</title><link href="https://x/new"/></entry>"""))).Single();
+
+        Assert.Equal(before.Id, after.Id);
+        Assert.NotEqual(before.Metadata![SourceKeys.Version], after.Metadata![SourceKeys.Version]);
+    }
+
+    [Fact]
+    public async Task Atom_modified_is_updated_not_published()
+    {
+        var items = await Discover(Atom(
+            """<entry><id>urn:a</id><title>A</title><link href="https://x/a"/><published>2025-01-01T00:00:00Z</published><updated>2026-03-01T00:00:00Z</updated></entry>"""),
+            since: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+
+        Assert.Equal(new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero), items.Single().Modified);
+    }
+
+    [Fact]
+    public async Task Rss_version_changes_with_author_or_categories()
+    {
+        static string Rss(string author, string category) =>
+            $"<rss><channel><item><title>T</title><link>https://x/1</link><author>{author}</author><category>{category}</category></item></channel></rss>";
+
+        var versions = new List<string>();
+        foreach (var xml in new[] { Rss("ann", "news"), Rss("bob", "news"), Rss("bob", "sport") })
+            versions.Add((await Discover(xml)).Single().Metadata![SourceKeys.Version]);
+
+        Assert.Equal(3, versions.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task Missing_or_bad_dates_are_stable_and_left_out_by_since()
+    {
+        const string xml = "<rss><channel><item><title>T</title><link>https://x/1</link><pubDate>not a date</pubDate></item></channel></rss>";
+
+        var first = (await Discover(xml)).Single();
+        var again = (await Discover(xml)).Single();
+
+        Assert.Equal(RssFeedConnector.UnknownDate, first.Modified);
+        Assert.Equal(first.Modified, again.Modified);
+        Assert.Empty(await Discover(xml, since: new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero)));
+    }
+
+    [Fact]
+    public async Task An_oversized_feed_or_a_dtd_is_refused()
+    {
+        var big = "<rss><channel>" + string.Concat(Enumerable.Repeat("<item><title>T</title><link>https://x/1</link></item>", 100)) + "</channel></rss>";
+        const string dtd = """<?xml version="1.0"?><!DOCTYPE rss [<!ENTITY x "boom">]><rss><channel><item><title>&x;</title><link>https://x/1</link></item></channel></rss>""";
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => Discover(big, maxResponseBytes: 1000));
+        await Assert.ThrowsAsync<System.Xml.XmlException>(() => Discover(dtd));
+    }
+
     private sealed class FeedHttpHandler : HttpMessageHandler
     {
         private readonly string _xml;

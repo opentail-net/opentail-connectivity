@@ -321,9 +321,10 @@ public sealed class ItemVersionStoreTests : IDisposable
         return version;
     }
 
-    private static string ExpectedRssVersion(string guid, string link, string title, string description, string content, string pubDate)
+    private static string ExpectedRssVersion(string guid, string link, string title, string description, string content, string pubDate,
+        string author = "", string categories = "")
     {
-        var fields = string.Join('\u001f', guid, link, title, description, content, pubDate);
+        var fields = string.Join('\u001f', guid, link, title, description, content, pubDate, author, categories);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(fields))).ToLowerInvariant()[..32];
     }
 
