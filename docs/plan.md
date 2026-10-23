@@ -22,7 +22,8 @@ Each item names the repository it touches and links the page that explains it:
 | Customers | Section 5, which gates tiers 2 and 3 (section 7, frozen) and the Host memory module (M9) |
 | Real accounts and systems | Live-provider suites (section 29), vendor facts (section 9), Entra ID roles (12), an external check (17), write-once storage (18) |
 | Something built first | Host sign-in (section 3), and with it delegation (12) and Slack; triggers T1 to T7 (21); the review-page items G1, G2, G6 (19) |
-| Ready to start | M7 and M8 (opentail takes up the memory packages, section 20); refusing API keys without a profile (12) |
+| Assessment time | M7 and M8 (section 20): no new package goes into opentail until the owner has assessed them |
+| Ready to start | Refusing API keys without a profile (12) |
 | Optional or deferred | Notion, Zendesk and Freshdesk, Slack front door, the model-based redactor; queue ideas in optional-todo.md |
 
 ## 3. Host sign-in (prerequisite for searching as the user)
@@ -48,7 +49,8 @@ Live search and reading, nothing copied. [Roadmap: three tiers](roadmap.md#docum
 
 - [ ] **[H]** Snowflake as a read-only Sql target with cost guards (warehouse checks, per-call limits, a daily budget per identity)
   ([Snowflake](https://github.com/opentail-net/opentail-host/blob/main/docs/design/snowflake.md), steps S1 to S5). *Proposal,
-  2026-10-23; waits on a project that needs a warehouse.*
+  2026-10-23. Parked: owner, 2026-10-23: the project does not need a warehouse, and when one is needed it is not always on our
+  side (it may be the customer's, so the cost guards the customer's admin sets matter more than ours).*
 
 ## 5. Ask the first customers
 
@@ -219,8 +221,12 @@ through the Host. Written 2026-10-19 at the owner's request, after a look at Mem
 server, Claude's memory tool, Agent Framework context providers, and the memory poisoning and provenance papers. M1 to M8 are
 treated as groundwork, like section 6; M9 is new copied data and stays frozen.
 
-- [ ] **[O]** M7: opentail consumes the package; `Core.Memory` becomes a shim.
-- [ ] **[C] [O]** M8: `Connectivity.Index` becomes a document collection on the stack.
+*Owner, 2026-10-23: M7 and M8 need reframing. The original opentail is being reduced in weight gradually, and the new packages
+should not be entrenched in it before there has been more time to assess them. Until then the packages stay standalone; nothing
+in opentail takes a dependency on them.*
+
+- [ ] **[O]** M7: opentail consumes the package; `Core.Memory` becomes a shim. *On hold: to be reframed after assessment.*
+- [ ] **[C] [O]** M8: `Connectivity.Index` becomes a document collection on the stack. *On hold, as M7.*
 - [ ] **[H]** M9: the Host `memory` module (tools, resources, pushed index, recall hints, process path) and its adapters. *Frozen with tiers 2 and 3.*
 - [ ] **[O]** Check opentail's own use of `SlackMemoryIngestionNormalizer` against Slack's terms ([roadmap](roadmap.md#two-ways-to-use-business-data)).
 
