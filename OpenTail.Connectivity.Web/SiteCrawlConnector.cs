@@ -4,8 +4,11 @@ using System.Text;
 namespace OpenTail.Connectivity.Web;
 
 /// <summary>Crawls same-origin web pages and extracts links and page content.</summary>
-/// <remarks>Redirects are checked before each request when the client disables automatic redirects, as <see cref="CreateHttpClient"/> does.
-/// An injected client that follows redirects itself receives only the final-URI check.</remarks>
+/// <remarks>
+/// Every redirect is checked before it is followed: the public ways to build a crawler (the default constructor and
+/// <see cref="Create"/>) only accept a stack that does not follow redirects itself. Private and local addresses are refused unless
+/// <see cref="WebCrawlOptions.AllowPrivateNetworks"/> is set, checked on the address actually connected to (<see cref="WebNetwork"/>).
+/// </remarks>
 public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
 {
     private const int DefaultMaxLinkExtractionBytes = 1_000_000;
@@ -34,13 +37,15 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
 
     public int FailedFetchCount => _failedFetches;
 
-    public SiteCrawlConnector(HttpClient client, string startUrl, string tenantContext, WebCrawlOptions? options = null)
+    // Tests inject a stub client. Outside this assembly a client cannot be passed: nothing could check that it does not follow
+    // redirects or connect to private addresses.
+    internal SiteCrawlConnector(HttpClient client, string startUrl, string tenantContext, WebCrawlOptions? options = null)
         : this(client, startUrl, tenantContext, options, ownsClient: false)
     {
     }
 
     public SiteCrawlConnector(string startUrl, string tenantContext, WebCrawlOptions? options = null)
-        : this(CreateHttpClient(), startUrl, tenantContext, options, ownsClient: true)
+        : this(CreateHttpClient(allowPrivateNetworks: options?.AllowPrivateNetworks ?? false), startUrl, tenantContext, options, ownsClient: true)
     {
     }
 
@@ -52,6 +57,8 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
         _client = client;
         _ownsClient = ownsClient;
         _startUri = new Uri(startUrl);
+        if (_startUri.Scheme != Uri.UriSchemeHttp && _startUri.Scheme != Uri.UriSchemeHttps)
+            throw new ArgumentException("The crawler starts from an http or https URL.", nameof(startUrl));
         _tenantContext = tenantContext;
         _options = options ?? new WebCrawlOptions();
     }
@@ -59,26 +66,20 @@ public sealed class SiteCrawlConnector : ISourceConnector, IDisposable
     /// <summary>
     /// Builds a crawler on <paramref name="handler"/>, refusing a handler that follows redirects itself (an
     /// <see cref="HttpClientHandler"/> or <see cref="SocketsHttpHandler"/>, also behind <see cref="DelegatingHandler"/>s, with
-    /// <c>AllowAutoRedirect</c> on), so every hop is checked before it is requested. The crawler owns the handler.
+    /// <c>AllowAutoRedirect</c> on), so every hop is checked before it is requested, and attaching the public-address check to its
+    /// <see cref="SocketsHttpHandler"/> unless <see cref="WebCrawlOptions.AllowPrivateNetworks"/> is set (an
+    /// <see cref="HttpClientHandler"/> cannot take that check and is refused then). The crawler owns the handler.
     /// </summary>
     public static SiteCrawlConnector Create(HttpMessageHandler handler, string startUrl, string tenantContext, WebCrawlOptions? options = null)
     {
-        ArgumentNullException.ThrowIfNull(handler);
-        for (var current = handler; current is not null; current = (current as DelegatingHandler)?.InnerHandler)
-        {
-            if (current is HttpClientHandler { AllowAutoRedirect: true } or SocketsHttpHandler { AllowAutoRedirect: true })
-                throw new ArgumentException("The crawler handler must have AllowAutoRedirect = false so each redirect can be checked.", nameof(handler));
-        }
+        WebNetwork.Prepare(handler, options?.AllowPrivateNetworks ?? false);
         return new SiteCrawlConnector(new HttpClient(handler, disposeHandler: true), startUrl, tenantContext, options, ownsClient: true);
     }
 
-    public static HttpClient CreateHttpClient(TimeSpan? timeout = null)
+    /// <summary>A client on <see cref="WebNetwork.CreateHandler"/>: no automatic redirects, public addresses only unless allowed.</summary>
+    public static HttpClient CreateHttpClient(TimeSpan? timeout = null, bool allowPrivateNetworks = false)
     {
-        var client = new HttpClient(new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false,
-            AutomaticDecompression = DecompressionMethods.All,
-        });
+        var client = new HttpClient(WebNetwork.CreateHandler(allowPrivateNetworks));
         if (timeout is { } value)
             client.Timeout = value;
         return client;

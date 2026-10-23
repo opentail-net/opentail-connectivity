@@ -50,15 +50,25 @@ working directory, but moving the folder to another absolute path changes every 
 ## Web
 
 ```csharp
-new SiteCrawlConnector(httpClient, startUrl, tenantContext, options: null)
-new RssFeedConnector(httpClient, feedUrl, tenant, maxItems: 100, since: null, maxResponseBytes: 10 * 1024 * 1024)
+new SiteCrawlConnector(startUrl, tenantContext, options: null)            // or SiteCrawlConnector.Create(handler, startUrl, ...)
+new RssFeedConnector(feedUrl, tenant, maxItems: 100, since: null, maxResponseBytes: 10 * 1024 * 1024, allowPrivateNetworks: false)
+                                                                         // or RssFeedConnector.Create(handler, feedUrl, ...)
 ```
 
-You supply the `HttpClient`, so set its timeout, proxy and user agent. Redirects are checked before each hop only when the
-client does not follow them itself: use `SiteCrawlConnector.CreateHttpClient()`, or `SiteCrawlConnector.Create(handler, ...)`,
-which refuses a handler with `AllowAutoRedirect` on. A client that follows redirects on its own has already requested the target
-when the crawler drops an off-origin result. The start URL is trusted configuration: the crawler does not block private or
-loopback addresses, so do not pass it user input. Paths are case-sensitive (`/Manual` and `/manual` are two pages). `WebCrawlOptions`:
+**Network safety (changed 2026-10-23).** The connectors build their own HTTP stack (`WebNetwork.CreateHandler`), or check yours
+in `Create(handler, ...)`; an `HttpClient` can no longer be passed in, because nothing could check how it behaves.
+- **Every redirect is checked before it is followed.** The stack never follows redirects itself (`Create` refuses a handler with
+  `AllowAutoRedirect` on, also behind delegating handlers); the crawler follows same-origin hops only, the feed reader up to 5
+  hops to http or https URLs.
+- **Private and local addresses are refused by default**: loopback, private ranges, link-local (including cloud metadata at
+  169.254.169.254), carrier-grade NAT, IPv6 local and unique-local, and IPv4 hidden in IPv6. The check runs on the address the
+  connection is actually made to, after DNS resolution, so a name that resolves to a private address, or changes its answer
+  between a check and the connection (DNS rebinding), is refused too. Set `WebCrawlOptions.AllowPrivateNetworks` (or
+  `allowPrivateNetworks` for feeds) to crawl an internal site. With `Create`, the check is attached to your `SocketsHttpHandler`;
+  an `HttpClientHandler`, or a handler with its own `ConnectCallback`, is refused unless private networks are allowed.
+- Set timeouts, proxy and user agent on the handler you pass to `Create`. A start URL must be http or https.
+
+Paths are case-sensitive (`/Manual` and `/manual` are two pages). `WebCrawlOptions`:
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -70,6 +80,7 @@ loopback addresses, so do not pass it user input. Paths are case-sensitive (`/Ma
 | `AllowedPathPrefixes` | none | Only crawl these path prefixes, matched by whole segments and case-sensitively: `/docs` covers `/docs` and `/docs/a`, not `/docs-private`. |
 | `MaxRetries`, `RetryDelay` | 1, 500 ms | Retries for failed fetches. |
 | `MaxLinkExtractionBytes` | 1,000,000 | Only this much of a page is scanned for links. |
+| `AllowPrivateNetworks` | `false` | Allow connections to private and local addresses (an internal site). |
 
 Only links on the start host are followed, and query strings and fragments are stripped from them. Retries apply to timeouts,
 429 and 5xx responses. `SiteCrawlConnector.FailedFetchCount` reports pages that could not be fetched. Web `SourceItem`s use the

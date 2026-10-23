@@ -29,7 +29,25 @@ public sealed class RssFeedConnector : ISourceConnector
     private readonly int _maxResponseBytes;
     private readonly Dictionary<string, byte[]> _itemCache = new();
 
-    public RssFeedConnector(HttpClient client, string feedUrl, string tenant, int maxItems = 100, DateTimeOffset? since = null,
+    /// <summary>Reads <paramref name="feedUrl"/> over <see cref="WebNetwork.CreateHandler"/>: each redirect checked before it is
+    /// followed (http and https only, at most 5), and only public addresses unless <paramref name="allowPrivateNetworks"/>.</summary>
+    public RssFeedConnector(string feedUrl, string tenant, int maxItems = 100, DateTimeOffset? since = null,
+        int maxResponseBytes = DefaultMaxResponseBytes, bool allowPrivateNetworks = false)
+        : this(new HttpClient(WebNetwork.CreateHandler(allowPrivateNetworks)), feedUrl, tenant, maxItems, since, maxResponseBytes)
+    {
+    }
+
+    /// <summary>As the URL constructor, on <paramref name="handler"/>, which is refused if it follows redirects itself; the
+    /// public-address check is attached to its <see cref="SocketsHttpHandler"/>.</summary>
+    public static RssFeedConnector Create(HttpMessageHandler handler, string feedUrl, string tenant, int maxItems = 100, DateTimeOffset? since = null,
+        int maxResponseBytes = DefaultMaxResponseBytes, bool allowPrivateNetworks = false)
+    {
+        WebNetwork.Prepare(handler, allowPrivateNetworks);
+        return new RssFeedConnector(new HttpClient(handler, disposeHandler: true), feedUrl, tenant, maxItems, since, maxResponseBytes);
+    }
+
+    // Tests inject a stub client. Outside this assembly a client cannot be passed, for the same reasons as the crawler.
+    internal RssFeedConnector(HttpClient client, string feedUrl, string tenant, int maxItems = 100, DateTimeOffset? since = null,
         int maxResponseBytes = DefaultMaxResponseBytes)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxResponseBytes, 1);
@@ -48,7 +66,7 @@ public sealed class RssFeedConnector : ISourceConnector
     {
         _itemCache.Clear();
 
-        using var response = await _client.GetAsync(_feedUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        using var response = await WebContentReader.GetFollowingRedirectsAsync(_client, new Uri(_feedUrl), cancellationToken);
         response.EnsureSuccessStatusCode();
         var body = await WebContentReader.ReadBoundedAsync(response.Content, _maxResponseBytes, cancellationToken)
                    ?? throw new InvalidDataException($"The feed is larger than the {_maxResponseBytes}-byte limit.");

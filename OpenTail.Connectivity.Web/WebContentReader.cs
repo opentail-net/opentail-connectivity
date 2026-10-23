@@ -32,6 +32,25 @@ internal static class WebContentReader
         }
     }
 
+    /// <summary>GET that follows up to <see cref="MaxRedirects"/> redirects itself, each to an http or https URL, so every hop goes
+    /// through the client's connection checks before it is requested.</summary>
+    public static async Task<HttpResponseMessage> GetFollowingRedirectsAsync(HttpClient client, Uri uri, CancellationToken cancellationToken)
+    {
+        var current = uri;
+        for (var redirects = 0; ; redirects++)
+        {
+            if (current.Scheme != Uri.UriSchemeHttp && current.Scheme != Uri.UriSchemeHttps)
+                throw new InvalidOperationException($"Refusing to follow a redirect to a {current.Scheme} URL.");
+            var response = await client.GetAsync(current, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!IsRedirect(response.StatusCode) || response.Headers.Location is not { } location)
+                return response;
+            response.Dispose();
+            if (redirects == MaxRedirects)
+                throw new InvalidOperationException($"More than {MaxRedirects} redirects.");
+            current = location.IsAbsoluteUri ? location : new Uri(current, location);
+        }
+    }
+
     private static bool IsRedirect(HttpStatusCode statusCode)
         => statusCode is HttpStatusCode.MovedPermanently or HttpStatusCode.Redirect or HttpStatusCode.RedirectMethod
             or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect;
