@@ -1,6 +1,6 @@
 # Design: vector search in the SQLite memory backend
 
-**Status:** proposal, revised twice on 2026-10-23 after external reviews (ChatGPT), whose points were checked against the code and
+**Status:** being built (owner: "go ahead and build it", 2026-10-23); revised twice on 2026-10-23 after external reviews (ChatGPT), whose points were checked against the code and
 adopted except where noted. The second review: "good enough to build" once four details were settled; they are in below. Nothing
 is built. Owner: "let's write its own plan".
 
@@ -137,9 +137,7 @@ Exact search reads every allowed vector, and there is one per chunk. Raw vector 
 Not counting chunk text, indexes and the process. 50,000 records of five chunks each are 250,000 vectors. So the warning counts
 **vectors and their bytes**, not records: the count drives how many dot products a search does, the bytes allow for models of
 other sizes. It is **advisory** (status and a logged warning); searches are never refused at the threshold until V6 has real
-measurements. *The owner agreed to a 50,000 ceiling when the plan counted records; at five chunks a
-record that is 250,000 vectors (about 1.5 GB), too much for exact search. Proposed instead: warn at 50,000 vectors (about 300 MB
-at 1,536 dimensions), and report records, vectors and bytes. To confirm with the owner.* Beyond that, Postgres with pgvector
+measurements. Owner, 2026-10-23: warn at **50,000 vectors** (about 300 MB at 1,536 dimensions), and report records, vectors and bytes. Beyond that, Postgres with pgvector
 through `VectorDataMemoryBackend`. Speed-ups if needed, in order: caching per collection, float16, then an index (sqlite-vec at
 1.0, or HNSW) that still filters before ranking, all in [optional-todo.md](../optional-todo.md).
 
@@ -177,7 +175,6 @@ Built in that order, each a testable checkpoint.
 ## Decisions and open questions
 
 - *Decided (owner, 2026-10-23):* search is **hybrid by default** when a generator is present, keyword-only on request (needs §5).
-- *Decided, to re-confirm:* the warning ceiling. Agreed at 50,000 *records*; per-chunk storage makes that up to ~250,000 vectors.
-  Proposed: **50,000 vectors** (about 300 MB at 1,536 dimensions).
+- *Decided (owner, 2026-10-23):* the warning ceiling is **50,000 vectors** (about 300 MB at 1,536 dimensions), advisory.
 - **Where the generator comes from** in the Host's memory module (frozen with tiers 2 and 3, plan section 20 M9): the same question
   the VectorData backend leaves to the caller.
