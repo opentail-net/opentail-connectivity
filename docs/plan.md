@@ -299,8 +299,9 @@ review. Nothing built.
 
 ## 31. External reviews, 2026-10-23 (to-fix 1 to 5)
 
-Five review documents (`docs/to fix 1.md` to `5.md`). All 19 findings were checked against the code on 2026-10-23 and all hold;
-three related gaps were found while checking (marked *found*). They fall into three classes, so each class also gets a test that
+Five review documents, now in [done/](done/) as `to-fix-2026-10-23-*.md` (1 accounts, mailboxes and social; 2 sync state and
+boundaries; 3 Gmail, Mbox and DNS; 4 Host execution safeguards; 5 Host access report). All 19 findings were checked against the
+code and held, and all were fixed 2026-10-23; three related gaps were found while checking (marked *found*). They fall into three classes, so each class also gets a test that
 covers every implementation, not just the ones named.
 
 *Host items built 2026-10-23 (opentail-host 6081d5b). Connectivity items built 2026-10-23 with regression tests (commits 5f802ff, 7343b69, 51bc841, c0de9b1 and the namespace commit).
