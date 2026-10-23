@@ -283,7 +283,8 @@ review. Nothing built.
 - [ ] **[C]** R2 to R4: `RedisQueueControl` (Lua scripts, versioned compare-and-set circuits, TTLs, prefix), CI against Redis and
   Valkey, outage test.
 - [ ] **[C]** P1 to P4: Pinecone memory backend storing what the VectorData backend stores, with the full governance mapping
-  before ranking, a journal of recent writes so deletes and ACL changes never come back during Pinecone's write lag, the
+  before ranking, a durable record state and settling (records with pending changes excluded inside the query) so deletes and
+  ACL changes never come back during Pinecone's write lag, the
   embedding contract (model id, cosine, `MinScore`) and a namespace per tenant; Pinecone Local spike first.
 - [ ] **[H]** M1 to M4: MongoDB module, one collection per query, exact operator allow-list by context (no `$facet`, `$regex`,
   `$push` in the first version), resource bounds, CI on `mongo:8`.

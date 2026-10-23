@@ -4,6 +4,16 @@
 the Redis store, Pinecone and MongoDB are not. Facts marked *to verify* come from documentation or memory; check them before the
 step that depends on them.
 
+**What the third review changed** (checked against the code; all held):
+
+- **Pinecone:** the journal could forget a record while an older upsert was still in flight, and dropping stale hits after ranking
+  broke filtering before top-k. Now: a durable record state, deadlines on every Pinecone call, records with pending changes
+  excluded inside the query, and settling only after verification. Vector ids no longer join record and chunk ids with a separator
+  (`a` + `b#c` and `a#b` + `c` collided).
+- **Redis:** the circuit version counter's TTL allowed ABA after a long pause. Version counters are dropped: the compare-and-set
+  compares the circuit's value itself, which is safe because the change function is pure.
+- **MongoDB:** the size of the query itself is bounded, not only its depth.
+
 **What the second review changed** (each point checked against the code before accepting it):
 
 - **Pinecone:** Pinecone applies writes and deletes asynchronously, but `IMemoryBackend.DeleteAsync` promises that a deleted record
@@ -75,13 +85,11 @@ admission order since the review of 2026-10-23).
 **Circuits: read, compute, compare-and-set, retry.**
 
 - The `change` function may run more than once under contention, so it must be **pure** (the interface's documentation says so).
-- Each key has a **version counter kept apart from the value** (`ot:{q}:cv:<key>`, incremented on every write including
-  deletion). Deleting a circuit does not reset the counter, so a writer that read version 7 cannot write over a circuit that was
-  deleted and recreated at version 9.
-- **The counter's lifetime:** it is written with a TTL of one day, refreshed on every write. A compare-and-set lasts seconds (the
-  retries are bounded), so no writer can hold a version read a day ago; after a day without writes the counter may go, and a
-  recreated circuit starts a new count. The counter never disappears while a circuit exists (both are written by one script, with
-  the same TTL refresh).
+- **Compare the value, not a version.** The script writes only if the stored circuit (serialised, or absent) is exactly what the
+  writer read. No version counters, so nothing to expire and no ABA: if a paused writer finds the very value it read, even after
+  the circuit was deleted and recreated in between, applying its change is correct, because `change` is a pure function of that
+  value and the result is the same as if the writer had run just now. (Third review: a counter with a TTL could be reused after a
+  long pause; comparing values removes the counter.)
 - **Retries are bounded** (10, with jitter); after that the call throws, and the worker treats it as a queue error (back off).
 
 **Cancellations** expire after a retention period in every store (in-memory too, aligned in R1), default the dead-letter
@@ -120,8 +128,8 @@ Valkey only; Cluster is documented as **designed for, not tested** until a Clust
   SQLite aligned to it (fixes the renewal bug and the cancellation difference). RabbitMQ queue updated. *Built 2026-10-23: 10
   checks (`QueueControlConformance`), both stores pass; SQLite's renewal and cancellation-retention bugs fixed; RabbitMQ treats a
   refused renewal as a lost lease and hands the message back.*
-- [ ] **R2** `RedisQueueControl`: scripts, version counters with their TTL, key TTLs, registry pruning (scripts and `KeysAsync`),
-  prefix and encoding.
+- [ ] **R2** `RedisQueueControl`: scripts, value compare-and-set for circuits, key TTLs, registry pruning (scripts and
+  `KeysAsync`), prefix and encoding.
 - [ ] **R3** CI against `redis:7.4` and `valkey/valkey:8`: the conformance suite, RabbitMQ with the Redis store, the outage test.
 - [ ] **R4** Docs: choosing a control store, the time contract, Cluster status, what a Redis outage does.
 
@@ -184,26 +192,54 @@ opens one backend per tenant. (Pinecone recommends namespaces for tenant isolati
 
 Pinecone applies upserts and deletes **asynchronously**: a write is acknowledged before every query reflects it (*to verify* the
 window on the service; Pinecone describes seconds). The memory contract does not allow that: a deleted record must never come
-back from search. Worse than deletion, a record whose ACL was just narrowed could be returned under its **old** metadata, which the
-re-check (`MemoryGovernance.Deny`) cannot see through, because the stale vector carries the stale record JSON.
+back from search, and filtering happens **before** top-k (`FiltersBeforeRanking`). A record whose ACL was just narrowed could
+otherwise come back under its **old** metadata, which the re-check (`MemoryGovernance.Deny`) cannot see through.
 
-The strict contract is kept, with a **journal of recent writes**:
+*Third revision.* A journal that forgets after a window was not enough: an older upsert still in flight when a delete runs can
+land afterwards and bring the record back once the journal has forgotten it; and dropping stale hits after ranking breaks
+filtering before top-k. So: **a durable record state, and records with pending changes kept out of the query itself.**
 
-- Every upsert, delete and supersede writes `(record id, version, deleted?)` to a journal **before** it calls Pinecone. The
-  version is a counter the backend assigns, also stored in each vector's metadata (`version`).
-- Every search drops a hit whose record is in the journal as deleted, or whose `version` metadata is older than the journal's.
-  Search asks Pinecone for `topK` plus the number of journal entries for the namespace (capped), so dropped hits do not shrink
-  the result below `topK` in the usual case.
-- Entries leave the journal after a **freshness window** (default 5 minutes, configurable, well above Pinecone's documented
-  seconds). The real-service gate (P5) measures the actual lag and checks the default against it.
-- **The journal is shared by every process that writes the namespace.** It is an interface (`IMemoryWriteJournal`) with an
-  in-process implementation (one writer process), a SQLite one (one machine), and a Redis one once R2 exists (several machines).
-  A deployment with several writer processes and an in-process journal is refused at start-up, when the backend can tell (a
-  configuration flag), and warned about in the docs otherwise.
+**Record state** (`IMemoryRecordState`: SQLite for one machine, Redis once R2 exists for several; one store shared by every
+process that writes the namespace). One row per record: `latest` version (assigned atomically by the store), `deleted`,
+`settled`, `changed_at`, and the latest version's expected chunk ids (as a count and a hash), so settling can tell a complete
+version from a partly written one. It is small (no text, no vectors) and authoritative; the vectors in Pinecone are treated as a cache of it.
 
-This is the complexity the single-store design hoped to avoid; it is the price of Pinecone's write model with a strict deletion
-contract. The alternative, documenting a weaker contract (deleted or changed records may appear for a bounded time), is
-rejected: an ACL change that lags is a data leak.
+**Every Pinecone call has a deadline** (default 30 s, client-side). A call past its deadline is treated as *possibly applied*: it
+is never assumed to have failed cleanly.
+
+**Write protocol.**
+
+1. *Begin:* the state store sets `latest = v + 1`, `settled = false` (and `deleted` for a delete) in one atomic step, before any
+   Pinecone call. From this moment the record is out of every search (below).
+2. *Write:* upsert the chunks with `version = latest` (or delete the record's vectors).
+3. *Compensate:* after the call returns, if the state's `latest` has moved on (a newer write or a delete began meanwhile), delete
+   the vectors this call wrote, by id. Because the version is part of every vector id (below), this can only remove this call's
+   own vectors, never a newer version's. The record stays unsettled either way.
+
+**Search.** The filter gains `{record_key: {$nin: [records not settled]}}`, so a record with a pending change is neither returned
+stale nor counted in top-k: it is simply invisible until settled. Pinecone allows 10,000 values per `$nin` (documented); past
+that the search fails with a clear error (back-pressure) rather than returning possibly stale results.
+
+**Settling** (a sweep, every few seconds, and after each write). A record is settled only when all of these hold:
+
+- its last change is older than the **deadline plus a propagation margin** (default 30 s + 60 s), so no earlier call can still
+  arrive;
+- listing its ids by prefix shows **exactly** the latest version's expected chunk ids (or none, for a delete); ids of earlier
+  versions are deleted and the record stays unsettled until a later sweep shows them gone. If the latest version is incomplete
+  after the margin (its write failed part-way), the record stays unsettled and invisible, and the maintenance status reports it
+  so the caller re-upserts it: the state store holds no text to repair it from;
+- `latest` is unchanged since the sweep read it (a compare-and-set on the state row), so a write that began during the sweep
+  keeps the record unsettled.
+
+A deleted record's row stays (a tombstone) until it settles and then for a retention period (default 7 days) before it may be
+removed; a write to the same record id after that starts a new row.
+
+**What this costs.** A new or changed record is not searchable until it settles: typically the deadline plus margin, about 90 s
+with the defaults (a product trade-off; shorter margins once P5 has measured the real lag). The state store is a second store,
+but a small authoritative one; the vectors can always be rebuilt from the records. The weaker alternative, letting deleted or
+changed records appear for a while, stays rejected: an ACL change that lags is a data leak.
+
+**What it still assumes** (to measure in P5): that listing and fetching by id reflect writes older than the margin.
 
 ### Embeddings and scores
 
@@ -217,19 +253,21 @@ As `VectorDataMemoryBackend` and the SQLite backend:
 - **Scores:** cosine only in the first version; Pinecone returns the similarity directly. `MinScore` (validated: finite, -1 to 1)
   drops weaker hits, so a question nothing answers returns nothing rather than the nearest unrelated chunks.
 
-### Replacing a record
+### Vector ids and replacing a record
 
-Chunk ids are `<record id>#<chunk id>`. An upsert of a record:
+Record and chunk ids may contain any character, so they are not joined with a separator. A vector's id is
+`r<hex of SHA-256(record id), 40 characters>.v<version>.c<base64url(chunk id)>`: the record part has a fixed length and an
+alphabet without `.`, so no two (record, version, chunk) triples share an id, and the record prefix `r<hash>.` matches that
+record's vectors only, every version. Putting the version in the id means two versions never overwrite each other: a late write
+of an old version adds its own vectors, which settling removes, and cannot replace a newer version's. The real
+ids are in metadata (`record_id`, `chunk_id`); `record_key` (the hash) is what the search filter's `$nin` uses. A chunk id too long
+for Pinecone's id limit (512 bytes, *to verify*) is refused on upsert. Tests: ids containing `.`, `#` and `/`; a record id that is a
+prefix of another; the same chunk id under two records.
 
-1. journal the new version;
-2. upsert every new chunk with the new `version`;
-3. list the record's ids by prefix (serverless indexes support listing by prefix, *to verify*) and delete those not in the new
-   set.
-
-Until step 3 is visible, an old chunk can still match; the journal drops it, because its `version` is older. If step 3 fails, the
-next upsert or a maintenance sweep (`PineconeMemoryMaintenance.SweepAsync`, deleting chunks whose `version` is older than their
-record's newest) cleans it; the journal covers the gap meanwhile. Tests: a record replaced with fewer chunks; a replacement whose
-step 3 fails.
+Replacing a record follows the write protocol: begin (new `latest`), upsert the new chunks, and let settling remove chunks of
+earlier versions, including chunks the new version no longer has. Tests: a record replaced with fewer chunks; a replacement whose
+clean-up fails (it stays unsettled, so invisible, until a sweep succeeds); a delete racing an in-flight upsert (the case the
+second review described): the record never comes back.
 
 ### Dependencies and tests
 
@@ -242,7 +280,7 @@ step 3 fails.
     under real lag (search immediately after a delete, an ACL change and a replacement must not return the old state), and a
     measurement of the lag against the freshness window. Only this makes the backend Verified.
 
-The memory conformance suite counts as passed for Pinecone only with the journal in place.
+The memory conformance suite counts as passed for Pinecone only with the record state and settling in place.
 
 ### Steps
 
@@ -250,13 +288,15 @@ The memory conformance suite counts as passed for Pinecone only with the journal
   and `$in`), list ids by prefix, describe index (dimension, metric), and metadata sizes of typical records. Whether the emulator
   shows write lag (it may not; the service gate must then cover it). If the emulator lacks an operator, the owner chooses: test it
   against the service only, or change the mapping.
-- [ ] **P2** `IMemoryWriteJournal` (in-process and SQLite) and its tests.
-- [ ] **P3** `PineconeMemoryBackend`: embedding options and start-up checks, upsert with versions and the replacement protocol,
-  the filter, search with the journal and the re-check, delete and supersede, the size refusal, the sweep.
+- [ ] **P2** `IMemoryRecordState` (SQLite) with its own conformance checks: atomic begin, compare-and-set settle, tombstones.
+- [ ] **P3** `PineconeMemoryBackend`: embedding options and start-up checks, the id encoding, the write protocol with deadlines
+  and compensation, the filter with `$nin` of unsettled records, the settling sweep, delete and supersede, the size refusal. Tests
+  include a delete racing a delayed upsert, and ids with separators.
 - [ ] **P4** Mapping tests (each row, positive and negative), memory conformance suite and quality gate against Pinecone Local.
 - [ ] **P5** Docs and the real-index gate (owner's account), including the measured lag.
 
-Size: P1 half a session; P2 half a session; P3 and P4 two sessions; P5 depends on the account.
+Size: P1 half a session; P2 half a session; P3 and P4 two and a half to three sessions; P5 depends on the account. A Redis
+record state follows R2, for deployments writing from several machines.
 
 ---
 
@@ -319,6 +359,10 @@ reviewed.
 | `maxTimeMS`, enforced by the server | `CommandTimeoutSeconds` (15 s) |
 | Stages per pipeline | 20 |
 | Nesting depth of any supplied document | 32 |
+| Size of the request (the tool's arguments as JSON) | 16 KB |
+| Values in one `$in`, `$nin` or `$all` | 100 |
+| Clauses in one `$and`, `$or` or `$nor` | 20 |
+| Operators in the whole request | 200 |
 | `$sample` size | `MaxRows` |
 | Rows returned | `MaxRows` (200); a `$limit` appended to pipelines and a cursor limit on `find` |
 | **Response size**: total bytes of the serialised result | 256 KB; reading stops and the result says it was cut |
@@ -368,7 +412,7 @@ Size: M1 to M3 two to three sessions (M2 is most of it); M4 half a session; M5 d
 ## Order and what each waits on
 
 1. **R1** (done), then **R2 to R4**. Nothing needed from the owner.
-2. **P1**, then P2 to P4 (the journal before the backend). P5 needs a Pinecone account. A Redis journal follows R2.
+2. **P1**, then P2 to P4 (the record state before the backend). P5 needs a Pinecone account. A Redis record state follows R2.
 3. **M1 to M4** need nothing from the owner; M5 needs an Atlas account.
 
 ## Decisions (owner, 2026-10-23)
