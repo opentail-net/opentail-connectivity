@@ -273,10 +273,10 @@ Size: M1 to M3 two to three sessions (M2 is most of it); M4 half a session; M5 d
    the first version); P4 needs a Pinecone account.
 3. **M1 to M4** need nothing from the owner; M5 needs an Atlas account.
 
-## Open questions (owner)
+## Decisions (owner, 2026-10-23)
 
-- **Pinecone:** accept chunk text and record JSON in Pinecone for the first version (proposed), or wait for a design that keeps
-  them in our own store?
-- **Valkey in the examples** (proposed, for its licence), with Redis and Valkey both in CI.
-- **MongoDB joins:** confirm that the first version is one collection per query.
-- **Accounts:** a Pinecone Starter project and an Atlas M0 cluster when the emulator and container work is done.
+- **Pinecone:** chunk text and record JSON are stored in Pinecone in the first version.
+- **MongoDB:** the first version is one collection per query.
+- **Valkey** in the examples; Redis and Valkey both in CI.
+
+Still open: accounts for P4 (Pinecone Starter) and M5 (Atlas M0) when the emulator and container work is done.

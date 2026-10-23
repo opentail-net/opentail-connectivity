@@ -284,4 +284,4 @@ review. Nothing built.
 - [ ] **[C]** P1 to P3: Pinecone memory backend storing what the VectorData backend stores, with the full governance mapping
   before ranking; Pinecone Local spike first.
 - [ ] **[H]** M1 to M4: MongoDB module, one collection per query, operator allow-list by context, resource bounds, CI on `mongo:8`.
-- [ ] **[Owner]** Pinecone privacy trade-off (text in Pinecone for the first version?), MongoDB joins later, accounts for P4 and M5.
+- [ ] **[Owner]** Accounts for P4 (Pinecone) and M5 (Atlas). *Decided 2026-10-23: text in Pinecone for the first version, MongoDB one collection per query, Valkey in examples.*
