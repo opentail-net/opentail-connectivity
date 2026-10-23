@@ -253,6 +253,30 @@ manual pause per key would live.
 Each comes with conformance checks where the queue is responsible (slots never exceed the limit across workers; a full key does
 not block other keys; an expired lease frees its slot; an open key releases nothing and burns no attempts).
 
+## Choosing a control store
+
+A broker's queue (RabbitMQ) cannot keep concurrency slots, circuits, rate starts or cancellations itself; `RabbitMqWorkQueueOptions.Control`
+holds them, and every worker of a queue must share one.
+
+| Store | Package | For | Clock |
+|---|---|---|---|
+| `InMemoryQueueControl` | Queues | One process, tests | The process's `TimeProvider` |
+| `SqliteQueueControl` | Queues.Sqlite | Several processes on **one machine** (one file) | The machine's clock |
+| `RedisQueueControl` | Queues.Redis | Workers on **several machines** | The Redis server's (`TIME`), so workers' clock skew does not matter |
+
+All three keep the contract in `QueueControlConformance` (slots never exceed their limit and never revive once lapsed, rate windows,
+circuit updates without lost writes, cancellations that expire); Redis and Valkey are checked in `queues-redis.yml`.
+
+**Redis or Valkey.** The same package works with both (StackExchange.Redis); examples use Valkey (BSD licence). Give it a
+`Prefix` of its own when applications share a server. Keys of one queue share a hash tag, so the scripts are valid on Redis
+Cluster: **designed for, not tested** (CI runs standalone servers).
+
+**When Redis is unreachable** every control call fails and workers back off; nothing starts that the limits could not vouch for.
+A message being admitted at that moment is parked back on its queue (no attempt used). Jobs already running finish; their
+completion still reaches RabbitMQ, while the slot release and circuit update for them are skipped (the slot lapses at its lease
+end). A running job's lease renewal fails, which the worker treats as a lost lease: the handler is cancelled and the job runs
+again later. Checked by the outage test in `queues-redis.yml`.
+
 ## Upgrading RabbitMQ queues
 
 RabbitMQ fixes a durable queue's arguments when it is first declared; declaring it again with different arguments closes the

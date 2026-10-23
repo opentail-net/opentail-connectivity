@@ -131,68 +131,82 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                     break;
                 var message = Read(got);
                 var now = Now;
-                if (await IsCancelledAsync(queue, message.Id, ct).ConfigureAwait(false))
-                {
-                    await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false); // dropped
-                    continue;
-                }
-
-                if (message.NotBefore > now)
-                {
-                    // Back from a wait queue a little early: wait again.
-                    await PublishDueOrWaitingAsync(channel, queue, message, now, ct).ConfigureAwait(false);
-                    await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
-                    continue;
-                }
-
-                // A job past its attempt or age limit goes to the dead letters before it takes a slot, a start or a probe.
-                if (WorkQueueRules.DeadReason(message.Attempts, At(message.EnqueuedAt), At(now), _options) is { } reason)
-                {
-                    await PublishDeadAsync(channel, queue, message, reason, now, ct).ConfigureAwait(false);
-                    await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
-                    continue;
-                }
-
                 var token = Guid.NewGuid().ToString("N");
                 var until = now + (long)lease.TotalMilliseconds;
-                if (message.ConcurrencyKey is { } ck && _rabbit.Control is { } control)
+                try
                 {
-                    // A slot, then the circuit, then the rate: any refusing means the job waits a while, using no attempt. The rate
-                    // goes last, so only a job that actually starts counts as a start.
-                    var release = !skipConcurrencyKeys.Contains(ck)
-                                  && await control.TryTakeSlotAsync(queue, ck, _options.LimitFor(ck) ?? int.MaxValue, token, lease, ct).ConfigureAwait(false);
-                    var probed = false;
-                    if (release)
+                    if (await IsCancelledAsync(queue, message.Id, ct).ConfigureAwait(false))
                     {
-                        var allowed = false;
-                        await control.UpdateCircuitAsync(queue, ck, c =>
-                        {
-                            var (ok, probe) = Circuits.MayRelease(c, now, _options);
-                            allowed = ok;
-                            probed = ok && probe;
-                            return probed ? Circuits.ProbeReleased(c!, token, until) : c;
-                        }, ct).ConfigureAwait(false);
-                        if (!allowed)
-                        {
-                            await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
-                            release = false;
-                        }
-                    }
-                    if (release && _options.RateFor(ck) is { } rate && !await control.TryTakeStartAsync(queue, ck, rate, ct).ConfigureAwait(false))
-                    {
-                        await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
-                        if (probed)
-                            await control.UpdateCircuitAsync(queue, ck, c => Circuits.Settled(c, token), ct).ConfigureAwait(false); // the probe never ran
-                        release = false;
-                    }
-
-                    if (!release)
-                    {
-                        await PublishDueOrWaitingAsync(channel, queue, message with { NotBefore = now + ParkMs }, now, ct).ConfigureAwait(false);
-                        await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
-                        parks++;
+                        await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false); // dropped
                         continue;
                     }
+
+                    if (message.NotBefore > now)
+                    {
+                        // Back from a wait queue a little early: wait again.
+                        await PublishDueOrWaitingAsync(channel, queue, message, now, ct).ConfigureAwait(false);
+                        await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    // A job past its attempt or age limit goes to the dead letters before it takes a slot, a start or a probe.
+                    if (WorkQueueRules.DeadReason(message.Attempts, At(message.EnqueuedAt), At(now), _options) is { } reason)
+                    {
+                        await PublishDeadAsync(channel, queue, message, reason, now, ct).ConfigureAwait(false);
+                        await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    if (message.ConcurrencyKey is { } ck && _rabbit.Control is { } control)
+                    {
+                        // A slot, then the circuit, then the rate: any refusing means the job waits a while, using no attempt. The rate
+                        // goes last, so only a job that actually starts counts as a start.
+                        var release = !skipConcurrencyKeys.Contains(ck)
+                                      && await control.TryTakeSlotAsync(queue, ck, _options.LimitFor(ck) ?? int.MaxValue, token, lease, ct).ConfigureAwait(false);
+                        var probed = false;
+                        if (release)
+                        {
+                            var allowed = false;
+                            await control.UpdateCircuitAsync(queue, ck, c =>
+                            {
+                                var (ok, probe) = Circuits.MayRelease(c, now, _options);
+                                allowed = ok;
+                                probed = ok && probe;
+                                return probed ? Circuits.ProbeReleased(c!, token, until) : c;
+                            }, ct).ConfigureAwait(false);
+                            if (!allowed)
+                            {
+                                await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
+                                release = false;
+                            }
+                        }
+                        if (release && _options.RateFor(ck) is { } rate && !await control.TryTakeStartAsync(queue, ck, rate, ct).ConfigureAwait(false))
+                        {
+                            await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
+                            if (probed)
+                                await control.UpdateCircuitAsync(queue, ck, c => Circuits.Settled(c, token), ct).ConfigureAwait(false); // the probe never ran
+                            release = false;
+                        }
+
+                        if (!release)
+                        {
+                            await PublishDueOrWaitingAsync(channel, queue, message with { NotBefore = now + ParkMs }, now, ct).ConfigureAwait(false);
+                            await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+                            parks++;
+                            continue;
+                        }
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException && _rabbit.Control is not null)
+                {
+                    // The control store failed while this message was held (Redis unreachable, say). Park it, so it is neither
+                    // stranded unacknowledged on this channel nor charged an attempt; return what was already leased, or report
+                    // the failure so the worker backs off. A slot taken before the failure lapses at its lease end.
+                    await PublishDueOrWaitingAsync(channel, queue, message with { NotBefore = Now + ParkMs }, Now, ct).ConfigureAwait(false);
+                    await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+                    if (leased.Count > 0)
+                        break;
+                    throw;
                 }
 
                 var job = message with { Attempts = message.Attempts + 1 };
@@ -459,12 +473,23 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         => _rabbit.Control is { } store && await store.IsCancelledAsync(queue, id, ct).ConfigureAwait(false);
 
     /// <summary>Frees the lease's concurrency slot and updates its key's circuit.</summary>
+    /// <summary>
+    /// Frees the slot and updates the circuit, after the broker already has the job's outcome. Best effort: if the control store
+    /// fails here (unreachable), throwing would leave a lease recorded for a message already acknowledged, and its expiry would
+    /// publish the job again. The slot then lapses at its lease end, and this one circuit update is lost.
+    /// </summary>
     private async Task SettleKeyAsync(Lease lease, Func<CircuitRecord?, CircuitRecord?> circuit, CancellationToken ct)
     {
         if (lease.Job.ConcurrencyKey is not { } key || _rabbit.Control is not { } control)
             return;
-        await control.ReleaseSlotAsync(lease.Queue, key, lease.Token, ct).ConfigureAwait(false);
-        await control.UpdateCircuitAsync(lease.Queue, key, circuit, ct).ConfigureAwait(false);
+        try
+        {
+            await control.ReleaseSlotAsync(lease.Queue, key, lease.Token, ct).ConfigureAwait(false);
+            await control.UpdateCircuitAsync(lease.Queue, key, circuit, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+        }
     }
 
     /// <summary>The wait queues that exist for <paramref name="queue"/> (any worker may have made them).</summary>
@@ -535,7 +560,12 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             await ReturnExpiredAsync(channel, ct).ConfigureAwait(false);
             if (!_leases.TryGetValue(job.LeaseToken, out var lease) || lease.Job.Id != job.Id || !ReferenceEquals(lease.Channel, channel))
                 return false;
-            if (await IsCancelledAsync(lease.Queue, job.Id, ct).ConfigureAwait(false))
+            // Best effort: with the control store unreachable, a held job can still be completed or retried; only the early news
+            // that it was cancelled is lost.
+            bool cancelled;
+            try { cancelled = await IsCancelledAsync(lease.Queue, job.Id, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { cancelled = false; }
+            if (cancelled)
             {
                 // Cancelled while this worker held it: drop it, and tell the worker it lost the job.
                 _leases.Remove(job.LeaseToken);

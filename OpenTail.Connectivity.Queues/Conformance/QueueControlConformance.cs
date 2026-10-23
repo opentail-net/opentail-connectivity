@@ -154,7 +154,6 @@ public static class QueueControlConformance
 
         await c.ReleaseSlotAsync(Q, "slot-key", "t");
         await c.UpdateCircuitAsync(Q, "circuit-key", _ => null);
-        await clock.AdvanceAsync(TimeSpan.FromSeconds(61)); // the start's window has passed (keys count starts within the last hour)
         var left = await c.KeysAsync(Q);
         Ensure(left.All(k => k.Key != "slot-key" && k.Key != "circuit-key"), "a key with nothing left was still reported: " +
             string.Join(", ", left.Select(k => k.Key)));

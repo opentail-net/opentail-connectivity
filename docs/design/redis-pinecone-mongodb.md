@@ -90,7 +90,8 @@ admission order since the review of 2026-10-23).
   the circuit was deleted and recreated in between, applying its change is correct, because `change` is a pure function of that
   value and the result is the same as if the writer had run just now. (Third review: a counter with a TTL could be reused after a
   long pause; comparing values removes the counter.)
-- **Retries are bounded** (10, with jitter); after that the call throws, and the worker treats it as a queue error (back off).
+- **Retries are bounded** (50 by default, `CircuitRetries`, with 1 to 20 ms jitter; 10 was too few for four workers updating one
+  circuit at once); after that the call throws, and the worker treats it as a queue error (back off).
 
 **Cancellations** expire after a retention period in every store (in-memory too, aligned in R1), default the dead-letter
 retention.
@@ -102,8 +103,7 @@ retention.
 - Every slot and start set gets a TTL of its longest live entry (`PEXPIRE` in the same script), so an abandoned key disappears on
   its own. The registry `<prefix>{<queue>}:keys` is pruned **by the scripts that empty a key**, and also **by `KeysAsync`**, which
   removes members whose slot, start and circuit keys are all gone (a key that expired on its own runs no script). `KeysAsync`
-  reads the registry with `SSCAN` in pages, never `KEYS`. The registry itself has the TTL of its longest-lived member, refreshed
-  by every write.
+  reads the registry with `SSCAN` in pages, never `KEYS`. The registry has no TTL (circuits do not expire, as in the other stores); it is kept small by the pruning above.
 
 **Failure.** Redis unreachable means every control call throws; the worker backs off and leases nothing. It never treats a failed
 control call as permission.
@@ -128,10 +128,15 @@ Valkey only; Cluster is documented as **designed for, not tested** until a Clust
   SQLite aligned to it (fixes the renewal bug and the cancellation difference). RabbitMQ queue updated. *Built 2026-10-23: 10
   checks (`QueueControlConformance`), both stores pass; SQLite's renewal and cancellation-retention bugs fixed; RabbitMQ treats a
   refused renewal as a lost lease and hands the message back.*
-- [ ] **R2** `RedisQueueControl`: scripts, value compare-and-set for circuits, key TTLs, registry pruning (scripts and
-  `KeysAsync`), prefix and encoding.
-- [ ] **R3** CI against `redis:7.4` and `valkey/valkey:8`: the conformance suite, RabbitMQ with the Redis store, the outage test.
-- [ ] **R4** Docs: choosing a control store, the time contract, Cluster status, what a Redis outage does.
+- [x] **R2** `RedisQueueControl`: scripts, value compare-and-set for circuits, key TTLs, registry pruning (scripts and
+  `KeysAsync`), prefix and encoding. *Built 2026-10-23 (`OpenTail.Connectivity.Queues.Redis`, StackExchange.Redis 3.3.1). Writing
+  the outage test found two gaps in the RabbitMQ queue, fixed with it: a control-store failure while a message was held left it
+  unacknowledged on the channel (now parked back, no attempt used); and settling after the broker's ack could throw, leaving a
+  lease for an acknowledged message whose expiry would publish the job again (settling after the ack is now best effort).*
+- [x] **R3** CI against `redis:7.4` and `valkey/valkey:8`: the conformance suite, RabbitMQ with the Redis store, the outage test
+  (`queues-redis.yml`, a proxy that is stopped and resumed).
+- [x] **R4** Docs: choosing a control store, the time contract, Cluster status, what a Redis outage does
+  ([messaging and queues](messaging-and-queues.md#choosing-a-control-store)).
 
 Size: R1 a session (it changes three stores and their caller); R2 and R3 a session to a session and a half; R4 small.
 

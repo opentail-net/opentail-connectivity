@@ -280,8 +280,8 @@ review. Nothing built.
 - [x] **[C]** R1: the `IQueueControl` contract (store-clock durations, `RenewSlotAsync` returns bool and never revives an expired
   slot, cancellations expire everywhere) with a conformance suite. *Built 2026-10-23; fixed two SQLite bugs (renewal revived lapsed
   slots; cancellations outlived their retention when read).*
-- [ ] **[C]** R2 to R4: `RedisQueueControl` (Lua scripts, versioned compare-and-set circuits, TTLs, prefix), CI against Redis and
-  Valkey, outage test.
+- [x] **[C]** R2 to R4: `RedisQueueControl` (Lua scripts, value compare-and-set circuits, TTLs, prefix), CI against Redis and
+  Valkey, outage test. *Built 2026-10-23; two RabbitMQ gaps found by the outage test fixed with it.*
 - [ ] **[C]** *Parked 2026-10-23 (owner: look again soon, do not retire).* P1 to P4: Pinecone memory backend storing what the VectorData backend stores, with the full governance mapping
   before ranking, a durable record state and settling (records with pending changes excluded inside the query) so deletes and
   ACL changes never come back during Pinecone's write lag, the

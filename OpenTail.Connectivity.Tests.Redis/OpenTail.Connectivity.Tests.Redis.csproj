@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <UseMicrosoftTestingPlatform>true</UseMicrosoftTestingPlatform>
+    <IsPackable>false</IsPackable>
+    <Description>Redis/Valkey queue control: the IQueueControl conformance suite against Redis and Valkey, the RabbitMQ work queue with Redis as its shared control store, and a Redis outage. Server tests skip unless OTAIL_QUEUE_REDIS, OTAIL_QUEUE_VALKEY and OTAIL_QUEUE_RABBITMQ are set; run by queues-redis.yml.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <ProjectReference Include="../OpenTail.Connectivity.Queues.Redis/OpenTail.Connectivity.Queues.Redis.csproj" />
+    <ProjectReference Include="../OpenTail.Connectivity.Queues.RabbitMQ/OpenTail.Connectivity.Queues.RabbitMQ.csproj" />
+  </ItemGroup>
+</Project>

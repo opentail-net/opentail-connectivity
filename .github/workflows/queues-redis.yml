@@ -1,0 +1,68 @@
+name: Queue control on Redis and Valkey
+
+# Redis/Valkey queue control against real servers (OpenTail.Connectivity.Tests.Redis): the IQueueControl conformance suite on
+# Redis 7.4 and Valkey 8, the RabbitMQ work queue conformance suite with Redis as its shared control store, and a Redis outage
+# through a proxy. Real time throughout. Linux only and never on every push, to save Actions minutes: run it by hand, or it runs
+# when the queue packages, these tests or this workflow change.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'OpenTail.Connectivity.Queues/**'
+      - 'OpenTail.Connectivity.Queues.Redis/**'
+      - 'OpenTail.Connectivity.Queues.RabbitMQ/**'
+      - 'OpenTail.Connectivity.Tests.Redis/**'
+      - '.github/workflows/queues-redis.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: queues-redis-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  redis:
+    name: Redis 7.4, Valkey 8, RabbitMQ 4.1
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7.4
+        ports: [ '6379:6379' ]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
+      valkey:
+        image: valkey/valkey:8
+        ports: [ '6380:6379' ]
+        options: --health-cmd "valkey-cli ping" --health-interval 5s --health-timeout 5s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:4.1
+        ports: [ '5672:5672' ]
+        options: --health-cmd "rabbitmq-diagnostics -q check_port_connectivity" --health-interval 5s --health-timeout 10s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # MinVer reads the v* tags
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build OpenTail.Connectivity.Tests.Redis -c Release
+
+      - name: Test
+        env:
+          OTAIL_QUEUE_REDIS: localhost:6379
+          OTAIL_QUEUE_VALKEY: localhost:6380
+          OTAIL_QUEUE_RABBITMQ: amqp://guest:guest@localhost:5672/
+        # Skipped by design: the RabbitMQ suite's seven checks for capabilities it does not declare. Anything else skipped means a
+        # server variable is missing: fail rather than pass quietly.
+        run: |
+          dotnet test --project OpenTail.Connectivity.Tests.Redis -c Release --no-build 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          skipped=$(grep -Eo "skipped: [0-9]+" test.log | grep -Eo "[0-9]+" | tail -1)
+          if [ "${skipped:-0}" != "7" ]; then echo "::error::Expected exactly 7 skipped tests, got ${skipped:-0}"; exit 1; fi
+          exit $status
