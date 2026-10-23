@@ -55,6 +55,10 @@ Live search and reading, nothing copied. [Roadmap: three tiers](roadmap.md#docum
   ([guide](https://github.com/opentail-net/opentail-host/blob/main/docs/guides/fabric-synapse.md), docs only), `redshift` through
   Npgsql, and `oracle` in its own package `OpenTail.Modules.Sql.Oracle` with a CI suite on Oracle Database Free. Providers are now
   `SqlProvider` records; add-on packages declare their own. *Built 2026-10-23. Fabric, Synapse and Redshift wait on real accounts.*
+- [x] **[H]** Databricks: `OpenTail.Modules.Sql.Databricks`, an ADO.NET adapter over the SQL Statement Execution API through the
+  Host's guarded HTTP client (OAuth service principal or token, `:name` parameters, LIMIT, query tags, cancel on timeout)
+  ([guide](https://github.com/opentail-net/opentail-host/blob/main/docs/guides/databricks.md)). *Built against a stub 2026-10-23.*
+- [ ] **[Owner]** A Databricks Free Edition workspace, to verify the Databricks provider against the real API.
 
 ## 5. Ask the first customers
 
