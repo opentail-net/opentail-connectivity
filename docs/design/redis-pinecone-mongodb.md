@@ -367,9 +367,8 @@ Size: M1 to M3 two to three sessions (M2 is most of it); M4 half a session; M5 d
 
 ## Order and what each waits on
 
-1. **R1** first: it fixes a bug in the stores we ship, independent of Redis. Then **R2 to R4**. Nothing needed from the owner.
-2. **P1**, then P2 and P3. The owner decides the privacy trade-off before P2 (text and record JSON stored in Pinecone, proposed for
-   the first version); P5 needs a Pinecone account.
+1. **R1** (done), then **R2 to R4**. Nothing needed from the owner.
+2. **P1**, then P2 to P4 (the journal before the backend). P5 needs a Pinecone account. A Redis journal follows R2.
 3. **M1 to M4** need nothing from the owner; M5 needs an Atlas account.
 
 ## Decisions (owner, 2026-10-23)
