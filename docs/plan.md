@@ -282,7 +282,9 @@ review. Nothing built.
   slots; cancellations outlived their retention when read).*
 - [ ] **[C]** R2 to R4: `RedisQueueControl` (Lua scripts, versioned compare-and-set circuits, TTLs, prefix), CI against Redis and
   Valkey, outage test.
-- [ ] **[C]** P1 to P3: Pinecone memory backend storing what the VectorData backend stores, with the full governance mapping
-  before ranking; Pinecone Local spike first.
-- [ ] **[H]** M1 to M4: MongoDB module, one collection per query, operator allow-list by context, resource bounds, CI on `mongo:8`.
-- [ ] **[Owner]** Accounts for P4 (Pinecone) and M5 (Atlas). *Decided 2026-10-23: text in Pinecone for the first version, MongoDB one collection per query, Valkey in examples.*
+- [ ] **[C]** P1 to P4: Pinecone memory backend storing what the VectorData backend stores, with the full governance mapping
+  before ranking, a journal of recent writes so deletes and ACL changes never come back during Pinecone's write lag, the
+  embedding contract (model id, cosine, `MinScore`) and a namespace per tenant; Pinecone Local spike first.
+- [ ] **[H]** M1 to M4: MongoDB module, one collection per query, exact operator allow-list by context (no `$facet`, `$regex`,
+  `$push` in the first version), resource bounds, CI on `mongo:8`.
+- [ ] **[Owner]** Accounts for P5 (Pinecone) and M5 (Atlas). *Decided 2026-10-23: text in Pinecone for the first version, MongoDB one collection per query, Valkey in examples.*

@@ -1,9 +1,22 @@
 # Plan: Redis/Valkey, Pinecone, MongoDB
 
-**Status:** plan, revised 2026-10-23 after an external review (ChatGPT) of the first version. Nothing is built. Facts marked *to
-verify* come from documentation or memory; check them before the step that depends on them.
+**Status:** plan, revised twice on 2026-10-23 after two external reviews (ChatGPT). **R1 is built** (the queue-control contract);
+the Redis store, Pinecone and MongoDB are not. Facts marked *to verify* come from documentation or memory; check them before the
+step that depends on them.
 
-**What the review changed** (each point checked against the code before accepting it):
+**What the second review changed** (each point checked against the code before accepting it):
+
+- **Pinecone:** Pinecone applies writes and deletes asynchronously, but `IMemoryBackend.DeleteAsync` promises that a deleted record
+  never comes back, and a stale vector carries stale governance metadata that the re-check cannot see through. The plan now keeps
+  a journal of recent writes that every search checks (below). The embedding contract (generator, model id, metric, `MinScore`),
+  dropped in the first revision, is restored; namespaces per tenant are mandatory; replacing a record with fewer chunks has a
+  defined clean-up.
+- **Redis:** the registry is pruned of keys that expired on their own; circuit version counters get a lifetime; the wording about
+  Lua scripts is made exact; two contradictions about R1 are fixed.
+- **MongoDB:** `$facet` and `$regex` leave the first version, and the exact expression and accumulator allow-list is written here
+  rather than deferred to M2.
+
+**What the first review changed:**
 
 - **Pinecone:** the first version kept record text out of Pinecone, but `IMemoryBackend.SearchAsync` returns `BackendHit(Record,
   ChunkId, ChunkKind, Text, ...)`, so the backend must produce the chunk's text and its record; there is no chunk-retrieval call on
@@ -32,7 +45,8 @@ Not planned: agents reading Redis directly (caches and session tokens), DynamoDB
 ## 1. Redis/Valkey as the shared queue-control store
 
 A package `OpenTail.Connectivity.Queues.Redis`, `RedisQueueControl : IQueueControl`, through StackExchange.Redis (MIT), working the
-same against Redis and Valkey (BSD). Every operation is one Lua script, so it is atomic on the server.
+same against Redis and Valkey (BSD). Every **mutation** is one Lua script, so it is atomic on the server. Two logical operations
+take several calls: `UpdateCircuitAsync` (read, compute in C#, conditional write, retry) and `KeysAsync` (paged reads).
 
 ### The contract (written first, in R1, and tested for every store)
 
@@ -64,6 +78,10 @@ admission order since the review of 2026-10-23).
 - Each key has a **version counter kept apart from the value** (`ot:{q}:cv:<key>`, incremented on every write including
   deletion). Deleting a circuit does not reset the counter, so a writer that read version 7 cannot write over a circuit that was
   deleted and recreated at version 9.
+- **The counter's lifetime:** it is written with a TTL of one day, refreshed on every write. A compare-and-set lasts seconds (the
+  retries are bounded), so no writer can hold a version read a day ago; after a day without writes the counter may go, and a
+  recreated circuit starts a new count. The counter never disappears while a circuit exists (both are written by one script, with
+  the same TTL refresh).
 - **Retries are bounded** (10, with jitter); after that the call throws, and the worker treats it as a queue error (back off).
 
 **Cancellations** expire after a retention period in every store (in-memory too, aligned in R1), default the dead-letter
@@ -74,8 +92,10 @@ retention.
 - Keys are `<prefix>{<queue>}:...`; the prefix is configurable (default `ot:`), so applications sharing a Redis do not share
   controls. Queue names are encoded (braces and colons escaped) so a name cannot break the hash tag.
 - Every slot and start set gets a TTL of its longest live entry (`PEXPIRE` in the same script), so an abandoned key disappears on
-  its own. The registry `<prefix>{<queue>}:keys` is pruned **by the scripts that empty a key**, not only by `KeysAsync`, and
-  `KeysAsync` reads it with `SSCAN` in pages, never `KEYS`.
+  its own. The registry `<prefix>{<queue>}:keys` is pruned **by the scripts that empty a key**, and also **by `KeysAsync`**, which
+  removes members whose slot, start and circuit keys are all gone (a key that expired on its own runs no script). `KeysAsync`
+  reads the registry with `SSCAN` in pages, never `KEYS`. The registry itself has the TTL of its longest-lived member, refreshed
+  by every write.
 
 **Failure.** Redis unreachable means every control call throws; the worker backs off and leases nothing. It never treats a failed
 control call as permission.
@@ -86,7 +106,7 @@ Valkey only; Cluster is documented as **designed for, not tested** until a Clust
 ### Testing
 
 - **An `IQueueControl` conformance suite** (new), against in-memory, SQLite and Redis/Valkey: limits under concurrent callers;
-  expiry; **an expired slot cannot be renewed** (fails today on in-memory and SQLite); release is idempotent; the rate window's
+  expiry; **an expired slot cannot be renewed** (SQLite failed this before R1; in-memory never did); release is idempotent; the rate window's
   edges; circuit compare-and-set under two concurrent writers, and with a delete and recreate between read and write; bounded
   retries; cancellation expiry; `KeysAsync` after keys empty out.
 - **Real time for Redis** (its clock cannot be faked), as the RabbitMQ suite already runs.
@@ -100,7 +120,8 @@ Valkey only; Cluster is documented as **designed for, not tested** until a Clust
   SQLite aligned to it (fixes the renewal bug and the cancellation difference). RabbitMQ queue updated. *Built 2026-10-23: 10
   checks (`QueueControlConformance`), both stores pass; SQLite's renewal and cancellation-retention bugs fixed; RabbitMQ treats a
   refused renewal as a lost lease and hands the message back.*
-- [ ] **R2** `RedisQueueControl`: scripts, version counters, TTLs, registry pruning, prefix and encoding.
+- [ ] **R2** `RedisQueueControl`: scripts, version counters with their TTL, key TTLs, registry pruning (scripts and `KeysAsync`),
+  prefix and encoding.
 - [ ] **R3** CI against `redis:7.4` and `valkey/valkey:8`: the conformance suite, RabbitMQ with the Redis store, the outage test.
 - [ ] **R4** Docs: choosing a control store, the time contract, Cluster status, what a Redis outage does.
 
@@ -149,11 +170,66 @@ ticks), converted in one place.
 `$in` on a list field (`principals`) matches when any element is in the set (Pinecone's documented list semantics, *to verify on the
 service and the emulator*). Each row of this table gets a positive and a negative test, and combinations get the conformance suite.
 
-### Collections: one namespace, collection as metadata
+### Collections and tenants
 
 Not a namespace per collection: a search over several collections would have to fan out and merge top-k across namespaces. The
-collection is a metadata field filtered with `$in` (the table above), in **one namespace per deployment** (or per tenant, when a
-deployment serves several), so one query returns a globally correct top-k. Delete by collection uses the same filter.
+collection is a metadata field filtered with `$in` (the table above), so one query returns a globally correct top-k. Delete by
+collection uses the same filter.
+
+**One namespace per tenant, mandatory.** The governance fields have no tenant predicate, so two tenants must never share a
+namespace. The backend takes the namespace in its options and refuses to start without one; a deployment serving several tenants
+opens one backend per tenant. (Pinecone recommends namespaces for tenant isolation.)
+
+### Freshness: deletes and changes must not come back
+
+Pinecone applies upserts and deletes **asynchronously**: a write is acknowledged before every query reflects it (*to verify* the
+window on the service; Pinecone describes seconds). The memory contract does not allow that: a deleted record must never come
+back from search. Worse than deletion, a record whose ACL was just narrowed could be returned under its **old** metadata, which the
+re-check (`MemoryGovernance.Deny`) cannot see through, because the stale vector carries the stale record JSON.
+
+The strict contract is kept, with a **journal of recent writes**:
+
+- Every upsert, delete and supersede writes `(record id, version, deleted?)` to a journal **before** it calls Pinecone. The
+  version is a counter the backend assigns, also stored in each vector's metadata (`version`).
+- Every search drops a hit whose record is in the journal as deleted, or whose `version` metadata is older than the journal's.
+  Search asks Pinecone for `topK` plus the number of journal entries for the namespace (capped), so dropped hits do not shrink
+  the result below `topK` in the usual case.
+- Entries leave the journal after a **freshness window** (default 5 minutes, configurable, well above Pinecone's documented
+  seconds). The real-service gate (P5) measures the actual lag and checks the default against it.
+- **The journal is shared by every process that writes the namespace.** It is an interface (`IMemoryWriteJournal`) with an
+  in-process implementation (one writer process), a SQLite one (one machine), and a Redis one once R2 exists (several machines).
+  A deployment with several writer processes and an in-process journal is refused at start-up, when the backend can tell (a
+  configuration flag), and warned about in the docs otherwise.
+
+This is the complexity the single-store design hoped to avoid; it is the price of Pinecone's write model with a strict deletion
+contract. The alternative, documenting a weaker contract (deleted or changed records may appear for a bounded time), is
+rejected: an ACL change that lags is a data leak.
+
+### Embeddings and scores
+
+As `VectorDataMemoryBackend` and the SQLite backend:
+
+- **The caller's `IEmbeddingGenerator`** embeds chunks on upsert and the query on search; Pinecone's integrated embedding is not
+  used.
+- **`PineconeEmbeddingOptions(ModelId, Dimensions, MinScore)`**: the model id is stored on every vector (`model`) and added to every
+  filter (`{model: {$eq: id}}`), so vectors from another embedding space are never compared. At start-up the backend reads the
+  index's dimension and metric and refuses to start if the dimension differs or the metric is not cosine.
+- **Scores:** cosine only in the first version; Pinecone returns the similarity directly. `MinScore` (validated: finite, -1 to 1)
+  drops weaker hits, so a question nothing answers returns nothing rather than the nearest unrelated chunks.
+
+### Replacing a record
+
+Chunk ids are `<record id>#<chunk id>`. An upsert of a record:
+
+1. journal the new version;
+2. upsert every new chunk with the new `version`;
+3. list the record's ids by prefix (serverless indexes support listing by prefix, *to verify*) and delete those not in the new
+   set.
+
+Until step 3 is visible, an old chunk can still match; the journal drops it, because its `version` is older. If step 3 fails, the
+next upsert or a maintenance sweep (`PineconeMemoryMaintenance.SweepAsync`, deleting chunks whose `version` is older than their
+record's newest) cleans it; the journal covers the gap meanwhile. Tests: a record replaced with fewer chunks; a replacement whose
+step 3 fails.
 
 ### Dependencies and tests
 
@@ -162,20 +238,25 @@ deployment serves several), so one query returns a globally correct top-k. Delet
   for the emulator job or test only against the service).
 - **Two separate gates**, never mistaken for each other:
   - **Pinecone Local in CI:** the memory conformance suite, the quality gate, and the mapping tests. Proves the logic.
-  - **A real index** (owner's account, run by hand): the same mapping and conformance cases, plus deletion and freshly written
-    data (eventual consistency, *to verify*). Only this makes the backend Verified.
+  - **A real index** (owner's account, run by hand): the same mapping and conformance cases, plus deletion and replacement
+    under real lag (search immediately after a delete, an ACL change and a replacement must not return the old state), and a
+    measurement of the lag against the freshness window. Only this makes the backend Verified.
+
+The memory conformance suite counts as passed for Pinecone only with the journal in place.
 
 ### Steps
 
-- [ ] **P1** Spike: Pinecone Local and the pinned SDK in CI; every operator in the mapping table, including `$in` on a list and
-  nested `$and`/`$or`; measure metadata sizes of typical records. If the emulator lacks an operator, the owner chooses: test it
+- [ ] **P1** Spike: Pinecone Local and the pinned SDK in CI. Acceptance: every row of the mapping table (not only `$or`, `$gt`
+  and `$in`), list ids by prefix, describe index (dimension, metric), and metadata sizes of typical records. Whether the emulator
+  shows write lag (it may not; the service gate must then cover it). If the emulator lacks an operator, the owner chooses: test it
   against the service only, or change the mapping.
-- [ ] **P2** `PineconeMemoryBackend`: upsert per chunk with the full metadata, the filter, search with re-check, delete and
-  supersede by filter, the size refusal.
-- [ ] **P3** Mapping tests (each row, positive and negative), memory conformance suite and quality gate against Pinecone Local.
-- [ ] **P4** Docs and the real-index gate (owner's account).
+- [ ] **P2** `IMemoryWriteJournal` (in-process and SQLite) and its tests.
+- [ ] **P3** `PineconeMemoryBackend`: embedding options and start-up checks, upsert with versions and the replacement protocol,
+  the filter, search with the journal and the re-check, delete and supersede, the size refusal, the sweep.
+- [ ] **P4** Mapping tests (each row, positive and negative), memory conformance suite and quality gate against Pinecone Local.
+- [ ] **P5** Docs and the real-index gate (owner's account), including the measured lag.
 
-Size: P1 half a session; P2 and P3 one and a half sessions; P4 depends on the account.
+Size: P1 half a session; P2 half a session; P3 and P4 two sessions; P5 depends on the account.
 
 ---
 
@@ -205,18 +286,30 @@ The guard walks every value of every document the model supplies, recursively, a
 allow-list **for the context it appears in**; anything else is refused, so an operator MongoDB adds later is refused until it is
 reviewed.
 
-- **Stages** (`aggregate` only): `$match`, `$project`, `$addFields`/`$set`, `$unset`, `$group`, `$sort`, `$limit`, `$skip`,
-  `$unwind`, `$count`, `$bucket`, `$bucketAuto`, `$sortByCount`, `$replaceRoot`/`$replaceWith`, `$sample` (size capped), `$facet`
-  (its sub-pipelines under the same policy, no nested `$facet`).
-- **Query operators** (in `filter`, `$match`): comparison (`$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`), logical
-  (`$and`, `$or`, `$nor`, `$not`), element (`$exists`, `$type`), array (`$all`, `$elemMatch`, `$size`), `$regex` with `$options`,
-  `$expr` (its contents under the expression list).
-- **Expression operators** (in `$expr`, `$project`, `$group`, ...): an explicit list of arithmetic, comparison, boolean, string,
-  date, array, conditional, type and accumulator operators, taken from MongoDB's operator reference when M2 is built; a test fails
-  if the list contains anything from the refused set.
+- **Stages** (`aggregate` only): `$match`, `$project`, `$addFields`, `$set`, `$unset`, `$group`, `$sort`, `$limit`, `$skip`,
+  `$unwind`, `$count`, `$sortByCount`, `$replaceRoot`, `$replaceWith`, `$sample` (size capped). Not in the first version:
+  `$facet` (each branch builds an array inside one document, which a final `$limit` does not bound), `$bucket`, `$bucketAuto`.
+- **Query operators** (in `filter`, `$match`): `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$and`, `$or`, `$nor`,
+  `$not`, `$exists`, `$type`, `$all`, `$elemMatch`, `$size`, and `$expr` (its contents under the expression list). Not in the
+  first version: `$regex` (a length limit is not a regex policy; a restricted subset, such as an anchored literal prefix, can come
+  later with its own tests).
+- **Expression operators** (in `$expr`, `$project`, `$addFields`/`$set`, `$group` keys, `$replaceRoot`/`$replaceWith`,
+  `$sortByCount`), exactly these:
+  - arithmetic: `$add`, `$subtract`, `$multiply`, `$divide`, `$mod`, `$abs`, `$ceil`, `$floor`, `$round`, `$trunc`;
+  - comparison: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$cmp`;
+  - boolean and conditional: `$and`, `$or`, `$not`, `$cond`, `$ifNull`, `$switch`;
+  - string: `$concat`, `$substrCP`, `$strLenCP`, `$toLower`, `$toUpper`, `$trim`;
+  - date: `$year`, `$month`, `$dayOfMonth`, `$dayOfWeek`, `$week`, `$hour`, `$minute`, `$dateToString`, `$dateTrunc`, `$dateDiff`;
+  - type: `$type`, `$toString`, `$toInt`, `$toLong`, `$toDouble`, `$toDecimal`, `$toDate`, `$toBool`;
+  - array (reading, never building): `$size`, `$arrayElemAt`, `$in`, `$first`, `$last`;
+  - `$literal`.
+- **Accumulators** (in `$group` only): `$sum`, `$avg`, `$min`, `$max`, `$count`, `$first`, `$last`. Not `$push` or `$addToSet`
+  (they build arrays as large as the group), nor `$accumulator`.
+- Each operator is allowed only in its context: a query operator inside `$project` is refused, an accumulator outside `$group`
+  is refused. A test enumerates every operator in the lists against every context.
 - **Always refused**, at any depth: `$where`, `$function`, `$accumulator` (server-side JavaScript); `$out`, `$merge` (writes);
-  `$lookup`, `$graphLookup`, `$unionWith` (first version); `$currentOp`, `$listSessions`, `$collStats`, `$indexStats`,
-  `$planCacheStats`, `$documents`, `$changeStream` (server internals and other sources).
+  `$lookup`, `$graphLookup`, `$unionWith`, `$facet`, `$regex` (first version); `$currentOp`, `$listSessions`, `$collStats`,
+  `$indexStats`, `$planCacheStats`, `$documents`, `$changeStream` (server internals and other sources).
 - **Collections:** an allow-list in configuration; `system.*` never.
 
 ### Resource bounds (`maxTimeMS` is the last line, not the only one)
@@ -224,7 +317,7 @@ reviewed.
 | Bound | Default |
 |---|---|
 | `maxTimeMS`, enforced by the server | `CommandTimeoutSeconds` (15 s) |
-| Stages per pipeline, including `$facet` sub-pipelines | 20 |
+| Stages per pipeline | 20 |
 | Nesting depth of any supplied document | 32 |
 | `$sample` size | `MaxRows` |
 | Rows returned | `MaxRows` (200); a `$limit` appended to pipelines and a cursor limit on `find` |
@@ -233,7 +326,9 @@ reviewed.
 | Nested arrays and documents in output | depth 8 and 200 elements per array, then summarised |
 | `allowDiskUse` | false |
 
-`$regex` runs on the server and is bounded by `maxTimeMS`; the guard refuses patterns over 500 characters.
+What these do not bound: the work inside `$group` (one group per distinct key) and `$sort` without an index. The server bounds
+them (100 MB per stage with `allowDiskUse: false`, then the stage fails) and `maxTimeMS` stops them; the guard cannot. That is
+accepted for the first version and stated in the guide.
 
 ### Output and governance
 
@@ -248,7 +343,7 @@ reviewed.
 
 ### Testing
 
-- **Guard:** every refused operator at the top level, inside `$expr`, inside `$facet`, inside `$elemMatch`, and at the depth limit;
+- **Guard:** every refused operator at the top level, inside `$expr`, `$elemMatch`, `$not` and `$cond`, and at the depth limit;
   an operator not on the list is refused; stage count and depth limits; the expression list contains nothing refused.
 - **Output:** the byte, depth, array and string limits on deeply nested results, for all four tools.
 - **Real server in CI:** `mongo:8` with a `read` user and a setup user: the four tools; the read user cannot write; `maxTimeMS`
@@ -262,7 +357,8 @@ reviewed.
 - [ ] **M3** Server limits: `maxTimeMS`, row cap, `comment`, read preference; the response cap.
 - [ ] **M4** CI against `mongo:8`; guide (`docs/guides/mongodb.md`).
 - [ ] **M5** Atlas M0 run (owner's account), then Verified.
-- [ ] **M6** Later, if a use case needs joins: `$lookup` (then `$unionWith`, `$graphLookup` with a depth bound), each with
+- [ ] **M6** Later, if a use case needs them: `$facet` with per-branch limits; a restricted `$regex`; `$lookup` (then `$unionWith`,
+  `$graphLookup` with a depth bound), each with
   namespace tests inside nested pipelines.
 
 Size: M1 to M3 two to three sessions (M2 is most of it); M4 half a session; M5 depends on the account.
@@ -273,7 +369,7 @@ Size: M1 to M3 two to three sessions (M2 is most of it); M4 half a session; M5 d
 
 1. **R1** first: it fixes a bug in the stores we ship, independent of Redis. Then **R2 to R4**. Nothing needed from the owner.
 2. **P1**, then P2 and P3. The owner decides the privacy trade-off before P2 (text and record JSON stored in Pinecone, proposed for
-   the first version); P4 needs a Pinecone account.
+   the first version); P5 needs a Pinecone account.
 3. **M1 to M4** need nothing from the owner; M5 needs an Atlas account.
 
 ## Decisions (owner, 2026-10-23)
@@ -282,4 +378,4 @@ Size: M1 to M3 two to three sessions (M2 is most of it); M4 half a session; M5 d
 - **MongoDB:** the first version is one collection per query.
 - **Valkey** in the examples; Redis and Valkey both in CI.
 
-Still open: accounts for P4 (Pinecone Starter) and M5 (Atlas M0) when the emulator and container work is done.
+Still open: accounts for P5 (Pinecone Starter) and M5 (Atlas M0) when the emulator and container work is done.
