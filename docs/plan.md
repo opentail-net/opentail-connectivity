@@ -299,7 +299,7 @@ Five review documents (`docs/to fix 1.md` to `5.md`). All 19 findings were check
 three related gaps were found while checking (marked *found*). They fall into three classes, so each class also gets a test that
 covers every implementation, not just the ones named.
 
-*Connectivity items built 2026-10-23 with regression tests (commits 5f802ff, 7343b69, 51bc841, c0de9b1 and the namespace commit).
+*Host items built 2026-10-23 (opentail-host 6081d5b). Connectivity items built 2026-10-23 with regression tests (commits 5f802ff, 7343b69, 51bc841, c0de9b1 and the namespace commit).
 Found while fixing: Gmail saved the profile's history id read after listing, so mail arriving in between was skipped (fixed with
 3.1). Meta's discovery already threw, so it was never part of 1.8. Breaking for stored state: SFTP and Box root containers now
 name the account, so their item ids change once.*
@@ -310,15 +310,18 @@ Classes (one test each, so new code is covered automatically):
   `Container`, `SyncScope` and document ids).
 - [x] **[C]** Completeness: a discovery cut short (API error, parse error, damaged manifest) marks the run's seen refs incomplete,
   never ends like a full run.
-- [ ] **[H]** Guards on every path: each guard (suspension, policy, flow) is swept over every path that runs an action (execute,
+- [x] **[H]** Guards on every path: each guard (suspension, policy, flow) is swept over every path that runs an action (execute,
   retry, recovery, review edits).
-- [ ] **[C]** Compatible means tested: a real-server or emulator workflow for any connector called compatible (MinIO for S3 first).
+- [ ] **[C]** Compatible means tested: a real-server or emulator workflow for any connector called compatible (S3 first).
+  **[Owner]** which server: MinIO stopped publishing community images in October 2025 and archived its repository in April
+  2026. Options: Chainguard's free MinIO image, a pinned old `quay.io/minio/minio` (no fixes), or another S3-compatible server
+  (SeaweedFS, Garage, versitygw; licences to check). Until then the S3 tests assert the request path against a stub.
 
 Order 1, wrong data acted on:
 
 - [x] **[C]** IMAP delete, mark and move: exact Message-ID match, refuse when ambiguous, act on UIDs; *found:* `ExpungeAsync()`
   without UIDs removes every `\Deleted` message in the inbox. Attachment fetcher the same (1.2).
-- [ ] **[H]** Suspension checked before every run: `RunClaimedAsync`, so retries and recovery too (4.1).
+- [x] **[H]** Suspension checked before every run: `RunClaimedAsync`, so retries and recovery too (4.1).
 - [x] **[C]** Archive manifest: a damaged manifest is not an empty one, on update and *found:* on delete (2.4).
 - [x] **[C]** Reddit, Twitter, YouTube, Mbox: failures end the run incomplete, not silently; YouTube's missing stats are not
   zeros (1.8, 3.2).
@@ -328,7 +331,7 @@ Order 2, broken or leaking:
 - [x] **[C]** S3: the bucket name goes to the SDK, the endpoint-qualified name stays the identity (1.1).
 - [x] **[C]** Meta: the token on each request, never on a shared client's default headers (1.3).
 - [x] **[C]** EML: root containment, no links, tenant check in `FetchAsync`, as the folder connector does (2.2).
-- [ ] **[H]** Reviewer edits: flow checks again, the preview made again for the edited arguments (4.2).
+- [x] **[H]** Reviewer edits: flow checks again, the preview made again for the edited arguments (4.2).
 
 Order 3, missed or stale data:
 
@@ -342,5 +345,5 @@ Order 4 and 5:
 
 - [x] **[C]** Account namespaces: Google My Drive, Box, SFTP (1.4 to 1.6).
 - [x] **[C]** Meta Graph API default to v25.0 or later; v19.0 expired 2026-05-21 (1.7).
-- [ ] **[H]** GuardedHttp tries each permitted address in turn (3.3).
-- [ ] **[H]** The access report reads `level_suspended` (5.1).
+- [x] **[H]** GuardedHttp tries each permitted address in turn (3.3).
+- [x] **[H]** The access report reads `level_suspended` (5.1).
