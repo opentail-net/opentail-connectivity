@@ -225,7 +225,7 @@ treated as groundwork, like section 6; M9 is new copied data and stays frozen.
 - [ ] **[O]** Check opentail's own use of `SlackMemoryIngestionNormalizer` against Slack's terms ([roadmap](roadmap.md#two-ways-to-use-business-data)).
 
 - [ ] **[C]** Vector and hybrid search in the SQLite memory backend: exact similarity after the governance filter, no extension,
-  local-first up to tens of thousands of records ([SQLite vectors](design/sqlite-vectors.md), steps V1 to V6). *Proposal,
+  per chunk, local-first up to tens of thousands of vectors ([SQLite vectors](design/sqlite-vectors.md), steps V1 to V6). *Proposal, revised after review,
   2026-10-23.*
 
 ## 21. Triggers (the *when*)
