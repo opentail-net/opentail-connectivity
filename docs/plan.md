@@ -24,6 +24,7 @@ Each item names the repository it touches and links the page that explains it:
 | Something built first | Host sign-in (section 3), and with it delegation (12) and Slack; triggers T1 to T7 (21); the review-page items G1, G2, G6 (19) |
 | Assessment time | M7 and M8 (section 20): no new package goes into opentail until the owner has assessed them |
 | Ready to start | Refusing API keys without a profile (12) |
+| Ready to start | Redis/Valkey queue control, Pinecone, MongoDB (section 30) |
 | Optional or deferred | Notion, Zendesk and Freshdesk, Slack front door, the model-based redactor; queue ideas in optional-todo.md |
 
 ## 3. Host sign-in (prerequisite for searching as the user)
@@ -271,3 +272,15 @@ except where noted. Breaking changes are marked **B**; the Host adopts them the 
 
 - [ ] **[Owner]** Live-provider integration suites (Graph, Gmail, object storage): need dedicated test accounts and least-privilege
   credentials from the owner. Until then, everything that talks to a provider stays labelled Tested.
+
+## 30. Redis/Valkey, Pinecone, MongoDB
+
+[Plan](design/redis-pinecone-mongodb.md), written 2026-10-23 at the owner's request. Nothing built.
+
+- [ ] **[C]** R1 to R4: Redis/Valkey as the shared queue-control store (`IQueueControl` conformance suite first, then
+  `RedisQueueControl` with Lua scripts and hash-tagged keys; CI against Redis and Valkey).
+- [ ] **[C]** P1 to P3: Pinecone as a memory backend of its own (Microsoft's connector filters by equality only, so governance could
+  not run before ranking); spike on Pinecone Local's filter operators first.
+- [ ] **[H]** M1 to M4: MongoDB module (`collections`, `find`, `aggregate`, `count`; stage allow-list, no `$out`/`$merge`/server
+  JavaScript, `maxTimeMS`, `comment` = action id), CI against `mongo:8`.
+- [ ] **[Owner]** Accounts for P4 (Pinecone Starter) and M5 (Atlas M0); the plan's open questions.
