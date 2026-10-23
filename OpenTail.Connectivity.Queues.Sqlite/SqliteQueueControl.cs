@@ -50,12 +50,15 @@ public sealed class SqliteQueueControl : IQueueControl
     public Task<bool> IsCancelledAsync(string queue, string id, CancellationToken ct = default)
     {
         using var connection = Open();
-        using var command = Command(connection, null, "SELECT 1 FROM cancelled_jobs WHERE queue = $queue AND id = $id", ("$queue", queue), ("$id", id));
+        // Only within the retention: older marks are deleted only when the next job is cancelled.
+        using var command = Command(connection, null, "SELECT 1 FROM cancelled_jobs WHERE queue = $queue AND id = $id AND at > $cut",
+            ("$queue", queue), ("$id", id), ("$cut", Now - (long)_retention.TotalMilliseconds));
         return Task.FromResult(command.ExecuteScalar() is not null);
     }
 
-    public Task<bool> TryTakeSlotAsync(string queue, string key, int limit, string token, DateTimeOffset until, CancellationToken ct = default)
+    public Task<bool> TryTakeSlotAsync(string queue, string key, int limit, string token, TimeSpan lease, CancellationToken ct = default)
     {
+        var until = Now + (long)lease.TotalMilliseconds;
         using var connection = Open();
         using var tx = connection.BeginTransaction(deferred: false);
         Run(connection, tx, "DELETE FROM slots WHERE queue = $queue AND conc_key = $key AND until <= $now", ("$queue", queue), ("$key", key), ("$now", Now));
@@ -63,17 +66,20 @@ public sealed class SqliteQueueControl : IQueueControl
         if ((long)count.ExecuteScalar()! >= limit)
             return Task.FromResult(false);
         Run(connection, tx, "INSERT OR REPLACE INTO slots (queue, conc_key, token, until) VALUES ($queue, $key, $token, $until)",
-            ("$queue", queue), ("$key", key), ("$token", token), ("$until", until.ToUnixTimeMilliseconds()));
+            ("$queue", queue), ("$key", key), ("$token", token), ("$until", until));
         tx.Commit();
         return Task.FromResult(true);
     }
 
-    public Task RenewSlotAsync(string queue, string key, string token, DateTimeOffset until, CancellationToken ct = default)
+    public Task<bool> RenewSlotAsync(string queue, string key, string token, TimeSpan lease, CancellationToken ct = default)
     {
+        var now = Now;
         using var connection = Open();
-        Run(connection, null, "UPDATE slots SET until = $until WHERE queue = $queue AND conc_key = $key AND token = $token",
-            ("$until", until.ToUnixTimeMilliseconds()), ("$queue", queue), ("$key", key), ("$token", token));
-        return Task.CompletedTask;
+        // Only a live slot: a lapsed one may already have been counted free and its place taken.
+        using var update = Command(connection, null,
+            "UPDATE slots SET until = $until WHERE queue = $queue AND conc_key = $key AND token = $token AND until > $now",
+            ("$until", now + (long)lease.TotalMilliseconds), ("$queue", queue), ("$key", key), ("$token", token), ("$now", now));
+        return Task.FromResult(update.ExecuteNonQuery() == 1);
     }
 
     public Task ReleaseSlotAsync(string queue, string key, string token, CancellationToken ct = default)
@@ -106,9 +112,9 @@ public sealed class SqliteQueueControl : IQueueControl
         return Task.FromResult(next);
     }
 
-    public Task<bool> TryTakeStartAsync(string queue, string key, JobRateLimit rate, DateTimeOffset now, CancellationToken ct = default)
+    public Task<bool> TryTakeStartAsync(string queue, string key, JobRateLimit rate, CancellationToken ct = default)
     {
-        var at = now.ToUnixTimeMilliseconds();
+        var at = Now;
         using var connection = Open();
         using var tx = connection.BeginTransaction(deferred: false);
         Run(connection, tx, "DELETE FROM key_starts WHERE queue = $queue AND conc_key = $key AND at <= $cut",

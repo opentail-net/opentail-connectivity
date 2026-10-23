@@ -160,7 +160,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                     // A slot, then the circuit, then the rate: any refusing means the job waits a while, using no attempt. The rate
                     // goes last, so only a job that actually starts counts as a start.
                     var release = !skipConcurrencyKeys.Contains(ck)
-                                  && await control.TryTakeSlotAsync(queue, ck, _options.LimitFor(ck) ?? int.MaxValue, token, At(until), ct).ConfigureAwait(false);
+                                  && await control.TryTakeSlotAsync(queue, ck, _options.LimitFor(ck) ?? int.MaxValue, token, lease, ct).ConfigureAwait(false);
                     var probed = false;
                     if (release)
                     {
@@ -178,7 +178,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                             release = false;
                         }
                     }
-                    if (release && _options.RateFor(ck) is { } rate && !await control.TryTakeStartAsync(queue, ck, rate, At(now), ct).ConfigureAwait(false))
+                    if (release && _options.RateFor(ck) is { } rate && !await control.TryTakeStartAsync(queue, ck, rate, ct).ConfigureAwait(false))
                     {
                         await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
                         if (probed)
@@ -244,15 +244,24 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
     public Task<bool> ExtendAsync(LeasedJob job, TimeSpan lease, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
-        return WithLeaseAsync(job, async (_, held) =>
+        return ExtendHeldAsync(job, lease, ct);
+    }
+
+    private async Task<bool> ExtendHeldAsync(LeasedJob job, TimeSpan lease, CancellationToken ct)
+    {
+        var renewed = true;
+        var held = await WithLeaseAsync(job, async (_, held) =>
         {
             var until = Now + (long)lease.TotalMilliseconds;
             if (until - held.LeasedAt > (long)_rabbit.MaxLeaseTotalOrDefault.TotalMilliseconds)
                 throw new ArgumentOutOfRangeException(nameof(lease), $"A RabbitMQ lease, extensions included, is at most {_rabbit.MaxLeaseTotalOrDefault} (the broker's consumer_timeout).");
-            held.Until = until;
             if (held.Job.ConcurrencyKey is { } key && _rabbit.Control is { } control)
-                await control.RenewSlotAsync(held.Queue, key, held.Token, At(until), ct).ConfigureAwait(false);
-        }, ct, keepLease: true);
+                renewed = await control.RenewSlotAsync(held.Queue, key, held.Token, lease, ct).ConfigureAwait(false);
+            // A lapsed slot is not revived: another worker may hold its place. The lease is then lost; it expires now, so the
+            // next call hands the message back.
+            held.Until = renewed ? until : Now;
+        }, ct, keepLease: true).ConfigureAwait(false);
+        return held && renewed;
     }
 
     /// <summary>Reads without removing: the messages are taken on a channel of their own, which is closed to put them back.</summary>

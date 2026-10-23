@@ -11,9 +11,10 @@ verify* come from documentation or memory; check them before the step that depen
   `AclCaptured` (the fail-closed rule), workspace and cross-workspace, project, repository, trust and observation time. And
   "a namespace per collection" left a search over several collections undefined.
 - **Redis:** the clock, renewal and circuit compare-and-set rules must be a contract before code. Checking this found a bug in the
-  stores we already ship: **in-memory and SQLite both renew an expired slot** (they overwrite the expiry while the token is still in
-  the table, and `RenewSlotAsync` returns nothing, so the caller cannot tell). In-memory cancellations also never expire while
-  SQLite's do.
+  stores we already ship: **SQLite renewed an expired slot** (it overwrote the expiry while the token was still in the table, and
+  `RenewSlotAsync` returned nothing, so the caller could not tell). In-memory drops lapsed slots first, so it never had that bug
+  (corrected 2026-10-23; the first revision said both). In-memory cancellations never expired while SQLite's did; and R1's suite
+  then found that **SQLite's did not either when read**: old marks were deleted only when the next job was cancelled.
 - **MongoDB:** a stage allow-list is not an operator policy, and a final `$limit` bounds neither the work nor the response size.
   Cross-collection stages move out of the first version.
 - **Estimates** were optimistic; revised below.
@@ -95,8 +96,10 @@ Valkey only; Cluster is documented as **designed for, not tested** until a Clust
 
 ### Steps
 
-- [ ] **R1** The contract: interface change (durations, `RenewSlotAsync` returns bool), conformance suite, and in-memory and
-  SQLite aligned to it (fixes the renewal bug and the cancellation difference). RabbitMQ queue updated.
+- [x] **R1** The contract: interface change (durations, `RenewSlotAsync` returns bool), conformance suite, and in-memory and
+  SQLite aligned to it (fixes the renewal bug and the cancellation difference). RabbitMQ queue updated. *Built 2026-10-23: 10
+  checks (`QueueControlConformance`), both stores pass; SQLite's renewal and cancellation-retention bugs fixed; RabbitMQ treats a
+  refused renewal as a lost lease and hands the message back.*
 - [ ] **R2** `RedisQueueControl`: scripts, version counters, TTLs, registry pruning, prefix and encoding.
 - [ ] **R3** CI against `redis:7.4` and `valkey/valkey:8`: the conformance suite, RabbitMQ with the Redis store, the outage test.
 - [ ] **R4** Docs: choosing a control store, the time contract, Cluster status, what a Redis outage does.

@@ -277,8 +277,9 @@ except where noted. Breaking changes are marked **B**; the Host adopts them the 
 [Plan](design/redis-pinecone-mongodb.md), written 2026-10-23 at the owner's request and revised the same day after an external
 review. Nothing built.
 
-- [ ] **[C]** R1: the `IQueueControl` contract (store-clock durations, `RenewSlotAsync` returns bool and never revives an expired
-  slot, cancellations expire everywhere) with a conformance suite; **fixes a renewal bug in the in-memory and SQLite stores**.
+- [x] **[C]** R1: the `IQueueControl` contract (store-clock durations, `RenewSlotAsync` returns bool and never revives an expired
+  slot, cancellations expire everywhere) with a conformance suite. *Built 2026-10-23; fixed two SQLite bugs (renewal revived lapsed
+  slots; cancellations outlived their retention when read).*
 - [ ] **[C]** R2 to R4: `RedisQueueControl` (Lua scripts, versioned compare-and-set circuits, TTLs, prefix), CI against Redis and
   Valkey, outage test.
 - [ ] **[C]** P1 to P3: Pinecone memory backend storing what the VectorData backend stores, with the full governance mapping
