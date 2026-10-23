@@ -286,6 +286,8 @@ review. Nothing built.
   before ranking, a durable record state and settling (records with pending changes excluded inside the query) so deletes and
   ACL changes never come back during Pinecone's write lag, the
   embedding contract (model id, cosine, `MinScore`) and a namespace per tenant; Pinecone Local spike first.
-- [ ] **[H]** M1 to M4: MongoDB module, one collection per query, exact operator allow-list by context (no `$facet`, `$regex`,
-  `$push` in the first version), resource bounds, CI on `mongo:8`.
+- [x] **[C]** M1 to M4: `OpenTail.Connectivity.MongoDb`, one collection per query, exact operator allow-list by context (no `$facet`,
+  `$regex`, `$push` in the first version), resource bounds, option checks at start-up, CI on `mongo:8` ([usage](mongodb.md)).
+  *Built 2026-10-23; first built in the Host by mistake, moved to connectivity (owner).*
+- [ ] **[H]** A thin Host module over `OpenTail.Connectivity.MongoDb` (agent tools, policy, audit), once the package is published.
 - [ ] **[Owner]** Accounts for P5 (Pinecone) and M5 (Atlas). *Decided 2026-10-23: text in Pinecone for the first version, MongoDB one collection per query, Valkey in examples.*

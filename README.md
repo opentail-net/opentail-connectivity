@@ -36,6 +36,7 @@ They are used by the OpenTail Host's modules and by OpenTail itself.
 | `OpenTail.Connectivity.Memory.VectorData` | Memory backend over any `Microsoft.Extensions.VectorData` collection (Postgres with pgvector, Qdrant, Azure AI Search ...), the caller's embedding model. | Verified |
 | `OpenTail.Connectivity.Queues` | Work queues: the `IWorkQueue` contract (at-least-once, leases, delays, idempotency keys, dead letters), an in-memory queue and a conformance suite every implementation must pass. | Tested |
 | `OpenTail.Connectivity.Queues.Sqlite` | Work queue in one SQLite file: survives crashes and power cuts (WAL, `synchronous=FULL`), safe for several workers and processes on one machine. | Tested |
+| `OpenTail.Connectivity.MongoDb` | Governed read-only MongoDB queries (collections, find, aggregate, count) over allowed collections: an operator allow-list by context, request and response bounds, `maxTimeMS` and a comment on every operation. Tested against `mongo:8` in CI. [Usage](docs/mongodb.md). | Tested |
 | `OpenTail.Connectivity.Queues.Redis` | Queue control in Redis or Valkey: concurrency slots, circuits, rate starts and cancellations shared by RabbitMQ workers on several machines, on the server's clock. Conformance suite and an outage test against Redis 7.4 and Valkey 8 in CI. | Tested |
 | `OpenTail.Connectivity.Queues.RabbitMQ` | Work queue on RabbitMQ quorum queues: publisher confirms, delays through wait queues, leases that expire; keys are carried, not deduplicated. Passes the conformance suite against a real broker in CI. | Tested |
 

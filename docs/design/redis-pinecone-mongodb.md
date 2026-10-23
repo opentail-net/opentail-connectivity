@@ -46,7 +46,7 @@ step that depends on them.
 |---|---|---|
 | **1. Redis/Valkey** | A shared queue-control store: slots, circuits, rate starts, cancellations, for every worker of a queue | Connectivity |
 | **2. Pinecone** | A memory backend (managed vector search) with the memory governance applied before ranking | Connectivity |
-| **3. MongoDB** | An agent tool: governed read-only queries over one collection at a time | Host |
+| **3. MongoDB** | Governed read-only queries over one collection at a time, for agents | Connectivity (`OpenTail.Connectivity.MongoDb`); a thin Host module later |
 
 Not planned: agents reading Redis directly (caches and session tokens), DynamoDB, Cassandra, Neo4j (on request).
 
@@ -305,7 +305,13 @@ record state follows R2, for deployments writing from several machines.
 
 ---
 
-## 3. MongoDB as an agent tool (Host)
+## 3. MongoDB: governed read-only queries (Connectivity)
+
+*Owner, 2026-10-23: this lives in opentail-connectivity as `OpenTail.Connectivity.MongoDb`, not in the Host and not with the Sql
+packages (NoSQL does not belong there). It was first built as a Host module by mistake (the first plan said "Host" without asking)
+and moved the same day. The reader below is the package; a Host module that exposes it as agent tools (`collections`, `find`,
+`aggregate`, `count`, with policy and audit) is a thin wrapper, to follow once the package is published. Where this section says
+"module" or "tool", read "reader" and "operation".*
 
 A module package `OpenTail.Modules.MongoDb`, `"Type": "mongodb"`, through the official MongoDB C# driver (Apache 2.0). Read-only,
 governed like the Sql module. The login has the built-in **`read`** role on one database: the server is the read-only boundary,

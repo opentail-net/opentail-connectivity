@@ -6,9 +6,13 @@ namespace OpenTail.Connectivity.Queues.Redis;
 /// <param name="Prefix">Put before every key, so applications sharing a Redis do not share controls. Default <c>ot:</c>.</param>
 /// <param name="CancellationRetention">How long cancellations are kept. Default 30 days, as the other stores.</param>
 /// <param name="CircuitRetries">Compare-and-set attempts for one circuit update under contention before it fails. Default 50.</param>
-public sealed record RedisQueueControlOptions(string Prefix = "ot:", TimeSpan? CancellationRetention = null, int CircuitRetries = 50)
+/// <param name="CircuitIdle">A circuit not written for this long is removed (its cooldowns are minutes; after this the key's
+/// failures are history). Every write renews it, so a circuit in use never expires. Default 7 days.</param>
+public sealed record RedisQueueControlOptions(string Prefix = "ot:", TimeSpan? CancellationRetention = null, int CircuitRetries = 50,
+    TimeSpan? CircuitIdle = null)
 {
     internal TimeSpan RetentionOrDefault => CancellationRetention ?? TimeSpan.FromDays(30);
+    internal TimeSpan CircuitIdleOrDefault => CircuitIdle ?? TimeSpan.FromDays(7);
 }
 
 /// <summary>
@@ -21,8 +25,9 @@ public sealed record RedisQueueControlOptions(string Prefix = "ot:", TimeSpan? C
 /// caller's (pure) change in .NET, and writes only if the circuit is still exactly what was read, retrying a bounded number of times:
 /// comparing the value itself needs no version counter.</para>
 /// <para>All of a queue's keys share a hash tag (<c>{queue}</c>), so the scripts are valid on Redis Cluster; this is designed for
-/// but tested only against standalone Redis and Valkey. Slot and start keys expire on their own; a registry of keys, used by
-/// <see cref="KeysAsync"/>, is pruned by the scripts that empty a key and by <see cref="KeysAsync"/> itself.</para>
+/// but tested only against standalone Redis and Valkey. Slot and start keys expire on their own, circuits after
+/// <see cref="RedisQueueControlOptions.CircuitIdle"/> without a write, and the registry of keys (used by <see cref="KeysAsync"/>)
+/// a day after the last of them; it is also pruned by the scripts that empty a key and by <see cref="KeysAsync"/>.</para>
 /// <para>When Redis cannot be reached every call throws; workers then back off and lease nothing.</para>
 /// </remarks>
 public sealed class RedisQueueControl(IConnectionMultiplexer redis, RedisQueueControlOptions? options = null) : IQueueControl
@@ -35,6 +40,7 @@ public sealed class RedisQueueControl(IConnectionMultiplexer redis, RedisQueueCo
         ArgumentException.ThrowIfNullOrWhiteSpace(o.Prefix, nameof(o.Prefix));
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(o.RetentionOrDefault, TimeSpan.Zero, nameof(o.CancellationRetention));
         ArgumentOutOfRangeException.ThrowIfLessThan(o.CircuitRetries, 1, nameof(o.CircuitRetries));
+        ArgumentOutOfRangeException.ThrowIfLessThan(o.CircuitIdleOrDefault, TimeSpan.FromHours(1), nameof(o.CircuitIdle));
         return o;
     }
 
@@ -85,6 +91,7 @@ public sealed class RedisQueueControl(IConnectionMultiplexer redis, RedisQueueCo
         redis.call('ZADD', KEYS[1], now + tonumber(ARGV[4]), ARGV[3])
         expire_slots()
         redis.call('SADD', KEYS[4], ARGV[1])
+        if redis.call('PTTL', KEYS[4]) < 86400000 then redis.call('PEXPIRE', KEYS[4], 86400000) end
         return 1
         """;
 
@@ -120,10 +127,11 @@ public sealed class RedisQueueControl(IConnectionMultiplexer redis, RedisQueueCo
         redis.call('ZADD', KEYS[2], now, now .. ':' .. ARGV[4])
         redis.call('PEXPIRE', KEYS[2], math.max(window, 3600000))
         redis.call('SADD', KEYS[4], ARGV[1])
+        if redis.call('PTTL', KEYS[4]) < 86400000 then redis.call('PEXPIRE', KEYS[4], 86400000) end
         return 1
         """;
 
-    // ARGV: name, expected (the circuit as read, '' when absent), next ('' to remove)
+    // ARGV: name, expected (the circuit as read, '' when absent), next ('' to remove), idle lifetime ms
     private const string SwapCircuit = Common + """
 
         local current = redis.call('GET', KEYS[3])
@@ -133,8 +141,9 @@ public sealed class RedisQueueControl(IConnectionMultiplexer redis, RedisQueueCo
           redis.call('DEL', KEYS[3])
           prune()
         else
-          redis.call('SET', KEYS[3], ARGV[3])
+          redis.call('SET', KEYS[3], ARGV[3], 'PX', tonumber(ARGV[4]))
           redis.call('SADD', KEYS[4], ARGV[1])
+          redis.call('PEXPIRE', KEYS[4], tonumber(ARGV[4]) + 86400000)
         end
         return 1
         """;
@@ -186,7 +195,7 @@ public sealed class RedisQueueControl(IConnectionMultiplexer redis, RedisQueueCo
             ct.ThrowIfCancellationRequested();
             var read = (string?)await Db.StringGetAsync(circuitKey).ConfigureAwait(false) ?? "";
             var next = change(Parse(read));
-            if (await RunAsync(SwapCircuit, queue, key, read, Serialize(next)).ConfigureAwait(false) == 1)
+            if (await RunAsync(SwapCircuit, queue, key, read, Serialize(next), Ms(_options.CircuitIdleOrDefault)).ConfigureAwait(false) == 1)
                 return next;
             await Task.Delay(Random.Shared.Next(1, 20), ct).ConfigureAwait(false); // another worker wrote in between: read again
         }

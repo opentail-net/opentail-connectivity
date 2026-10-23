@@ -21,8 +21,10 @@
     <Project Path="OpenTail.Connectivity.Queues.Sqlite/OpenTail.Connectivity.Queues.Sqlite.csproj" />
     <Project Path="OpenTail.Connectivity.Queues.RabbitMQ/OpenTail.Connectivity.Queues.RabbitMQ.csproj" />
     <Project Path="OpenTail.Connectivity.Queues.Redis/OpenTail.Connectivity.Queues.Redis.csproj" />
+    <Project Path="OpenTail.Connectivity.MongoDb/OpenTail.Connectivity.MongoDb.csproj" />
     <Project Path="OpenTail.Connectivity.Tests.RabbitMQ/OpenTail.Connectivity.Tests.RabbitMQ.csproj" />
     <Project Path="OpenTail.Connectivity.Tests.Redis/OpenTail.Connectivity.Tests.Redis.csproj" />
+    <Project Path="OpenTail.Connectivity.Tests.MongoDb/OpenTail.Connectivity.Tests.MongoDb.csproj" />
     <Project Path="OpenTail.Connectivity.Social/OpenTail.Connectivity.Social.csproj" />
     <Project Path="OpenTail.Connectivity.Inbox.Imap/OpenTail.Connectivity.Inbox.Imap.csproj" />
     <Project Path="OpenTail.Connectivity.Drive.Google/OpenTail.Connectivity.Drive.Google.csproj" />

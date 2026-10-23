@@ -1,0 +1,70 @@
+name: MongoDB reader on a real server
+
+# The MongoDB reader against mongo:8 (OpenTail.Connectivity.Tests.MongoDb): the four operations with a read-only user, guard
+# refusals that never reach the server, the response caps, and the server time limit and comment on every operation. Linux only
+# and never on every push, to save Actions minutes: run it by hand, or it runs when the package, these tests or this workflow change.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'OpenTail.Connectivity.MongoDb/**'
+      - 'OpenTail.Connectivity.Tests.MongoDb/**'
+      - '.github/workflows/mongodb.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mongodb-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Throwaway passwords for a throwaway container; they guard nothing.
+  ROOT_PASSWORD: Ci_Admin_Pass_1234x
+  READ_PASSWORD: Ci_Read_Pass_1234x
+
+jobs:
+  mongodb:
+    name: MongoDB 8
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      # No container health check: it was reported unhealthy before mongod had started. The step below waits instead.
+      mongo:
+        image: mongo:8
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: Ci_Admin_Pass_1234x
+        ports: [ '27017:27017' ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # MinVer reads the v* tags
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build
+        run: dotnet build OpenTail.Connectivity.Tests.MongoDb -c Release
+
+      - name: Wait for MongoDB, then a read-only user
+        run: |
+          id=${{ job.services.mongo.id }}
+          sh() { docker exec "$id" mongosh --quiet -u root -p "$ROOT_PASSWORD" --authenticationDatabase admin --eval "$1"; }
+          for i in $(seq 1 60); do sh "db.adminCommand('ping').ok" > /dev/null 2>&1 && break; sleep 2; done
+          sh "db.getSiblingDB('otail').createUser({ user: 'ot_reader', pwd: '$READ_PASSWORD', roles: [ { role: 'read', db: 'otail' } ] })"
+
+      - name: Test
+        env:
+          OTAIL_MONGODB_ADMIN: mongodb://root:${{ env.ROOT_PASSWORD }}@localhost:27017/?authSource=admin
+          OTAIL_MONGODB_READ: mongodb://ot_reader@localhost:27017/otail?authSource=otail
+          OTAIL_MONGODB_READ_PASSWORD: ${{ env.READ_PASSWORD }}
+        # A skipped test here means a variable is missing: fail rather than pass quietly.
+        run: |
+          dotnet test --project OpenTail.Connectivity.Tests.MongoDb -c Release --no-build 2>&1 | tee test.log
+          status=${PIPESTATUS[0]}
+          if grep -Eq "skipped: [1-9]" test.log; then echo "::error::Some server tests were skipped"; exit 1; fi
+          exit $status

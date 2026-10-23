@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <UseMicrosoftTestingPlatform>true</UseMicrosoftTestingPlatform>
+    <IsPackable>false</IsPackable>
+    <Description>The MongoDB reader against a real server. Server tests skip unless OTAIL_MONGODB_ADMIN, OTAIL_MONGODB_READ and OTAIL_MONGODB_READ_PASSWORD are set; run by mongodb.yml.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <ProjectReference Include="..\OpenTail.Connectivity.MongoDb\OpenTail.Connectivity.MongoDb.csproj" />
+  </ItemGroup>
+</Project>

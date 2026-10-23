@@ -135,7 +135,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                 var until = now + (long)lease.TotalMilliseconds;
                 try
                 {
-                    if (await IsCancelledAsync(queue, message.Id, ct).ConfigureAwait(false))
+                    if (await Control(() => IsCancelledAsync(queue, message.Id, ct)).ConfigureAwait(false))
                     {
                         await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false); // dropped
                         continue;
@@ -162,29 +162,29 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                         // A slot, then the circuit, then the rate: any refusing means the job waits a while, using no attempt. The rate
                         // goes last, so only a job that actually starts counts as a start.
                         var release = !skipConcurrencyKeys.Contains(ck)
-                                      && await control.TryTakeSlotAsync(queue, ck, _options.LimitFor(ck) ?? int.MaxValue, token, lease, ct).ConfigureAwait(false);
+                                      && await Control(() => control.TryTakeSlotAsync(queue, ck, _options.LimitFor(ck) ?? int.MaxValue, token, lease, ct)).ConfigureAwait(false);
                         var probed = false;
                         if (release)
                         {
                             var allowed = false;
-                            await control.UpdateCircuitAsync(queue, ck, c =>
+                            await Control(() => control.UpdateCircuitAsync(queue, ck, c =>
                             {
                                 var (ok, probe) = Circuits.MayRelease(c, now, _options);
                                 allowed = ok;
                                 probed = ok && probe;
                                 return probed ? Circuits.ProbeReleased(c!, token, until) : c;
-                            }, ct).ConfigureAwait(false);
+                            }, ct)).ConfigureAwait(false);
                             if (!allowed)
                             {
-                                await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
+                                await Control(() => control.ReleaseSlotAsync(queue, ck, token, ct)).ConfigureAwait(false);
                                 release = false;
                             }
                         }
-                        if (release && _options.RateFor(ck) is { } rate && !await control.TryTakeStartAsync(queue, ck, rate, ct).ConfigureAwait(false))
+                        if (release && _options.RateFor(ck) is { } rate && !await Control(() => control.TryTakeStartAsync(queue, ck, rate, ct)).ConfigureAwait(false))
                         {
-                            await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
+                            await Control(() => control.ReleaseSlotAsync(queue, ck, token, ct)).ConfigureAwait(false);
                             if (probed)
-                                await control.UpdateCircuitAsync(queue, ck, c => Circuits.Settled(c, token), ct).ConfigureAwait(false); // the probe never ran
+                                await Control(() => control.UpdateCircuitAsync(queue, ck, c => Circuits.Settled(c, token), ct)).ConfigureAwait(false); // the probe never ran
                             release = false;
                         }
 
@@ -197,16 +197,19 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                         }
                     }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException && _rabbit.Control is not null)
+                catch (ControlStoreFailure failure)
                 {
-                    // The control store failed while this message was held (Redis unreachable, say). Park it, so it is neither
-                    // stranded unacknowledged on this channel nor charged an attempt; return what was already leased, or report
-                    // the failure so the worker backs off. A slot taken before the failure lapses at its lease end.
+                    // The control store failed while this message was held (Redis unreachable, say); only control-store calls are
+                    // caught here, broker failures take their own path. Park the message, so it is neither stranded unacknowledged
+                    // on this channel nor charged an attempt; return what was already leased, or report the failure so the worker
+                    // backs off. A slot taken before the failure lapses at its lease end.
+                    _rabbit.OnControlStoreError?.Invoke(failure.InnerException!);
                     await PublishDueOrWaitingAsync(channel, queue, message with { NotBefore = Now + ParkMs }, Now, ct).ConfigureAwait(false);
                     await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
                     if (leased.Count > 0)
                         break;
-                    throw;
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure.InnerException!).Throw();
+                    throw; // not reached
                 }
 
                 var job = message with { Attempts = message.Attempts + 1 };
@@ -469,6 +472,21 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
 
     private TimeSpan? RunTime(long? ms) => ms is { } m ? TimeSpan.FromMilliseconds(m) : _options.DefaultMaxRunTime;
 
+    /// <summary>A control-store call whose failure must not be mistaken for a broker failure: it surfaces as <see cref="ControlStoreFailure"/>.</summary>
+    private static async Task<T> Control<T>(Func<Task<T>> call)
+    {
+        try { return await call().ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { throw new ControlStoreFailure(ex); }
+    }
+
+    private static async Task Control(Func<Task> call)
+    {
+        try { await call().ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { throw new ControlStoreFailure(ex); }
+    }
+
+    private sealed class ControlStoreFailure(Exception inner) : Exception(inner.Message, inner);
+
     private async Task<bool> IsCancelledAsync(string queue, string id, CancellationToken ct)
         => _rabbit.Control is { } store && await store.IsCancelledAsync(queue, id, ct).ConfigureAwait(false);
 
@@ -489,6 +507,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            _rabbit.OnControlStoreError?.Invoke(ex);
         }
     }
 
@@ -564,7 +583,11 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             // that it was cancelled is lost.
             bool cancelled;
             try { cancelled = await IsCancelledAsync(lease.Queue, job.Id, ct).ConfigureAwait(false); }
-            catch (Exception ex) when (ex is not OperationCanceledException) { cancelled = false; }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _rabbit.OnControlStoreError?.Invoke(ex);
+                cancelled = false;
+            }
             if (cancelled)
             {
                 // Cancelled while this worker held it: drop it, and tell the worker it lost the job.
@@ -821,7 +844,11 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
 /// <c>consumer_timeout</c> (30 minutes by default). Default 25 minutes.</param>
 /// <param name="Control">Cancelled job ids, concurrency slots and circuits; every worker of a queue must share it. Without it, jobs
 /// cannot be cancelled and jobs with a concurrency key are refused.</param>
-public sealed record RabbitMqWorkQueueOptions(string QueuePrefix = "ot.", TimeSpan? MaxLeaseTotal = null, IQueueControl? Control = null)
+/// <param name="OnControlStoreError">Told of control-store failures the queue works around rather than throws: a message parked
+/// back because the store failed while admitting it, a cancel check skipped, and a slot release or circuit update skipped after the
+/// broker already had the job's outcome (the slot then lapses at its lease end; that circuit update is lost). Log or count them.</param>
+public sealed record RabbitMqWorkQueueOptions(string QueuePrefix = "ot.", TimeSpan? MaxLeaseTotal = null, IQueueControl? Control = null,
+    Action<Exception>? OnControlStoreError = null)
 {
     public TimeSpan MaxLeaseTotalOrDefault => MaxLeaseTotal ?? TimeSpan.FromMinutes(25);
 }
