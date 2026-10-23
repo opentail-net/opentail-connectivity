@@ -91,10 +91,40 @@ public static class WebNetwork
         if (addresses.FirstOrDefault(a => !IsPublic(a)) is { } blocked)
             throw new HttpRequestException($"{host} resolves to {blocked}, a private or local address; set AllowPrivateNetworks to crawl an internal site.");
 
-        var socket = new Socket(addresses[0].AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        return await ConnectFirstAsync(host, addresses, context.DnsEndPoint.Port, ConnectSocketAsync, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Tries the (already checked) addresses in the order DNS gave them until one connects, as the default handler would: a site
+    /// whose first address is unreachable (an IPv6 address on a host without an IPv6 route) is still reached on the next.
+    /// </summary>
+    internal static async ValueTask<Stream> ConnectFirstAsync(string host, IReadOnlyList<IPAddress> addresses, int port,
+        Func<IPAddress, int, CancellationToken, ValueTask<Stream>> connect, CancellationToken ct)
+    {
+        List<Exception>? failures = null;
+        foreach (var address in addresses)
+        {
+            if (address.AddressFamily == AddressFamily.InterNetworkV6 && !Socket.OSSupportsIPv6)
+                continue;
+            try
+            {
+                return await connect(address, port, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is SocketException or IOException && !ct.IsCancellationRequested)
+            {
+                (failures ??= []).Add(ex);
+            }
+        }
+        throw new HttpRequestException($"Could not connect to {host} on any of its {addresses.Count} address(es).",
+            failures is null ? null : new AggregateException(failures));
+    }
+
+    private static async ValueTask<Stream> ConnectSocketAsync(IPAddress address, int port, CancellationToken ct)
+    {
+        var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
         try
         {
-            await socket.ConnectAsync(new IPEndPoint(addresses[0], context.DnsEndPoint.Port), ct).ConfigureAwait(false);
+            await socket.ConnectAsync(new IPEndPoint(address, port), ct).ConfigureAwait(false);
             return new NetworkStream(socket, ownsSocket: true);
         }
         catch

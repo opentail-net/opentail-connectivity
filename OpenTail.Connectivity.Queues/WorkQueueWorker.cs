@@ -75,9 +75,10 @@ public sealed record WorkQueueWorkerOptions(
 /// (<see cref="ResourceUnavailableException"/>, timeouts, connection errors) also count towards the circuit of the job's
 /// concurrency key. While a handler runs its lease is extended at half time; if the lease is lost the handler's token is cancelled
 /// and its result is ignored. A handler past its maximum run time is cancelled, its lease no longer renewed, and the job given
-/// back; one that will not stop is reported as a zombie and its concurrency key is not leased by this worker until it ends.
-/// Stopping stops leasing, lets running handlers finish for <see cref="WorkQueueWorkerOptions.DrainTime"/>, then cancels the rest
-/// and hands their jobs back.
+/// back; one that will not stop is reported as a zombie: its job keeps its lease (and so its concurrency slot, for every worker
+/// sharing the queue) until the handler really ends, and only then is given back. Stopping stops leasing, lets running handlers
+/// finish for <see cref="WorkQueueWorkerOptions.DrainTime"/>, then cancels the rest and hands their jobs back, after the zombie
+/// grace at the latest: a handler that ignores cancellation cannot keep the worker from stopping.
 /// <para>Cancelling a handler stops this process's work only. Work the handler started elsewhere (a report already running on a
 /// server) may carry on unless the handler cancels it on its token.</para>
 /// </remarks>
@@ -93,6 +94,9 @@ public sealed class WorkQueueWorker(
     private readonly Func<LeasedJob, CancellationToken, Task> _handler = handler ?? throw new ArgumentNullException(nameof(handler));
     private readonly TimeProvider _time = time ?? TimeProvider.System;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _zombies = new(StringComparer.Ordinal);
+
+    /// <summary>Zombies' jobs whose leases this worker keeps renewing until their handlers end (or the worker stops).</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Task, byte> _holds = new();
 
     /// <summary>Concurrency keys with a handler that timed out and has not stopped yet.</summary>
     public IReadOnlyCollection<string> ZombieKeys => [.. _zombies.Where(z => z.Value > 0 && z.Key.Length > 0).Select(z => z.Key)];
@@ -149,6 +153,7 @@ public sealed class WorkQueueWorker(
         await Task.WhenAny(all, Task.Delay(_options.DrainTimeOrDefault, _time)).ConfigureAwait(false);
         await handlersStop.CancelAsync().ConfigureAwait(false);
         await all.ConfigureAwait(false);
+        await Task.WhenAll(_holds.Keys).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -201,8 +206,9 @@ public sealed class WorkQueueWorker(
             await _handler(job, both.Token).ConfigureAwait(false);
         }, CancellationToken.None);
 
-        // Wait for the handler, or for the worker to give up on it (run-time limit, missed heartbeat).
-        await Task.WhenAny(handlerTask, Cancelled(gaveUp.Token)).ConfigureAwait(false);
+        // Wait for the handler, or for the worker to give up on it (run-time limit, missed heartbeat) or to stop.
+        using var givingUpOrStopping = CancellationTokenSource.CreateLinkedTokenSource(gaveUp.Token, handlersStop);
+        await Task.WhenAny(handlerTask, Cancelled(givingUpOrStopping.Token)).ConfigureAwait(false);
         if (!handlerTask.IsCompleted)
         {
             // Cancelled; give it the grace period to stop.
@@ -215,20 +221,29 @@ public sealed class WorkQueueWorker(
         await renewal.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         await heartbeats.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
 
+        if (!handlerTask.IsCompleted && !gaveUp.IsCancellationRequested)
+        {
+            // The worker is stopping and the handler ignores its token: hand the job back now rather than wait for a handler
+            // that may never end. The handler is left to the process's end.
+            JobTrace.Failed(activity, "worker stopped");
+            Observe(WorkerEventKind.Zombie, job.Id, job.Attempt, "the handler did not stop when the worker stopped; its job was handed back");
+            await SettleAsync(job, q => q.RetryAsync(job, TimeSpan.Zero, "worker stopped"), WorkerEventKind.Retried, "worker stopped", TimeSpan.Zero)
+                .ConfigureAwait(false);
+            return;
+        }
+
         if (!handlerTask.IsCompleted)
         {
-            // Still running after the grace: give the job back now and keep its resource's slot in this process until it really ends.
-            // Mark the key first: once the job is given back its slot is free, and this worker must not lease into it.
+            // Still running after the grace: keep the job's lease, and with it its concurrency slot for every worker sharing the
+            // queue, until the handler really ends; then give the job back. Giving it back now would free the slot while the
+            // handler still loads the resource. The key is also skipped by this worker's own leasing.
             var key = job.ConcurrencyKey ?? "";
             _zombies.AddOrUpdate(key, 1, (_, n) => n + 1);
-            await GiveBackAsync(job, stopReason!).ConfigureAwait(false);
             JobTrace.Failed(activity, stopReason!);
             Observe(WorkerEventKind.Zombie, job.Id, job.Attempt, $"the handler did not stop within {_options.ZombieGraceOrDefault.TotalSeconds:0} s of being cancelled");
-            _ = handlerTask.ContinueWith(_ =>
-            {
-                _zombies.AddOrUpdate(key, 0, (_, n) => Math.Max(0, n - 1));
-                Observe(WorkerEventKind.Zombie, job.Id, job.Attempt, "ended");
-            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            var hold = HoldAsync(job, context, handlerTask, key, stopReason!, handlersStop);
+            _holds.TryAdd(hold, 0);
+            _ = hold.ContinueWith(t => _holds.TryRemove(t, out _), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             return;
         }
 
@@ -270,6 +285,28 @@ public sealed class WorkQueueWorker(
                 await SettleAsync(job, q => q.RetryAsync(job, delay, error, resource), WorkerEventKind.Retried, error, delay, failure).ConfigureAwait(false);
                 break;
         }
+    }
+
+    /// <summary>
+    /// Renews a zombie's lease until its handler ends or the worker stops, then gives the job back (a resource failure, like the
+    /// timeout that made it a zombie). If the lease is lost meanwhile, the job is someone else's and is left alone.
+    /// </summary>
+    private async Task HoldAsync(LeasedJob job, JobContext context, Task handlerTask, string key, string reason, CancellationToken workerStop)
+    {
+        using var done = CancellationTokenSource.CreateLinkedTokenSource(workerStop);
+        using var lost = new CancellationTokenSource();
+        var renewal = RenewAsync(job, context, lost, done.Token);
+        await Task.WhenAny(handlerTask, Cancelled(workerStop), Cancelled(lost.Token)).ConfigureAwait(false);
+        await done.CancelAsync().ConfigureAwait(false);
+        await renewal.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        _zombies.AddOrUpdate(key, 0, (_, n) => Math.Max(0, n - 1));
+        Observe(WorkerEventKind.Zombie, job.Id, job.Attempt, handlerTask.IsCompleted ? "ended" : "still running when the worker stopped");
+        if (lost.IsCancellationRequested)
+        {
+            Observe(WorkerEventKind.LeaseLost, job.Id, job.Attempt, "the zombie's lease was lost; the job is no longer this worker's");
+            return;
+        }
+        await GiveBackAsync(job, reason).ConfigureAwait(false);
     }
 
     private static Task Cancelled(CancellationToken token) => Task.Delay(Timeout.Infinite, token).ContinueWith(_ => { }, TaskScheduler.Default);

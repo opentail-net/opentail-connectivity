@@ -132,6 +132,74 @@ public sealed class WorkQueueWorkerTests
     }
 
     [Fact]
+    public async Task Stopping_finishes_even_when_a_handler_ignores_cancellation_and_no_run_time_limit_is_set()
+    {
+        var queue = new InMemoryWorkQueue();
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "stubborn"), TestContext.Current.CancellationToken);
+        var started = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        var events = new ConcurrentQueue<WorkerEvent>();
+        using var stop = new CancellationTokenSource();
+        var worker = new WorkQueueWorker(queue, Options(drain: TimeSpan.Zero), async (_, _) =>
+        {
+            started.SetResult();
+            await release.Task; // ignores its token
+        }, events.Enqueue);
+
+        var run = worker.RunAsync(stop.Token);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await stop.CancelAsync();
+        await run.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken); // hung before the fix
+
+        Assert.Contains(events, e => e.Kind == WorkerEventKind.Zombie);
+        Assert.Equal("worker stopped", Assert.Single(events, e => e.Kind == WorkerEventKind.Retried).Detail);
+        Assert.Equal(2, Assert.Single(await queue.LeaseAsync(Q, 1, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken)).Attempt);
+        release.SetResult();
+    }
+
+    [Fact]
+    public async Task A_zombie_keeps_its_key_busy_for_every_worker_sharing_the_queue()
+    {
+        var queue = new InMemoryWorkQueue(new WorkQueueOptions(ConcurrencyLimits: new Dictionary<string, int> { ["db:a"] = 1 }));
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "stubborn", ConcurrencyKey: "db:a"), TestContext.Current.CancellationToken);
+        var zombieStarted = new TaskCompletionSource();
+        var zombieRunning = 0;
+        var overlaps = 0;
+        var nextRan = new TaskCompletionSource();
+        var calls = 0;
+
+        async Task Handler(LeasedJob job, CancellationToken _)
+        {
+            if (job.Body == "stubborn" && Interlocked.Increment(ref calls) == 1)
+            {
+                Volatile.Write(ref zombieRunning, 1);
+                zombieStarted.SetResult();
+                await Task.Delay(1200, CancellationToken.None); // ignores its token, well past the run-time limit and grace
+                Volatile.Write(ref zombieRunning, 0);
+                return;
+            }
+            if (job.Body == "next")
+            {
+                if (Volatile.Read(ref zombieRunning) == 1) Interlocked.Increment(ref overlaps);
+                nextRan.TrySetResult();
+            }
+        }
+
+        var options = Options(retryBase: TimeSpan.FromMilliseconds(50), maxRun: TimeSpan.FromMilliseconds(100));
+        using var stop = new CancellationTokenSource();
+        var a = new WorkQueueWorker(queue, options, Handler).RunAsync(stop.Token);
+        await zombieStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        // Worker B starts only now and gets a job with the same key; it must wait for A's zombie to end.
+        await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "next", ConcurrencyKey: "db:a"), TestContext.Current.CancellationToken);
+        var b = new WorkQueueWorker(queue, options, Handler).RunAsync(stop.Token);
+
+        await nextRan.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await stop.CancelAsync();
+        await Task.WhenAll(a, b).WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal(0, overlaps);
+    }
+
+    [Fact]
     public async Task A_handler_past_its_maximum_run_time_is_cancelled_and_the_job_retried_as_a_resource_failure()
     {
         var queue = new InMemoryWorkQueue();
@@ -261,7 +329,7 @@ public sealed class WorkQueueWorkerTests
         var queue = new InMemoryWorkQueue();
         await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "beating"), TestContext.Current.CancellationToken);
         await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "silent"), TestContext.Current.CancellationToken);
-        var options = Options(concurrency: 2, retryBase: TimeSpan.FromSeconds(30)) with { HeartbeatTimeout = TimeSpan.FromMilliseconds(200) };
+        var options = Options(concurrency: 2, retryBase: TimeSpan.FromSeconds(30)) with { HeartbeatTimeout = TimeSpan.FromMilliseconds(600) }; // wide of the 80 ms beats: CI timers are coarse
 
         var events = await RunUntilAsync(queue, options, async (job, ct) =>
         {

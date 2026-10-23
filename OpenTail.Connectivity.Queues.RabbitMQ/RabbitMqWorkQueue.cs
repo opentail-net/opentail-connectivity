@@ -1,5 +1,6 @@
 using System.Text;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 
 namespace OpenTail.Connectivity.Queues.RabbitMQ;
 
@@ -144,18 +145,23 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                     continue;
                 }
 
+                // A job past its attempt or age limit goes to the dead letters before it takes a slot, a start or a probe.
+                if (WorkQueueRules.DeadReason(message.Attempts, At(message.EnqueuedAt), At(now), _options) is { } reason)
+                {
+                    await PublishDeadAsync(channel, queue, message, reason, now, ct).ConfigureAwait(false);
+                    await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
+                    continue;
+                }
+
                 var token = Guid.NewGuid().ToString("N");
                 var until = now + (long)lease.TotalMilliseconds;
                 if (message.ConcurrencyKey is { } ck && _rabbit.Control is { } control)
                 {
-                    // A slot first, then the circuit; either refusing means the job waits a while, using no attempt.
+                    // A slot, then the circuit, then the rate: any refusing means the job waits a while, using no attempt. The rate
+                    // goes last, so only a job that actually starts counts as a start.
                     var release = !skipConcurrencyKeys.Contains(ck)
                                   && await control.TryTakeSlotAsync(queue, ck, _options.LimitFor(ck) ?? int.MaxValue, token, At(until), ct).ConfigureAwait(false);
-                    if (release && _options.RateFor(ck) is { } rate && !await control.TryTakeStartAsync(queue, ck, rate, At(now), ct).ConfigureAwait(false))
-                    {
-                        await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
-                        release = false;
-                    }
+                    var probed = false;
                     if (release)
                     {
                         var allowed = false;
@@ -163,13 +169,21 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                         {
                             var (ok, probe) = Circuits.MayRelease(c, now, _options);
                             allowed = ok;
-                            return ok && probe ? Circuits.ProbeReleased(c!, token, until) : c;
+                            probed = ok && probe;
+                            return probed ? Circuits.ProbeReleased(c!, token, until) : c;
                         }, ct).ConfigureAwait(false);
                         if (!allowed)
                         {
                             await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
                             release = false;
                         }
+                    }
+                    if (release && _options.RateFor(ck) is { } rate && !await control.TryTakeStartAsync(queue, ck, rate, At(now), ct).ConfigureAwait(false))
+                    {
+                        await control.ReleaseSlotAsync(queue, ck, token, ct).ConfigureAwait(false);
+                        if (probed)
+                            await control.UpdateCircuitAsync(queue, ck, c => Circuits.Settled(c, token), ct).ConfigureAwait(false); // the probe never ran
+                        release = false;
                     }
 
                     if (!release)
@@ -179,19 +193,6 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
                         parks++;
                         continue;
                     }
-                }
-
-                if (WorkQueueRules.DeadReason(message.Attempts, At(message.EnqueuedAt), At(now), _options) is { } reason)
-                {
-                    await PublishDeadAsync(channel, queue, message, reason, now, ct).ConfigureAwait(false);
-                    await channel.BasicAckAsync(got.DeliveryTag, multiple: false, ct).ConfigureAwait(false);
-                    if (message.ConcurrencyKey is { } key && _rabbit.Control is { } c2)
-                    {
-                        await c2.ReleaseSlotAsync(queue, key, token, ct).ConfigureAwait(false);
-                        await c2.UpdateCircuitAsync(queue, key, c => Circuits.Settled(c, token), ct).ConfigureAwait(false);
-                    }
-
-                    continue;
                 }
 
                 var job = message with { Attempts = message.Attempts + 1 };
@@ -636,7 +637,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
 
     private async Task DeclareAsync(IChannel channel, string queue, CancellationToken ct)
     {
-        if (!_declared.Add(Name(queue)))
+        if (_declared.Contains(Name(queue)))
             return;
         var quorum = new Dictionary<string, object?> { ["x-queue-type"] = "quorum" };
         // Quorum queues drop a message returned more than 20 times (RabbitMQ 4 default) unless told otherwise. Our own attempt limit
@@ -649,7 +650,7 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             ["x-dead-letter-strategy"] = "at-least-once",
             ["x-overflow"] = "reject-publish",
         };
-        await channel.QueueDeclareAsync(Name(queue), durable: true, exclusive: false, autoDelete: false, arguments: main, cancellationToken: ct).ConfigureAwait(false);
+        await DeclareQueueAsync(channel, Name(queue), main, ct).ConfigureAwait(false);
         // Dead letters expire after the retention period; the broker drops them (unlike the other queues, nothing is audited). Listing
         // them takes and returns them, which must never count towards a limit: none here.
         var dead = new Dictionary<string, object?>(quorum)
@@ -657,12 +658,34 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             ["x-message-ttl"] = (long)_options.DeadLetterRetentionOrDefault.TotalMilliseconds,
             ["x-delivery-limit"] = -1,
         };
-        await channel.QueueDeclareAsync(DeadName(queue), durable: true, exclusive: false, autoDelete: false, arguments: dead, cancellationToken: ct).ConfigureAwait(false);
+        await DeclareQueueAsync(channel, DeadName(queue), dead, ct).ConfigureAwait(false);
+        _declared.Add(Name(queue)); // only once both exist as this version needs them
+    }
+
+    /// <summary>
+    /// Declares a durable queue. A queue that already exists with other arguments (one declared by an earlier version of this
+    /// package, whose arguments have since changed) makes RabbitMQ close the channel with PRECONDITION_FAILED; that becomes an
+    /// error saying what to do, rather than a channel that fails again on every call.
+    /// </summary>
+    private static async Task DeclareQueueAsync(IChannel channel, string name, IDictionary<string, object?> arguments, CancellationToken ct)
+    {
+        try
+        {
+            await channel.QueueDeclareAsync(name, durable: true, exclusive: false, autoDelete: false, arguments: arguments, cancellationToken: ct).ConfigureAwait(false);
+        }
+        catch (OperationInterruptedException ex) when (ex.ShutdownReason?.ReplyCode == 406)
+        {
+            throw new InvalidOperationException(
+                $"RabbitMQ queue '{name}' already exists with arguments this version does not declare ({ex.ShutdownReason.ReplyText}). " +
+                "RabbitMQ cannot change a durable queue's arguments in place. Migrate it: stop the workers, move its messages to a queue " +
+                "declared by this version (for example with a shovel, or by setting RabbitMqWorkQueueOptions.QueuePrefix to a new prefix " +
+                "and draining the old queue), then delete the old one. See docs/design/messaging-and-queues.md, 'Upgrading RabbitMQ queues'.", ex);
+        }
     }
 
     private async Task DeclareWaitAsync(IChannel channel, string queue, long seconds, CancellationToken ct)
     {
-        if (!_declared.Add(WaitName(queue, seconds)))
+        if (_declared.Contains(WaitName(queue, seconds)))
             return;
         // Every message here lives the same time, then dead-letters back to the work queue. At-least-once dead-lettering keeps
         // a message until the work queue confirms it (it needs reject-publish overflow).
@@ -676,8 +699,8 @@ public sealed class RabbitMqWorkQueue : IWorkQueue
             ["x-overflow"] = "reject-publish",
             ["x-delivery-limit"] = -1, // listing and run-now take and return messages here
         };
-        await channel.QueueDeclareAsync(WaitName(queue, seconds), durable: true, exclusive: false, autoDelete: false, arguments: arguments, cancellationToken: ct)
-            .ConfigureAwait(false);
+        await DeclareQueueAsync(channel, WaitName(queue, seconds), arguments, ct).ConfigureAwait(false);
+        _declared.Add(WaitName(queue, seconds));
     }
 
     private async Task<T> LockedAsync<T>(Func<IChannel, Task<T>> act, CancellationToken ct)

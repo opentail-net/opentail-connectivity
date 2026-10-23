@@ -20,6 +20,9 @@ public sealed record SqliteEmbeddingOptions(string ModelId, int Dimensions, doub
         if (string.IsNullOrWhiteSpace(ModelId))
             throw new ArgumentException("The embedding model id must name the model.", nameof(ModelId));
         ArgumentOutOfRangeException.ThrowIfLessThan(Dimensions, 1, nameof(Dimensions));
+        // NaN would silently keep every hit (every comparison is false); outside -1..1 would keep all or drop all.
+        if (MinScore is { } floor && (!double.IsFinite(floor) || floor < -1 || floor > 1))
+            throw new ArgumentOutOfRangeException(nameof(MinScore), floor, "MinScore is a cosine similarity: a finite number from -1 to 1.");
     }
 }
 

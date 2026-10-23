@@ -148,7 +148,9 @@ for the top 10 (`SqliteVectorBenchmarkTests`, run with `OTAIL_MEMORY_BENCH=1`):
 | 50,000 | 10,000 | 293 MB | 409 MB | 1.8 s | 1.9 s | 303 MB | 163 s |
 
 Search time is linear, about 40 ms per thousand vectors, almost all of it reading vectors from SQLite; the dot products are cheap.
-Each search allocates about as much as the vector data, because Microsoft.Data.Sqlite copies every BLOB it returns (reading into a
+Allocations are counted for the whole process (`GC.GetTotalAllocatedBytes`): an external review (2026-10-23) rightly pointed out that
+the first version counted per thread across `await`s, which can miss work that resumes on another thread. Re-measured that way the
+same day, the figures held (6.1 MB, 60.7 MB and 303 MB per search). Each search allocates about as much as the vector data, because Microsoft.Data.Sqlite copies every BLOB it returns (reading into a
 reused buffer was tried and made it worse: the driver copies anyway). So the ceiling is right where the owner put it: at 50,000
 vectors a search takes about two seconds. `SqliteVectorIndexStatus.OverAdvisoryLimit` and `Advisories` report it; nothing is
 refused. The first speed-up, an in-memory cache of the configured model's vectors (no reading, no copying), would remove most of

@@ -73,6 +73,7 @@ public static class WorkQueueConformance
             Check("a key scoped until finished can be used again once the job finished", capabilities.DeduplicatesKeys, UntilFinishedAsync),
             Check("a key scoped while pending lets a new job queue while the first runs", capabilities.DeduplicatesKeys, WhilePendingAsync),
             Check("a rate limit caps how many start per window", capabilities.ConcurrencyLimits, RateLimitAsync),
+            Check("a job held back by an open circuit uses none of its key's rate limit", capabilities.ConcurrencyLimits, RateNotChargedWhileHeldAsync),
             Check("the enqueuer's trace context travels with the job", true, TraceContextAsync),
             Check("a redrive can be delayed", capabilities.DelayedDelivery, DelayedRedriveAsync),
             Check("a running job's heartbeat progress is kept", capabilities.ListsRunningJobs, ProgressAsync),
@@ -571,6 +572,21 @@ public static class WorkQueueConformance
         Ensure((await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5))).Count == 0, "finishing early let more start in the same window");
         await clock.AdvanceAsync(TimeSpan.FromSeconds(5)); // a broker parks jobs over the limit for a few seconds
         Ensure((await q.LeaseAsync(Q, 10, TimeSpan.FromMinutes(5))).Count == 2, "the next window did not allow 2 more");
+    }
+
+    private static async Task RateNotChargedWhileHeldAsync(WorkQueueOpener open, Clock clock)
+    {
+        var options = new WorkQueueOptions(CircuitFailures: 1, CircuitCooldown: TimeSpan.FromSeconds(3),
+            RateLimits: new Dictionary<string, JobRateLimit> { ["api:*"] = new(2, TimeSpan.FromMinutes(5)) });
+        await using var q = open(clock, options);
+        await q.EnqueueAsync(Keyed("api:crm"));
+        // One start, a resource failure: the circuit opens.
+        Ensure(await q.RetryAsync(Single(await q.LeaseAsync(Q, 1, Lease)), TimeSpan.Zero, "connection refused", resourceFailure: true), "retry failed");
+        for (var i = 0; i < 3; i++)
+            Ensure((await q.LeaseAsync(Q, 10, Lease)).Count == 0, "an open circuit released a job");
+        await clock.AdvanceAsync(TimeSpan.FromSeconds(6));
+        // One of the two starts in the window is used; the attempts held back by the circuit must not have used the other.
+        Ensure((await q.LeaseAsync(Q, 10, Lease)).Count == 1, "attempts held back by the open circuit used up the rate limit");
     }
 
     private static async Task TraceContextAsync(WorkQueueOpener open, Clock clock)

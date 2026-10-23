@@ -253,6 +253,26 @@ manual pause per key would live.
 Each comes with conformance checks where the queue is responsible (slots never exceed the limit across workers; a full key does
 not block other keys; an expired lease frees its slot; an open key releases nothing and burns no attempts).
 
+## Upgrading RabbitMQ queues
+
+RabbitMQ fixes a durable queue's arguments when it is first declared; declaring it again with different arguments closes the
+channel with `PRECONDITION_FAILED` (406). The 2026-10-22 reliability work changed the work queue's arguments (`x-delivery-limit`,
+dead-lettering with `at-least-once`, `x-overflow: reject-publish`) and the dead-letter and wait queues', so a queue declared by an
+earlier build would refuse every call. No deployment had one (the packages had no users outside this repository), but any future
+change to the arguments has the same effect, so (external review, 2026-10-23):
+
+- **The package now says so.** A 406 on declare becomes an `InvalidOperationException` naming the queue and the way out, instead
+  of a channel that fails on every call; and a queue is marked as declared only after the declare succeeded.
+- **To migrate:** stop the workers; set `RabbitMqWorkQueueOptions.QueuePrefix` to a new prefix so this version declares fresh
+  queues; move the old queues' messages across (a shovel, or a small drain script that leases from the old prefix and enqueues
+  under the new one); delete the old queues.
+- **Not done yet: policies.** Most of these arguments (`delivery-limit`, `dead-letter-exchange`, `dead-letter-routing-key`,
+  `dead-letter-strategy`, `overflow`, `message-ttl`) can be set by a RabbitMQ policy instead, and a policy can change on a live
+  queue. Moving them to a policy needs the management API or `rabbitmqctl`, an operator step; worth doing before the first real
+  deployment if the arguments are expected to change again. `x-queue-type: quorum` can only be an argument.
+- **Rule for changes:** treat the declared arguments as a schema. Changing them is a breaking change for the RabbitMQ package and
+  needs a note in the release and a migration path.
+
 ## Where I pushed back (before the owner's reason above)
 
 - The "synchronous HTTP is fragile" argument fits a mesh of microservices. OpenTail is mostly in-process libraries and an MCP

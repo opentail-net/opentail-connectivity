@@ -63,22 +63,26 @@ public sealed class SqliteVectorBenchmarkTests(ITestOutputHelper output)
         }
     }
 
-    /// <summary>Median time and allocated bytes over 7 runs, after one warm-up.</summary>
+    /// <summary>
+    /// Median time and allocated bytes over 7 runs, after one warm-up. Allocations are counted for the whole process
+    /// (<see cref="GC.GetTotalAllocatedBytes"/>): a search awaits, so it can resume on another thread, and a per-thread count would
+    /// miss or misattribute part of it. Nothing else runs during the measurement, so the process total is the search's.
+    /// </summary>
     private static async Task<(double Ms, long Allocated)> TimeAsync(Func<Task> search)
     {
         await search();
         var times = new List<double>();
-        long allocated = 0;
+        var allocations = new List<long>();
         for (var i = 0; i < 7; i++)
         {
-            var before = GC.GetAllocatedBytesForCurrentThread();
+            var before = GC.GetTotalAllocatedBytes(precise: true);
             var watch = Stopwatch.StartNew();
             await search();
             times.Add(watch.Elapsed.TotalMilliseconds);
-            allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            allocations.Add(GC.GetTotalAllocatedBytes(precise: true) - before);
         }
 
-        return (times.Order().ElementAt(times.Count / 2), allocated);
+        return (times.Order().ElementAt(times.Count / 2), allocations.Order().ElementAt(allocations.Count / 2));
     }
 
     private static MemoryRecord Record(string id) => new(

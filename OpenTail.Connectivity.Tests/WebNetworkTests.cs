@@ -27,6 +27,33 @@ public sealed class WebNetworkTests
     public void Only_public_addresses_count_as_public(string address, bool expected)
         => Assert.Equal(expected, WebNetwork.IsPublic(IPAddress.Parse(address)));
 
+    [Fact]
+    public async Task When_the_first_address_does_not_connect_the_next_one_is_tried()
+    {
+        var tried = new List<IPAddress>();
+        var stream = await WebNetwork.ConnectFirstAsync("example.com", [IPAddress.Parse("93.184.216.33"), IPAddress.Parse("93.184.216.34")], 443,
+            (address, _, _) =>
+            {
+                tried.Add(address);
+                return tried.Count == 1
+                    ? ValueTask.FromException<Stream>(new SocketException((int)SocketError.NetworkUnreachable))
+                    : ValueTask.FromResult<Stream>(new MemoryStream());
+            }, TestContext.Current.CancellationToken);
+
+        Assert.IsType<MemoryStream>(stream);
+        Assert.Equal(IPAddress.Parse("93.184.216.34"), tried[^1]);
+    }
+
+    [Fact]
+    public async Task When_no_address_connects_the_error_names_the_host()
+    {
+        var e = await Assert.ThrowsAsync<HttpRequestException>(async () => await WebNetwork.ConnectFirstAsync("example.com",
+            [IPAddress.Parse("93.184.216.34"), IPAddress.Parse("93.184.216.35")], 443,
+            (_, _, _) => ValueTask.FromException<Stream>(new SocketException((int)SocketError.ConnectionRefused)), TestContext.Current.CancellationToken));
+        Assert.Contains("example.com", e.Message);
+        Assert.Equal(2, Assert.IsType<AggregateException>(e.InnerException).InnerExceptions.Count);
+    }
+
     [Theory]
     [InlineData("127.0.0.1")]
     [InlineData("localhost")] // a name that resolves to a private address: the check runs on the address connected to

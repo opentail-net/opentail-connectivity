@@ -146,6 +146,8 @@ public sealed class SqliteVectorStorageTests : IDisposable
     {
         Assert.Throws<ArgumentException>(() => new SqliteMemoryBackend(_path, new HashedBagOfWordsEmbeddings(Dims), new SqliteEmbeddingOptions(" ", Dims)));
         Assert.Throws<ArgumentOutOfRangeException>(() => new SqliteMemoryBackend(_path, new HashedBagOfWordsEmbeddings(Dims), new SqliteEmbeddingOptions("m", 0)));
+        foreach (var bad in new[] { double.NaN, double.PositiveInfinity, 1.01, -1.01 })
+            Assert.Throws<ArgumentOutOfRangeException>(() => new SqliteMemoryBackend(_path, new HashedBagOfWordsEmbeddings(Dims), new SqliteEmbeddingOptions("m", Dims, MinScore: bad)));
         Assert.Throws<ArgumentException>(() => new SqliteMemoryBackend(_path, new HashedBagOfWordsEmbeddings(Dims), null));
         Assert.Throws<ArgumentException>(() => new SqliteMemoryBackend(_path, null, Model));
     }

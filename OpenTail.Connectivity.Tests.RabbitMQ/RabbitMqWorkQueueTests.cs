@@ -41,6 +41,25 @@ public sealed class RabbitMqWorkQueueTests
     }
 
     [Fact]
+    public async Task A_queue_declared_with_other_arguments_gives_an_error_that_says_how_to_migrate()
+    {
+        Assert.SkipWhen(Uri is null, "OTAIL_QUEUE_RABBITMQ is not set");
+        var prefix = $"ot-test-{Guid.NewGuid():N}.";
+        // An earlier version's declaration: a quorum queue without the arguments this version sets.
+        var factory = new global::RabbitMQ.Client.ConnectionFactory { Uri = new Uri(Uri!) };
+        await using (var connection = await factory.CreateConnectionAsync(TestContext.Current.CancellationToken))
+        await using (var channel = await connection.CreateChannelAsync(cancellationToken: TestContext.Current.CancellationToken))
+            await channel.QueueDeclareAsync(prefix + "work", durable: true, exclusive: false, autoDelete: false,
+                arguments: new Dictionary<string, object?> { ["x-queue-type"] = "quorum" }, cancellationToken: TestContext.Current.CancellationToken);
+
+        await using var queue = new RabbitMqWorkQueue(new Uri(Uri!), new WorkQueueOptions(), new RabbitMqWorkQueueOptions(QueuePrefix: prefix));
+        var first = await Assert.ThrowsAsync<InvalidOperationException>(() => queue.LeaseAsync("work", 1, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+        Assert.Contains("Migrate it", first.Message);
+        // Still refused on the next call, rather than carrying on as if the queue had been declared.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => queue.LeaseAsync("work", 1, TimeSpan.FromMinutes(1), TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task A_lease_longer_than_the_consumer_timeout_allows_is_refused()
     {
         await using var queue = new RabbitMqWorkQueue(new Uri("amqp://localhost/"));
