@@ -180,6 +180,50 @@ public sealed class ArchivePipelineTests : IDisposable
     }
 
     [Fact]
+    public async Task A_damaged_entry_list_of_a_changed_archive_is_reported_not_read_as_empty()
+    {
+        var source = new Source();
+        source.Items["a.zip"] = (Zip(("one.txt", Text("one")), ("two.txt", Text("two"))), "v1");
+        var versions = new Versions();
+        var options = new PipelineOptions(Expander: new ArchiveExpander(), VersionStore: versions, Sync: new SyncOptions(CollectSourceRefs: true));
+        await Pipeline(source, new Exporter(), options).RunAsync();
+        Damage(versions);
+
+        source.Items["a.zip"] = (Zip(("one.txt", Text("one, edited"))), "v2");
+        var report = await Pipeline(source, new Exporter(), options).RunAsync();
+
+        var issue = Assert.Single(report.ValidationIssues, i => i.Code == "ARCHIVE_MANIFEST_DAMAGED");
+        Assert.Contains("'s3://bucket/a.zip!/'", issue.Message);
+        Assert.Contains(report.Errors, e => e.Contains("damaged"));
+        // two.txt is not seen, so a consumer that reconciles with the seen refs removes it.
+        Assert.False(report.SourceRefsTruncated);
+        Assert.DoesNotContain("s3://bucket/a.zip!/two.txt", report.SeenSourceRefs!);
+    }
+
+    [Fact]
+    public async Task A_deleted_archive_with_a_damaged_entry_list_reports_the_entries_it_could_not_delete()
+    {
+        var source = new Source { ReportsDeletions = true };
+        source.Items["a.zip"] = (Zip(("one.txt", Text("one"))), "v1");
+        var versions = new Versions();
+        var options = new PipelineOptions(Expander: new ArchiveExpander(), VersionStore: versions, SyncStore: new FileSyncCursorStore(_cursorFile));
+        await Pipeline(source, new Exporter(), options).RunAsync();
+        Damage(versions);
+
+        source.Items.Remove("a.zip");
+        source.Deleted.Add("a.zip");
+        var report = await Pipeline(source, new Exporter(), options).RunAsync();
+
+        Assert.Contains(report.ValidationIssues, i => i.Code == "ARCHIVE_MANIFEST_DAMAGED" && i.Message.Contains("'s3://bucket/a.zip!/'"));
+    }
+
+    private static void Damage(Versions versions)
+    {
+        var key = Assert.Single(versions.Values.Keys, k => k.EndsWith("!entries", StringComparison.Ordinal));
+        versions.Values[key] = "{not a list";
+    }
+
+    [Fact]
     public async Task A_failed_entry_keeps_the_archive_version_unrecorded_so_it_is_tried_again()
     {
         var source = new Source();

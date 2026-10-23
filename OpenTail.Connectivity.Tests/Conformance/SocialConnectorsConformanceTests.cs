@@ -77,6 +77,8 @@ public sealed class SocialConnectorsConformanceTests
             return new RedditConnector("marketing", new SocialConnectorOptions(TenantContext: "tenant-reddit"), http);
         }
 
+        public ISourceConnector CreateFailingPartWay() => new RedditConnector("marketing", new SocialConnectorOptions(TenantContext: "tenant-reddit"), Failing());
+
         public Task RemoveOneItemAsync(string sourceRef)
         {
             _removed = true;
@@ -120,6 +122,8 @@ public sealed class SocialConnectorsConformanceTests
             var http = new HttpClient(new StubHandler(_ => "{\"data\": [], \"meta\": {\"result_count\": 0}}"));
             return new TwitterConnector(Secret, "search query", new SocialConnectorOptions(TenantContext: "tenant-twitter"), http);
         }
+
+        public ISourceConnector CreateFailingPartWay() => new TwitterConnector(Secret, "search query", new SocialConnectorOptions(TenantContext: "tenant-twitter"), Failing());
 
         public Task RemoveOneItemAsync(string sourceRef)
         {
@@ -178,6 +182,8 @@ public sealed class SocialConnectorsConformanceTests
             return new YouTubeConnector(Secret, "query:empty", new SocialConnectorOptions(TenantContext: "tenant-youtube"), http);
         }
 
+        public ISourceConnector CreateFailingPartWay() => new YouTubeConnector(Secret, "query:cats", new SocialConnectorOptions(TenantContext: "tenant-youtube"), Failing());
+
         public Task RemoveOneItemAsync(string sourceRef)
         {
             _removed = true;
@@ -220,11 +226,22 @@ public sealed class SocialConnectorsConformanceTests
             return new MetaConnector(Secret, "page:12345", new SocialConnectorOptions(TenantContext: "tenant-meta"), http);
         }
 
+        public ISourceConnector CreateFailingPartWay() => new MetaConnector(Secret, "page:12345", new SocialConnectorOptions(TenantContext: "tenant-meta"), Failing());
+
         public Task RemoveOneItemAsync(string sourceRef)
         {
             _removed = true;
             return Task.CompletedTask;
         }
+    }
+
+    /// <summary>The provider is down: every call answers 503.</summary>
+    private static HttpClient Failing() => new(new FailingHandler());
+
+    private sealed class FailingHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("") });
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, string> handle) : HttpMessageHandler

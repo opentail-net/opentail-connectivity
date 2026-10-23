@@ -4,7 +4,7 @@ namespace OpenTail.Connectivity.Email;
 /// Reads messages from an .mbox file (common Gmail/Thunderbird export format).
 /// Each message becomes a SourceItem; FetchAsync returns its raw RFC822 bytes.
 /// </summary>
-public sealed class MboxConnector : ISourceConnector
+public sealed class MboxConnector : ISourceConnector, IReportsIncompleteDiscovery
 {
     private readonly string _mboxPath;
     private readonly string _tenantContext;
@@ -14,6 +14,9 @@ public sealed class MboxConnector : ISourceConnector
     private bool _cacheLoaded;
 
     public int ParseErrorCount { get; private set; }
+
+    /// <summary>Set when a message could not be parsed: the parser cannot find the next one, so the messages after it are not read.</summary>
+    public string? IncompleteReason { get; private set; }
 
     public MboxConnector(string mboxPath, string tenantContext)
     {
@@ -58,6 +61,7 @@ public sealed class MboxConnector : ISourceConnector
             _items.Clear();
             _messageBytesById.Clear();
             ParseErrorCount = 0;
+            IncompleteReason = null;
 
             await using var stream = File.OpenRead(_mboxPath);
             var parser = new MimeParser(stream, MimeFormat.Mbox);
@@ -72,7 +76,7 @@ public sealed class MboxConnector : ISourceConnector
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     ParseErrorCount++;
-                    System.Diagnostics.Debug.WriteLine($"Failed to parse mbox message from '{_mboxPath}': {ex.Message}");
+                    IncompleteReason = $"'{Path.GetFileName(_mboxPath)}': message {_items.Count + 1} could not be parsed ({ex.Message}); the messages after it were not read.";
                     break;
                 }
 

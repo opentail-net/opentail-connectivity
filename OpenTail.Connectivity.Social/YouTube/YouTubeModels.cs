@@ -16,6 +16,8 @@ public sealed class YouTubeItem
     public long LikeCount { get; set; }
     public long CommentCount { get; set; }
     public long ViewCount { get; set; }
+    /// <summary>The counts could not be read (the statistics call failed or left this video out): they are unknown, not zero.</summary>
+    public bool StatsUnavailable { get; set; }
     public string? VideoId { get; set; }
     public string? Url { get; set; }
     public string? Language { get; set; }

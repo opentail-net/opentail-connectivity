@@ -37,12 +37,8 @@ public sealed class ImapEmailSender : IEmailSender, IMailboxManager
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
-        var uids = await inbox.SearchAsync(SearchQuery.HeaderContains("Message-ID", messageId), ct);
-        if (uids.Count > 0)
-        {
-            await inbox.AddFlagsAsync(uids, MessageFlags.Deleted, true, ct);
-            await inbox.ExpungeAsync(ct);
-        }
+        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, ct) is { } uid)
+            await ImapMessageLookup.DeleteAsync(client, inbox, uid, ct);
         await client.DisconnectAsync(true, CancellationToken.None);
     }
 
@@ -54,13 +50,12 @@ public sealed class ImapEmailSender : IEmailSender, IMailboxManager
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
-        var uids = await inbox.SearchAsync(SearchQuery.HeaderContains("Message-ID", messageId), ct);
-        if (uids.Count > 0)
+        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, ct) is { } uid)
         {
             if (isRead)
-                await inbox.AddFlagsAsync(uids, MessageFlags.Seen, true, ct);
+                await inbox.AddFlagsAsync(uid, MessageFlags.Seen, true, ct);
             else
-                await inbox.RemoveFlagsAsync(uids, MessageFlags.Seen, true, ct);
+                await inbox.RemoveFlagsAsync(uid, MessageFlags.Seen, true, ct);
         }
         await client.DisconnectAsync(true, CancellationToken.None);
     }
@@ -73,11 +68,10 @@ public sealed class ImapEmailSender : IEmailSender, IMailboxManager
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
-        var uids = await inbox.SearchAsync(SearchQuery.HeaderContains("Message-ID", messageId), ct);
-        if (uids.Count > 0)
+        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, ct) is { } uid)
         {
             var dest = await client.GetFolderAsync(destinationFolder, ct);
-            await inbox.MoveToAsync(uids, dest, ct);
+            await inbox.MoveToAsync(uid, dest, ct);
         }
         await client.DisconnectAsync(true, CancellationToken.None);
     }

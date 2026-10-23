@@ -87,4 +87,32 @@ public sealed class FullRunSourceRefsTests
 
         Assert.Null(report.SeenSourceRefs);
     }
+
+    private sealed class StopsPartWay(string reason) : ISourceConnector, IReportsIncompleteDiscovery
+    {
+        private readonly ItemsConnector inner = new(("a", "good"));
+        public string? IncompleteReason { get; private set; }
+
+        public async IAsyncEnumerable<SourceItem> DiscoverAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await foreach (var item in inner.DiscoverAsync(cancellationToken)) yield return item;
+            IncompleteReason = reason;
+        }
+
+        public Task<byte[]> FetchAsync(SourceItem item, CancellationToken cancellationToken = default) => inner.FetchAsync(item, cancellationToken);
+    }
+
+    [Fact]
+    public async Task A_discovery_that_stopped_part_way_reports_an_error_and_no_refs()
+    {
+        var source = new StopsPartWay("message 2 could not be parsed.");
+        var report = await new ConnectivityPipeline(source, new Extractor(), [new Exporter()],
+            new PipelineOptions(Sync: new SyncOptions(CollectSourceRefs: true))).RunAsync();
+
+        Assert.Equal(1, report.ItemsProcessed); // what was read is kept
+        Assert.Null(report.SeenSourceRefs);     // absence proves nothing
+        Assert.Contains("message 2 could not be parsed.", report.Errors);
+        Assert.Contains(report.ValidationIssues, i => i.Code == "DISCOVERY_INCOMPLETE");
+    }
 }

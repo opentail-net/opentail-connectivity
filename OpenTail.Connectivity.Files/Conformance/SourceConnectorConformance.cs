@@ -12,6 +12,9 @@ public interface IConnectorFixture
     Task RemoveOneItemAsync(string sourceRef);    // make one item vanish, for the fetch check
     IReadOnlyList<string> SecretsGiven { get; }   // strings that must not appear in exception messages
     IReadOnlySet<int>? SkippedChecks => null;
+    /// <summary>A connector whose source fails part way (a provider error after the first page, a damaged record), for check 9;
+    /// null when the fixture cannot build one.</summary>
+    ISourceConnector? CreateFailingPartWay() => null;
 }
 
 public sealed class ConnectorConformanceException(string message) : Exception(message);
@@ -141,6 +144,23 @@ public static class SourceConnectorConformance
 
                 Require(upsertsAfterFirst.SequenceEqual(expectedUpserts), "Check 8 failed: resuming from first checkpoint did not repeat exactly the items after it.");
             }
+        }
+
+        // Check 9: A source that fails part way never ends like a complete discovery: discovery throws, or the connector reports
+        // why it stopped (IReportsIncompleteDiscovery). A quiet end would let items never reached look deleted.
+        if (skipped?.Contains(9) != true && fixture.CreateFailingPartWay() is { } failing)
+        {
+            var threw = false;
+            try
+            {
+                await foreach (var _ in failing.DiscoverAsync(ct).ConfigureAwait(false)) { }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                threw = true;
+            }
+            Require(threw || failing is IReportsIncompleteDiscovery { IncompleteReason: not null },
+                "Check 9 failed: discovery over a source that fails part way ended like a complete one.");
         }
 
         // Check 3: FetchAsync of a discovered item succeeds. After RemoveOneItemAsync, fetching that item returns empty bytes or throws an ordinary exception within 10 seconds, never hangs. Use a timeout.

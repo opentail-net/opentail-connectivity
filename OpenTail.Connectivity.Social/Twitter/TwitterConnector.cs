@@ -70,8 +70,8 @@ public sealed class TwitterConnector : ISourceConnector, IDisposable
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
-                System.Diagnostics.Debug.WriteLine($"Twitter search API failed: {ex.Message}");
-                yield break;
+                // Never a quiet end: the run would look complete with the rest of the results missing.
+                throw new InvalidOperationException("Twitter discovery failed.", ex);
             }
 
             if (response?.Data is not { Count: > 0 }) yield break;

@@ -73,8 +73,8 @@ public sealed class RedditConnector : ISourceConnector
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
             {
-                System.Diagnostics.Debug.WriteLine($"Reddit search API failed: {ex.Message}");
-                yield break;
+                // Never a quiet end: the run would look complete with the rest of the results missing.
+                throw new InvalidOperationException("Reddit discovery failed.", ex);
             }
 
             if (listing?.Data.Children is not { Count: > 0 }) yield break;

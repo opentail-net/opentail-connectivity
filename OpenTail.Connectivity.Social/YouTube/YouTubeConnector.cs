@@ -101,8 +101,8 @@ public sealed class YouTubeConnector : ISourceConnector, IDisposable
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested) 
             { 
-                System.Diagnostics.Debug.WriteLine($"YouTube search failed: {ex.Message}");
-                yield break; 
+                // Never a quiet end: the run would look complete with the rest of the results missing.
+                throw new InvalidOperationException("YouTube discovery failed.", ex);
             }
 
             if (response?.Items is not { Count: > 0 }) yield break;
@@ -122,7 +122,8 @@ public sealed class YouTubeConnector : ISourceConnector, IDisposable
                 var snippet = item.Snippet ?? new YtSnippet();
                 if (_opts.Since.HasValue && snippet.PublishedAt < _opts.Since.Value) continue;
 
-                stats.TryGetValue(videoId, out var stat);
+                YtStatistics? stat = null;
+                var statsUnavailable = stats is null || !stats.TryGetValue(videoId, out stat);
                 var ytItem = new YouTubeItem
                 {
                     ItemId = videoId,
@@ -134,6 +135,7 @@ public sealed class YouTubeConnector : ISourceConnector, IDisposable
                     LikeCount = ParseLong(stat?.LikeCount),
                     CommentCount = ParseLong(stat?.CommentCount),
                     ViewCount = ParseLong(stat?.ViewCount),
+                    StatsUnavailable = statsUnavailable,
                     VideoId = videoId,
                     Url = $"https://www.youtube.com/watch?v={videoId}",
                     Language = snippet.Language,
@@ -179,8 +181,7 @@ public sealed class YouTubeConnector : ISourceConnector, IDisposable
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested) 
             { 
-                System.Diagnostics.Debug.WriteLine($"YouTube comment search failed: {ex.Message}");
-                yield break; 
+                throw new InvalidOperationException("YouTube comment discovery failed.", ex);
             }
 
             if (response?.Items is not { Count: > 0 }) yield break;
@@ -220,7 +221,8 @@ public sealed class YouTubeConnector : ISourceConnector, IDisposable
         }
     }
 
-    private async Task<Dictionary<string, YtStatistics>> FetchVideoStatsAsync(
+    /// <summary>Null when the call fails: the videos are still worth having, but their counts are unknown, never zero.</summary>
+    private async Task<Dictionary<string, YtStatistics>?> FetchVideoStatsAsync(
         List<string> videoIds,
         CancellationToken cancellationToken)
     {
@@ -238,10 +240,10 @@ public sealed class YouTubeConnector : ISourceConnector, IDisposable
             return body?.Items?.ToDictionary(i => i.Id, i => i.Statistics ?? new())
                 ?? [];
         }
-        catch (Exception ex) 
-        { 
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
             System.Diagnostics.Debug.WriteLine($"YouTube stats fetch failed: {ex.Message}");
-            return []; 
+            return null;
         }
     }
 

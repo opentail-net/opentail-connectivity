@@ -66,6 +66,13 @@ public sealed class EmailConnectorsConformanceTests : IDisposable
         public IReadOnlyList<string> SecretsGiven => [];
         public ISourceConnector Create() => new MboxConnector(mboxFile, "tenant-mbox");
         public ISourceConnector CreateEmpty() => new MboxConnector(emptyMboxFile, "tenant-mbox");
+
+        public ISourceConnector CreateFailingPartWay()
+        {
+            var damaged = Path.Combine(Path.GetDirectoryName(mboxFile)!, "damaged.mbox");
+            File.WriteAllText(damaged, "not an mbox: no From line" + Environment.NewLine + "Subject: x" + Environment.NewLine);
+            return new MboxConnector(damaged, "tenant-mbox");
+        }
         public Task RemoveOneItemAsync(string sourceRef)
         {
             File.WriteAllText(mboxFile, """

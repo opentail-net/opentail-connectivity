@@ -58,6 +58,14 @@ public sealed class ConnectivityPipeline
             }
         }
 
+        if (_source is IReportsIncompleteDiscovery { IncompleteReason: { } incomplete } && !cancellationToken.IsCancellationRequested)
+        {
+            discoveryCompleted = false;
+            run.Errors.Add(incomplete);
+            run.Issues.Add(new ValidationIssue(ValidationSeverity.Error, "DISCOVERY_INCOMPLETE",
+                $"{incomplete} Items after that point were not read, so the seen source refs are not reported.", null));
+        }
+
         if (discoveryCompleted && sourceRefs is not null)
         {
             run.SeenSourceRefs = sourceRefs.Refs;
@@ -271,8 +279,11 @@ public sealed class ConnectivityPipeline
                         if (_options.Expander is not null && _options.VersionStore is { } manifests
                             && await manifests.GetAsync(ManifestKey(parentId), ct) is { } manifest)
                         {
-                            foreach (var child in ReadManifest(manifest))
-                                await DeleteDocumentAsync(child, tenant, d.Reason, run, ct);
+                            if (ReadManifestOrNull(manifest) is { } children)
+                                foreach (var child in children)
+                                    await DeleteDocumentAsync(child, tenant, d.Reason, run, ct);
+                            else
+                                ManifestDamaged(run, d.SourceRef);
                             await manifests.RemoveAsync(ManifestKey(parentId), ct);
                         }
 
@@ -462,7 +473,10 @@ public sealed class ConnectivityPipeline
         if (_options.VersionStore is { } manifests)
         {
             var current = new HashSet<string>(childIds, StringComparer.Ordinal);
-            var gone = ReadManifest(await manifests.GetAsync(ManifestKey(docId), ct) ?? "[]").Where(id => !current.Contains(id)).ToList();
+            var stored = await manifests.GetAsync(ManifestKey(docId), ct);
+            var previous = stored is null ? [] : ReadManifestOrNull(stored);
+            if (previous is null) ManifestDamaged(run, item.Id);
+            var gone = (previous ?? []).Where(id => !current.Contains(id)).ToList();
             // Exported as one document before expansion was set: that document goes, its children replace it.
             if (ingestedWhole) gone.Add(item.Id);
             foreach (var sourceRef in gone)
@@ -608,7 +622,14 @@ public sealed class ConnectivityPipeline
     /// <summary>Where an archive's child ids are kept in the version store: beside its version, never a document id (those are hex).</summary>
     private static string ManifestKey(string documentId) => documentId + "!entries";
 
-    private static List<string> ReadManifest(string json) => ReadManifestOrNull(json) ?? [];
+    /// <summary>A damaged child list cannot say which entries the archive had, so they may remain downstream: reported as an error,
+    /// never read as an empty list. A full run's seen refs leave them out, so a consumer that reconciles with them removes them.</summary>
+    private static void ManifestDamaged(Run run, string archiveRef)
+    {
+        var message = $"The archive's list of entries is damaged, so entries of its earlier version may remain downstream; their ids start with '{archiveRef}!/'.";
+        run.Errors.Add($"{archiveRef}: {message}");
+        run.Issues.Add(new ValidationIssue(ValidationSeverity.Error, "ARCHIVE_MANIFEST_DAMAGED", message, archiveRef));
+    }
 
     /// <summary>Null when there is no list or it is damaged: then nothing can be inferred from it.</summary>
     private static List<string>? ReadManifestOrNull(string? json)

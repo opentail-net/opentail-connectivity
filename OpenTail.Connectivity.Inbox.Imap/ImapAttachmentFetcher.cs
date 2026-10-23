@@ -22,14 +22,13 @@ public sealed class ImapAttachmentFetcher : IAttachmentFetcher
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
 
-        var uids = await inbox.SearchAsync(SearchQuery.HeaderContains("Message-ID", messageId), ct);
-        if (uids.Count == 0)
+        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, ct) is not { } uid)
         {
             await client.DisconnectAsync(true, ct);
             return null;
         }
 
-        var full = await inbox.GetMessageAsync(uids[0], ct);
+        var full = await inbox.GetMessageAsync(uid, ct);
         await client.DisconnectAsync(true, ct);
 
         // Find the attachment part matching the specifier (filename or part number)

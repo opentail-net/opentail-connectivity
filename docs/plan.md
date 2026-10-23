@@ -291,3 +291,50 @@ review. Nothing built.
   *Built 2026-10-23; first built in the Host by mistake, moved to connectivity (owner).*
 - [ ] **[H]** A thin Host module over `OpenTail.Connectivity.MongoDb` (agent tools, policy, audit), once the package is published.
 - [ ] **[Owner]** Accounts for P5 (Pinecone) and M5 (Atlas). *Decided 2026-10-23: text in Pinecone for the first version, MongoDB one collection per query, Valkey in examples.*
+
+## 31. External reviews, 2026-10-23 (to-fix 1 to 5)
+
+Five review documents (`docs/to fix 1.md` to `5.md`). All 19 findings were checked against the code on 2026-10-23 and all hold;
+three related gaps were found while checking (marked *found*). They fall into three classes, so each class also gets a test that
+covers every implementation, not just the ones named.
+
+Classes (one test each, so new code is covered automatically):
+
+- [ ] **[C]** Identity: a multi-account test for every storage and drive connector (two accounts, same tenant: distinct
+  `Container`, `SyncScope` and document ids).
+- [ ] **[C]** Completeness: a discovery cut short (API error, parse error, damaged manifest) marks the run's seen refs incomplete,
+  never ends like a full run.
+- [ ] **[H]** Guards on every path: each guard (suspension, policy, flow) is swept over every path that runs an action (execute,
+  retry, recovery, review edits).
+- [ ] **[C]** Compatible means tested: a real-server or emulator workflow for any connector called compatible (MinIO for S3 first).
+
+Order 1, wrong data acted on:
+
+- [ ] **[C]** IMAP delete, mark and move: exact Message-ID match, refuse when ambiguous, act on UIDs; *found:* `ExpungeAsync()`
+  without UIDs removes every `\Deleted` message in the inbox. Attachment fetcher the same (1.2).
+- [ ] **[H]** Suspension checked before every run: `RunClaimedAsync`, so retries and recovery too (4.1).
+- [ ] **[C]** Archive manifest: a damaged manifest is not an empty one, on update and *found:* on delete (2.4).
+- [ ] **[C]** Reddit, Twitter, YouTube, Mbox: failures end the run incomplete, not silently; YouTube's missing stats are not
+  zeros (1.8, 3.2).
+
+Order 2, broken or leaking:
+
+- [ ] **[C]** S3: the bucket name goes to the SDK, the endpoint-qualified name stays the identity (1.1).
+- [ ] **[C]** Meta: the token on each request, never on a shared client's default headers (1.3).
+- [ ] **[C]** EML: root containment, no links, tenant check in `FetchAsync`, as the folder connector does (2.2).
+- [ ] **[H]** Reviewer edits: flow checks again, the preview made again for the edited arguments (4.2).
+
+Order 3, missed or stale data:
+
+- [ ] **[C]** Gmail: fall back to a full listing only for an expired history id (404), and never save a history id past
+  messages not read (3.1).
+- [ ] **[C]** IMAP ids: folder, UIDVALIDITY and UID when there is no Message-ID, never a random id (1.9).
+- [ ] **[C]** Sync scopes fingerprint everything that changes output: SQLite fields, object-storage filter (2.1).
+- [ ] **[C]** Memory ingestion queue: dropped and disposed items complete their callers (2.3).
+
+Order 4 and 5:
+
+- [ ] **[C]** Account namespaces: Google My Drive, Box, SFTP (1.4 to 1.6).
+- [ ] **[C]** Meta Graph API default to v25.0 or later; v19.0 expired 2026-05-21 (1.7).
+- [ ] **[H]** GuardedHttp tries each permitted address in turn (3.3).
+- [ ] **[H]** The access report reads `level_suspended` (5.1).

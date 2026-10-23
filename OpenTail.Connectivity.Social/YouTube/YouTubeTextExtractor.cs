@@ -35,7 +35,15 @@ public sealed class YouTubeTextExtractor : ITextExtractor
             mediaType: item.Mode == YouTubeMode.VideoComments ? "text" : "video",
             bodyText: fullText);
 
-        if (item.ViewCount > 0) meta["social.views"] = item.ViewCount.ToString();
+        if (item.StatsUnavailable)
+        {
+            // Unknown counts are left out, never written as zeros.
+            meta.Remove("social.likes");
+            meta.Remove("social.comments");
+            meta.Remove("social.engagement_score");
+            meta["social.stats"] = "unavailable";
+        }
+        else if (item.ViewCount > 0) meta["social.views"] = item.ViewCount.ToString();
         if (item.VideoId is not null) meta["social.video_id"] = item.VideoId;
 
         var body = item.Mode == YouTubeMode.VideoComments
