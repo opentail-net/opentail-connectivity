@@ -1,3 +1,5 @@
+using OpenTail.Connectivity.Files.Connectors;
+
 namespace OpenTail.Connectivity.Email;
 
 /// <summary>
@@ -15,7 +17,7 @@ public sealed class EmlFileConnector : ISourceConnector
         ArgumentException.ThrowIfNullOrWhiteSpace(tenantContext);
         if (!Directory.Exists(folderPath))
             throw new DirectoryNotFoundException($"Email folder not found: {folderPath}");
-        _folderPath = folderPath;
+        _folderPath = Path.GetFullPath(folderPath);
         _tenantContext = tenantContext;
     }
 
@@ -24,7 +26,9 @@ public sealed class EmlFileConnector : ISourceConnector
         var options = new EnumerationOptions
         {
             RecurseSubdirectories = true,
-            MaxRecursionDepth = 20
+            MaxRecursionDepth = 20,
+            // Links are not followed, as in the folder connector: a linked file or folder could lead outside the root.
+            AttributesToSkip = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint,
         };
 
         foreach (var path in Directory.EnumerateFiles(_folderPath, "*.eml", options))
@@ -42,8 +46,14 @@ public sealed class EmlFileConnector : ISourceConnector
         }
     }
 
+    /// <summary>Reads only a file below the folder, not through a link, for this connector's tenant: an item is caller input.</summary>
     public Task<byte[]> FetchAsync(SourceItem item, CancellationToken cancellationToken = default)
-        => File.ReadAllBytesAsync(item.Id, cancellationToken);
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (!string.Equals(item.TenantContext, _tenantContext, StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("The item belongs to another tenant.");
+        return File.ReadAllBytesAsync(SourceFolderGuard.Resolve(_folderPath, item.Id), cancellationToken);
+    }
 
     private static string? TryReadSubject(string path)
     {

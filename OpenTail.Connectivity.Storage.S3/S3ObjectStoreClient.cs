@@ -13,6 +13,7 @@ namespace OpenTail.Connectivity.Storage.S3;
 public sealed class S3ObjectStoreClient : IObjectStoreClient
 {
     private readonly IAmazonS3 s3;
+    private readonly string bucket;
 
     /// <param name="s3">An SDK client the caller built with its own identity, region and endpoint. See <see cref="CreateSdkClient"/>.</param>
     public S3ObjectStoreClient(IAmazonS3 s3, string bucket)
@@ -20,7 +21,9 @@ public sealed class S3ObjectStoreClient : IObjectStoreClient
         ArgumentNullException.ThrowIfNull(s3);
         ArgumentException.ThrowIfNullOrWhiteSpace(bucket);
         this.s3 = s3;
-        // AWS bucket names are global; an S3-compatible endpoint has its own namespace, so its host is part of the identity.
+        this.bucket = bucket;
+        // AWS bucket names are global; an S3-compatible endpoint has its own namespace, so its host is part of the identity. Only
+        // the identity: requests name the bucket alone.
         Container = Uri.TryCreate(s3.Config?.ServiceURL, UriKind.Absolute, out var endpoint) ? endpoint.Authority + "/" + bucket : bucket;
     }
 
@@ -45,7 +48,7 @@ public sealed class S3ObjectStoreClient : IObjectStoreClient
         ArgumentOutOfRangeException.ThrowIfLessThan(pageSize, 1);
         var response = await s3.ListObjectsV2Async(new ListObjectsV2Request
         {
-            BucketName = Container,
+            BucketName = bucket,
             Prefix = prefix,
             ContinuationToken = resumeToken,
             MaxKeys = Math.Min(pageSize, 1000),
@@ -59,7 +62,7 @@ public sealed class S3ObjectStoreClient : IObjectStoreClient
     {
         try
         {
-            var m = await s3.GetObjectMetadataAsync(new GetObjectMetadataRequest { BucketName = Container, Key = key }, cancellationToken).ConfigureAwait(false);
+            var m = await s3.GetObjectMetadataAsync(new GetObjectMetadataRequest { BucketName = bucket, Key = key }, cancellationToken).ConfigureAwait(false);
             var info = Info(key, m.ContentLength, m.LastModified, m.ETag, m.StorageClass?.Value, m.RestoreExpiration is not null || m.RestoreInProgress == true ? m.RestoreInProgress : null);
             // Intelligent-Tiering's archive tiers need a restore too, whatever the class says.
             return m.ArchiveStatus?.Value is { Length: > 0 } && m.RestoreExpiration is null ? info with { NeedsRestore = true } : info;
@@ -77,7 +80,7 @@ public sealed class S3ObjectStoreClient : IObjectStoreClient
         try
         {
             // One byte more than asked tells whether the object is longer; the range keeps a large object from downloading whole.
-            response = await s3.GetObjectAsync(new GetObjectRequest { BucketName = Container, Key = key, ByteRange = new ByteRange(0, maxBytes) }, cancellationToken)
+            response = await s3.GetObjectAsync(new GetObjectRequest { BucketName = bucket, Key = key, ByteRange = new ByteRange(0, maxBytes) }, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound)

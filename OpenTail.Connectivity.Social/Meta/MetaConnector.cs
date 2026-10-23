@@ -51,10 +51,15 @@ public sealed class MetaConnector : ISourceConnector, IDisposable
             _ownsHttp = false;
         }
 
-        // Set token as a Bearer header rather than embedding it in query strings,
-        // which would expose it in exception messages, logs, and network traces.
-        _http.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+    }
+
+    // The token goes in a Bearer header on each request: not in the query string, which would expose it in exception messages,
+    // logs and traces, and not on the client's default headers, which a caller's shared client would carry to other accounts.
+    private Task<HttpResponseMessage> GetAsync(string url, CancellationToken ct)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _accessToken);
+        return _http.SendAsync(request, ct);
     }
 
     private static (MetaPlatform platform, string id) ParseSource(string source)
@@ -106,7 +111,7 @@ public sealed class MetaConnector : ISourceConnector, IDisposable
             FbPagePostsResponse? response = null;
             try
             {
-                var resp = await _http.GetAsync(url, cancellationToken);
+                var resp = await GetAsync(url, cancellationToken);
                 resp.EnsureSuccessStatusCode();
                 response = JsonSerializer.Deserialize<FbPagePostsResponse>(
                     await resp.Content.ReadAsStringAsync(cancellationToken), _json);
@@ -165,7 +170,7 @@ public sealed class MetaConnector : ISourceConnector, IDisposable
             IgMediaResponse? response = null;
             try
             {
-                var resp = await _http.GetAsync(url, cancellationToken);
+                var resp = await GetAsync(url, cancellationToken);
                 resp.EnsureSuccessStatusCode();
                 response = JsonSerializer.Deserialize<IgMediaResponse>(
                     await resp.Content.ReadAsStringAsync(cancellationToken), _json);

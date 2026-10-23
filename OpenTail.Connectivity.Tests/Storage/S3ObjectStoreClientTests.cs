@@ -60,6 +60,7 @@ public sealed class S3ObjectStoreClientTests
         var request = Assert.Single(handler.Requests);
         Assert.Equal(HttpMethod.Get, request.Method);
         Assert.Contains("list-type=2", request.Uri.Query);
+        Assert.Equal("/acme-exports", request.Uri.AbsolutePath.TrimEnd('/')); // the bucket alone, never the endpoint-qualified identity
         Assert.Contains("prefix=finance/", Uri.UnescapeDataString(request.Uri.Query));
         Assert.Contains("AWS4-HMAC-SHA256", request.Authorization);
     }
@@ -169,6 +170,7 @@ public sealed class S3ObjectStoreClientTests
         Assert.Equal("month,total", text.Text);
         Assert.Equal([HttpMethod.Head, HttpMethod.Get], handler.Requests.Select(r => r.Method));
         Assert.All(handler.Requests, r => Assert.Equal("s3.example.test", r.Uri.Host));
+        Assert.All(handler.Requests, r => Assert.StartsWith("/acme-exports/", r.Uri.AbsolutePath));
     }
 
     private static HttpResponseMessage Xml(string body) =>
