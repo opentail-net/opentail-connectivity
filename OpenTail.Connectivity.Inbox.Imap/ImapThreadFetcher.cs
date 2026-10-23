@@ -45,7 +45,7 @@ public sealed class ImapThreadFetcher : IEmailThreadFetcher
                 if (count >= maxMessages) break;
                 ct.ThrowIfCancellationRequested();
                 var msg = await folder.GetMessageAsync(uid, ct);
-                yield return MapToRecord(msg);
+                yield return MapToRecord(msg, ImapMessageLookup.StableId(_settings, folder.FullName, folder.UidValidity, uid.Id));
                 count++;
             }
         }
@@ -62,7 +62,7 @@ public sealed class ImapThreadFetcher : IEmailThreadFetcher
         }
     }
 
-    private InboxEmailRecord MapToRecord(MimeMessage msg)
+    private InboxEmailRecord MapToRecord(MimeMessage msg, string stableId)
     {
         var body = msg.TextBody ?? StripHtml(msg.HtmlBody) ?? string.Empty;
         var parts = msg.Attachments.OfType<MimePart>().ToList();
@@ -77,7 +77,7 @@ public sealed class ImapThreadFetcher : IEmailThreadFetcher
             .ToList();
 
         return new InboxEmailRecord(
-            MessageId: msg.MessageId ?? Guid.NewGuid().ToString(),
+            MessageId: msg.MessageId ?? stableId,
             Subject: msg.Subject?.Trim() ?? string.Empty,
             From: msg.From.ToString(),
             To: msg.To.ToString(),

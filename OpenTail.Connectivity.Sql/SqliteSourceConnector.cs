@@ -33,13 +33,16 @@ public sealed class SqliteSourceConnector : IIncrementalSourceConnector
     }
 
     /// <summary>
-    /// "sqlite:" + tenant + ":" + the database file + "/" + the table + "#" + a hash of the id and modified fields, so two
-    /// configurations that read rows differently never share a cursor. The connection string's other parts (which can hold a
+    /// "sqlite:" + tenant + ":" + the database file + "/" + the table + "#" + a hash of every field setting, so two configurations
+    /// that read rows differently, or make different documents from them, never share a cursor: a changed body field would not
+    /// change a row's modified value, and the old cursor would keep its documents stale. The connection string's other parts (which can hold a
     /// password) are left out. A scope saved by an earlier version is not found, which gives one full run.
     /// </summary>
     public string SyncScope =>
         $"sqlite:{_tenantContext}:{new SqliteConnectionStringBuilder(_config.ConnectionString).DataSource}/{_config.TableOrQuery}#" +
-        OpenTail.Connectivity.Files.FileFilter.Hash("id=" + _config.IdField, "modified=" + _config.ModifiedField, "query=" + _config.IsQuery);
+        OpenTail.Connectivity.Files.FileFilter.Hash("id=" + _config.IdField, "modified=" + _config.ModifiedField, "query=" + _config.IsQuery,
+            "title=" + _config.TitleField, "body=" + string.Join(',', _config.BodyFields),
+            "meta=" + string.Join(',', _config.MetadataFields ?? []));
 
     public async IAsyncEnumerable<SourceChange> GetChangesAsync(string? cursor, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {

@@ -165,6 +165,10 @@ public sealed class SqliteIncrementalTests : IDisposable
         Assert.NotEqual(Scope(baseConfig), Scope(baseConfig, "other"));
         Assert.NotEqual(Scope(baseConfig), Scope(baseConfig with { IdField = "ticket_no" }));
         Assert.NotEqual(Scope(baseConfig), Scope(baseConfig with { ModifiedField = "created" }));
+        // Fields that make the document: a change must not keep the old cursor, or rows not modified since keep stale documents.
+        Assert.NotEqual(Scope(baseConfig), Scope(baseConfig with { TitleField = "title" }));
+        Assert.NotEqual(Scope(baseConfig), Scope(baseConfig with { BodyFields = ["body", "notes"] }));
+        Assert.NotEqual(Scope(baseConfig), Scope(baseConfig with { MetadataFields = ["status"] }));
         Assert.DoesNotContain("Password", Scope(baseConfig with { ConnectionString = $"Data Source={_db};Password=secret" }));
     }
 

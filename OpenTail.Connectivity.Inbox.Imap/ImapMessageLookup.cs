@@ -5,8 +5,10 @@ internal static class ImapMessageLookup
 {
     /// <summary>The one message whose Message-ID is <paramref name="messageId"/>; null when there is none. More than one is refused:
     /// acting on all of them could change messages nobody asked about.</summary>
-    public static async Task<UniqueId?> FindExactAsync(IMailFolder folder, string messageId, CancellationToken ct)
+    public static async Task<UniqueId?> FindExactAsync(IMailFolder folder, string messageId, ImapSettings account, CancellationToken ct)
     {
+        if (messageId.StartsWith(StableIdPrefix, StringComparison.Ordinal))
+            return StableUid(messageId, account, folder.FullName, folder.UidValidity) is { } uid ? new UniqueId(folder.UidValidity, uid) : null;
         var wanted = Normalize(messageId);
         if (wanted.Length == 0) throw new ArgumentException("A Message-ID is required.", nameof(messageId));
         var candidates = await folder.SearchAsync(SearchQuery.HeaderContains("Message-ID", wanted), ct);
@@ -42,6 +44,24 @@ internal static class ImapMessageLookup
         if (flagged.All(u => u == uid))
             await folder.ExpungeAsync(ct);
     }
+
+    private const string StableIdPrefix = "imap-uid:";
+
+    /// <summary>The id of a message without a Message-ID header: the account, folder, UIDVALIDITY and UID, so it is the same on
+    /// every run (until the server renumbers the folder) and two accounts never share it. Never random.</summary>
+    public static string StableId(ImapSettings account, string folder, uint uidValidity, uint uid)
+        => StableIdBase(account, folder, uidValidity) + uid;
+
+    /// <summary>The UID in a <see cref="StableId"/> of this account, folder and UIDVALIDITY; null for any other (another account, or a
+    /// folder renumbered since: its UIDs now name other messages).</summary>
+    internal static uint? StableUid(string id, ImapSettings account, string folder, uint uidValidity)
+    {
+        var expected = StableIdBase(account, folder, uidValidity);
+        return id.StartsWith(expected, StringComparison.Ordinal) && uint.TryParse(id.AsSpan(expected.Length), out var uid) && uid > 0 ? uid : null;
+    }
+
+    private static string StableIdBase(ImapSettings account, string folder, uint uidValidity)
+        => $"{StableIdPrefix}{account.Username}@{account.Host}/{folder}/{uidValidity}/";
 
     internal static string Normalize(string messageId) => messageId.Trim().TrimStart('<').TrimEnd('>').Trim();
 }

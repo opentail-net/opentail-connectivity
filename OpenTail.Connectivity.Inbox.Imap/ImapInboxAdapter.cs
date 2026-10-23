@@ -68,7 +68,8 @@ public sealed class ImapInboxAdapter : IInboxAdapter, IInboxSyncCommit
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var full = await folder.GetMessageAsync(summary.UniqueId, cancellationToken);
-                yield return MapToRecord(full, options.Folder);
+                yield return MapToRecord(full, options.Folder,
+                    ImapMessageLookup.StableId(_settings, folder.FullName, folder.UidValidity, summary.UniqueId.Id));
 
                 if (summary.UniqueId.Id > highestSeenUid)
                     highestSeenUid = summary.UniqueId.Id;
@@ -124,7 +125,7 @@ public sealed class ImapInboxAdapter : IInboxAdapter, IInboxSyncCommit
         return SearchQuery.DeliveredAfter(DateTime.UtcNow.Subtract(DefaultInitialLookback));
     }
 
-    private InboxEmailRecord MapToRecord(MimeMessage msg, string folder)
+    private InboxEmailRecord MapToRecord(MimeMessage msg, string folder, string stableId)
     {
         var body = msg.TextBody ?? StripHtml(msg.HtmlBody) ?? string.Empty;
         var parts = msg.Attachments.OfType<MimePart>().ToList();
@@ -144,7 +145,7 @@ public sealed class ImapInboxAdapter : IInboxAdapter, IInboxSyncCommit
             .ToList();
 
         return new InboxEmailRecord(
-            MessageId: msg.MessageId ?? Guid.NewGuid().ToString(),
+            MessageId: msg.MessageId ?? stableId,
             Subject: msg.Subject?.Trim() ?? string.Empty,
             From: msg.From.ToString(),
             To: msg.To.ToString(),

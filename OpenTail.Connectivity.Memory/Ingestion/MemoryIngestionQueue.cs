@@ -25,7 +25,8 @@ public sealed class MemoryIngestionQueue : IAsyncDisposable
             SingleReader = true,
             SingleWriter = false,
             AllowSynchronousContinuations = false,
-        });
+        }, itemDropped: queued => queued.Promise.TrySetResult(Failed(queued,
+            "Dropped: the ingestion queue was full and DropOldestOnOverflow is set, so the oldest capture made room.")));
 
         _worker = Task.Run(ProcessAsync);
     }
@@ -91,6 +92,10 @@ public sealed class MemoryIngestionQueue : IAsyncDisposable
                         BatchSize = batch.Count,
                     });
                 }
+                catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+                {
+                    queued.Promise.TrySetResult(Failed(queued, Disposed));
+                }
                 catch (OperationCanceledException oce)
                 {
                     queued.Promise.TrySetCanceled(oce.CancellationToken);
@@ -133,9 +138,22 @@ public sealed class MemoryIngestionQueue : IAsyncDisposable
         }
         finally
         {
+            // Every caller still waiting gets an answer, never the 30-second timeout.
+            while (_channel.Reader.TryRead(out var left))
+                left.Promise.TrySetResult(Failed(left, Disposed));
             _cts.Dispose();
         }
     }
+
+    private const string Disposed = "The ingestion queue was disposed before this capture was processed.";
+
+    private static MemoryIngestionResult Failed(QueuedCapture queued, string error) => new(
+        Success: false,
+        DedupeKey: queued.Capture.DedupeKey,
+        WasQueued: true,
+        ReplayToken: queued.ReplayToken,
+        BatchSize: 0,
+        Error: error);
 
     private sealed record QueuedCapture(
         MemoryRawCaptureEnvelope Capture,

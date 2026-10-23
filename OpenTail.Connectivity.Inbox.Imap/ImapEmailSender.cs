@@ -37,7 +37,7 @@ public sealed class ImapEmailSender : IEmailSender, IMailboxManager
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
-        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, ct) is { } uid)
+        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, _imap, ct) is { } uid)
             await ImapMessageLookup.DeleteAsync(client, inbox, uid, ct);
         await client.DisconnectAsync(true, CancellationToken.None);
     }
@@ -50,7 +50,7 @@ public sealed class ImapEmailSender : IEmailSender, IMailboxManager
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
-        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, ct) is { } uid)
+        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, _imap, ct) is { } uid)
         {
             if (isRead)
                 await inbox.AddFlagsAsync(uid, MessageFlags.Seen, true, ct);
@@ -68,7 +68,7 @@ public sealed class ImapEmailSender : IEmailSender, IMailboxManager
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadWrite, ct);
-        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, ct) is { } uid)
+        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, _imap, ct) is { } uid)
         {
             var dest = await client.GetFolderAsync(destinationFolder, ct);
             await inbox.MoveToAsync(uid, dest, ct);

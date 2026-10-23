@@ -51,6 +51,24 @@ public sealed class ObjectStorageConnectorTests
     }
 
     [Fact]
+    public async Task A_widened_filter_lists_everything_again_so_an_old_object_it_now_takes_is_read()
+    {
+        var old = DateTimeOffset.Parse("2020-01-01T00:00:00Z");
+        var client = new InMemoryObjectStoreClient("bucket")
+            .Put("docs/big.txt", "123456", old)
+            .Put("docs/new.txt", "n", DateTimeOffset.Parse("2026-10-01T12:00:00Z"));
+        var narrow = new ObjectStorageConnector(client, "tenant", new ObjectStorageOptions(Prefix: "docs/", Filter: new FileFilterOptions(MaxFileSizeBytes: 4)));
+        var cursor = (await CollectAsync(narrow.GetChangesAsync(null))).OfType<SourceChange.Checkpoint>().Last().Cursor;
+
+        var wide = new ObjectStorageConnector(client, "tenant", new ObjectStorageOptions(Prefix: "docs/", Filter: new FileFilterOptions(MaxFileSizeBytes: 100)));
+        var again = await CollectAsync(wide.GetChangesAsync(cursor));
+        var same = await CollectAsync(narrow.GetChangesAsync(cursor));
+
+        Assert.Contains("big.txt", again.OfType<SourceChange.Upsert>().Select(c => c.Item.DisplayName));
+        Assert.Equal(["new.txt"], same.OfType<SourceChange.Upsert>().Select(c => c.Item.DisplayName)); // unchanged filter: watermark kept
+    }
+
+    [Fact]
     public async Task Resumed_mid_page_skips_through_last_key_and_continues_after_it()
     {
         var client = new InMemoryObjectStoreClient("bucket")

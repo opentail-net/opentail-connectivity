@@ -34,4 +34,27 @@ public sealed class ImapMessageLookupTests
     [Fact]
     public void Case_is_kept_since_the_left_part_of_a_message_id_is_case_sensitive()
         => Assert.Null(ImapMessageLookup.Pick([(new UniqueId(1), "ABC@example.com")], "abc@example.com"));
+
+    private static readonly ImapSettings Alice = new("imap.example.com", 993, true, "alice", "pw");
+    private static readonly ImapSettings Bob = new("imap.example.com", 993, true, "bob", "pw");
+
+    [Fact]
+    public void A_message_without_a_message_id_gets_the_same_id_every_run_and_one_per_account()
+    {
+        Assert.Equal(ImapMessageLookup.StableId(Alice, "INBOX", 100, 7), ImapMessageLookup.StableId(Alice, "INBOX", 100, 7));
+        Assert.NotEqual(ImapMessageLookup.StableId(Alice, "INBOX", 100, 7), ImapMessageLookup.StableId(Bob, "INBOX", 100, 7));
+        Assert.NotEqual(ImapMessageLookup.StableId(Alice, "INBOX", 100, 7), ImapMessageLookup.StableId(Alice, "Archive", 100, 7));
+    }
+
+    [Fact]
+    public void A_stable_id_resolves_only_for_its_own_account_folder_and_numbering()
+    {
+        var id = ImapMessageLookup.StableId(Alice, "INBOX", 100, 7);
+
+        Assert.Equal(7u, ImapMessageLookup.StableUid(id, Alice, "INBOX", 100));
+        Assert.Null(ImapMessageLookup.StableUid(id, Bob, "INBOX", 100));     // another account
+        Assert.Null(ImapMessageLookup.StableUid(id, Alice, "INBOX", 101));   // renumbered: UID 7 is another message now
+        Assert.Null(ImapMessageLookup.StableUid(id, Alice, "INBOX", 10));    // a prefix of the numbering is not it
+        Assert.Null(ImapMessageLookup.StableUid(id + "x", Alice, "INBOX", 100));
+    }
 }

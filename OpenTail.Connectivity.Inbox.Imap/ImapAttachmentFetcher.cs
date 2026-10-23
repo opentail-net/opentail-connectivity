@@ -22,7 +22,7 @@ public sealed class ImapAttachmentFetcher : IAttachmentFetcher
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, ct);
 
-        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, ct) is not { } uid)
+        if (await ImapMessageLookup.FindExactAsync(inbox, messageId, _settings, ct) is not { } uid)
         {
             await client.DisconnectAsync(true, ct);
             return null;

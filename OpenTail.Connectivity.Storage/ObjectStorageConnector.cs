@@ -66,6 +66,9 @@ public sealed class ObjectStorageConnector : IIncrementalSourceConnector
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var state = ReadCursor(cursor);
+        // A changed filter lists everything again: a widened one would otherwise miss unchanged objects behind the watermark.
+        // A cursor from an earlier version has no filter, which gives one full listing.
+        if (state.Filter != _filter.Fingerprint) state = new Cursor(null, null, null, null);
         var watermark = state.Watermark;
         var maxSeen = state.MaxSeen;
         var resumeToken = state.ResumeToken;
@@ -93,7 +96,7 @@ public sealed class ObjectStorageConnector : IIncrementalSourceConnector
                 bytesThisRun = SaturatingAdd(bytesThisRun, info.Size);
                 if (_options.MaxBytesPerRun is { } budget && bytesThisRun > budget)
                 {
-                    yield return new SourceChange.Checkpoint(WriteCursor(new Cursor(watermark, maxSeen, pageResumeToken, info.Key)));
+                    yield return new SourceChange.Checkpoint(WriteCursor(_filter.Fingerprint, new Cursor(watermark, maxSeen, pageResumeToken, info.Key)));
                     yield break;
                 }
             }
@@ -101,11 +104,11 @@ public sealed class ObjectStorageConnector : IIncrementalSourceConnector
             resumeToken = page.NextResumeToken;
             if (resumeToken is not null)
             {
-                yield return new SourceChange.Checkpoint(WriteCursor(new Cursor(watermark, maxSeen, resumeToken, null)));
+                yield return new SourceChange.Checkpoint(WriteCursor(_filter.Fingerprint, new Cursor(watermark, maxSeen, resumeToken, null)));
                 continue;
             }
 
-            yield return new SourceChange.Checkpoint(WriteCursor(new Cursor(maxSeen, null, null, null)));
+            yield return new SourceChange.Checkpoint(WriteCursor(_filter.Fingerprint, new Cursor(maxSeen, null, null, null)));
             yield break;
         }
     }
@@ -194,7 +197,7 @@ public sealed class ObjectStorageConnector : IIncrementalSourceConnector
         }
     }
 
-    private static string WriteCursor(Cursor cursor) => JsonSerializer.Serialize(cursor, CursorJson);
+    private static string WriteCursor(string filter, Cursor cursor) => JsonSerializer.Serialize(cursor with { Filter = filter }, CursorJson);
 
     private static DateTimeOffset SubtractOverlap(DateTimeOffset value, TimeSpan overlap) =>
         value.UtcTicks < DateTimeOffset.MinValue.UtcTicks + overlap.Ticks ? DateTimeOffset.MinValue : value - overlap;
@@ -207,7 +210,7 @@ public sealed class ObjectStorageConnector : IIncrementalSourceConnector
         return dot < 0 || dot == fileName.Length - 1 ? "" : fileName[(dot + 1)..].ToLowerInvariant();
     }
 
-    private sealed record Cursor(DateTimeOffset? Watermark, DateTimeOffset? MaxSeen, string? ResumeToken, string? LastKey);
+    private sealed record Cursor(DateTimeOffset? Watermark, DateTimeOffset? MaxSeen, string? ResumeToken, string? LastKey, string? Filter = null);
 }
 
 /// <param name="Namespace">A stable, non-secret name for the account behind the client (for example a Dropbox account id),
