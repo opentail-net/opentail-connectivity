@@ -337,3 +337,17 @@ Order 4 and 5:
 - [x] **[C]** Meta Graph API default to v25.0 or later; v19.0 expired 2026-05-21 (1.7).
 - [x] **[H]** GuardedHttp tries each permitted address in turn (3.3).
 - [x] **[H]** The access report reads `level_suspended` (5.1).
+
+## 32. Email attachments through the Host
+
+Design: [design/email-attachments.md](design/email-attachments.md) (2026-10-23, replaces the first draft
+`email-attachments-processing-plan.md`). Not built. Outgoing attachments are out of scope and need their own design.
+
+- [ ] **[C]** References: `ProviderMessageId` on `InboxEmailRecord`; Gmail `partId`, IMAP part specifiers and decoded size; verify
+  Graph attachment metadata arrives with `$select` (else `$expand`).
+- [ ] **[C]** Fetching: new `IAttachmentFetcher` with limits and statuses; IMAP fetches one part from the right folder.
+- [ ] **[C]** Processing: `Transformations.Text` 2.0.3 → 2.0.4.6; `AttachmentProcessor` (status mapping, time limit, concurrency).
+- [ ] **[H]** `email.read` returns attachment objects; `email.read_attachment` (`ReadsUntrusted`); options; deferred fetcher.
+- [ ] **[C]** Live checks per provider on disposable mailboxes.
+- [ ] **[C]** Check callers of `GraphEmailSender` Delete/MarkRead/Move: do they pass the RFC id? (found while reading)
+- [ ] **[Transformations]** Library: cancellation, `MaxInputBytes`, OOXML expansion bound, a `Binary` error kind.
