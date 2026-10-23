@@ -77,10 +77,10 @@ public sealed class WorkQueueWorkerTests
         await queue.EnqueueAsync(new EnqueueRequest(Q, "acme", "slow"), TestContext.Current.CancellationToken);
         var stolen = new List<LeasedJob>();
 
-        // Renewed every 300 ms; the handler runs four leases' worth.
-        var events = await RunUntilAsync(queue, Options(lease: TimeSpan.FromMilliseconds(600)), async (_, ct) =>
+        // Renewed every 600 ms, leaving 600 ms of slack for coarse CI timers; the handler runs four leases' worth.
+        var events = await RunUntilAsync(queue, Options(lease: TimeSpan.FromMilliseconds(1200)), async (_, ct) =>
         {
-            for (var i = 0; i < 16; i++)
+            for (var i = 0; i < 32; i++)
             {
                 await Task.Delay(150, ct);
                 stolen.AddRange(await queue.LeaseAsync(Q, 1, TimeSpan.FromMinutes(1), ct)); // a second worker trying

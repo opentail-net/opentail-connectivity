@@ -31,12 +31,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
-      # No container health check: it was reported unhealthy before mongod had started. The step below waits instead.
+      # No container health check; the step below waits instead. rseq=1 overrides the image's rseq=0: without it mongod 8 refuses
+      # to start on the runners' Linux kernels (6.19 to 7.0.13, a TCMalloc incompatibility; SERVER-121912, docker-library/mongo#765).
       mongo:
         image: mongo:8
         env:
           MONGO_INITDB_ROOT_USERNAME: root
           MONGO_INITDB_ROOT_PASSWORD: Ci_Admin_Pass_1234x
+          GLIBC_TUNABLES: glibc.pthread.rseq=1
         ports: [ '27017:27017' ]
     steps:
       - uses: actions/checkout@v4
