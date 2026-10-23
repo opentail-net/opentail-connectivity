@@ -12,13 +12,16 @@ public sealed class MemoryQualityGateTests
     private static Task<MemoryQualityReport> Gate(string name, IMemoryBackend backend)
         => MemoryQualityGate.RunAsync(name, backend, MemoryQualityCorpus.Records, MemoryQualityCorpus.Scenarios, time: Clock);
 
-    public static TheoryData<string> Backends() => ["in-memory", "sqlite", "files", "vectordata-inmemory"];
+    public static TheoryData<string> Backends() => ["in-memory", "sqlite", "files", "vectordata-inmemory", "sqlite-vectors"];
 
     private static IMemoryBackend New(string name) => name switch
     {
         "in-memory" => new InMemoryMemoryBackend(Clock),
         "files" => new FilesMemoryBackend(Directory.CreateTempSubdirectory("ot-quality-files-").FullName, Clock),
         "vectordata-inmemory" => VectorDataInMemory.New(Clock),
+        // Hybrid by default (the owner's choice), with the same stand-in embedder the VectorData tests use.
+        "sqlite-vectors" => new SqliteMemoryBackend(Path.Combine(Path.GetTempPath(), $"ot-quality-{Guid.NewGuid():N}.db"),
+            new HashedBagOfWordsEmbeddings(2000), new SqliteEmbeddingOptions("test:hashed-2000", 2000, MinScore: 0.05), Clock),
         _ => new SqliteMemoryBackend(Path.Combine(Path.GetTempPath(), $"ot-quality-{Guid.NewGuid():N}.db"), Clock),
     };
 
@@ -33,6 +36,16 @@ public sealed class MemoryQualityGateTests
         Assert.True(report.Passed, string.Join(Environment.NewLine, failures));
         Assert.Equal(Enum.GetValues<MemoryAbility>().Length, report.RecallByAbility.Count);
         Assert.All(report.Cases, static c => Assert.Equal(0, c.Leaks + c.UntrustedAsFact + c.SupersededAsCurrent));
+    }
+
+    [Fact]
+    public async Task Sqlite_with_vectors_loses_no_scenario_that_keyword_only_sqlite_passes()
+    {
+        var keyword = await Gate("sqlite", New("sqlite"));
+        var hybrid = await Gate("sqlite-vectors", New("sqlite-vectors"));
+
+        var lost = MemoryQualityGate.Compare(keyword, hybrid).Where(static c => !c.NowPasses).ToList();
+        Assert.True(lost.Count == 0, string.Join(", ", lost.Select(static c => $"{c.ScenarioId} {c.RecallBefore:0.00}->{c.RecallAfter:0.00}")));
     }
 
     [Fact]

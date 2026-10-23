@@ -340,6 +340,8 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
                     || !SqliteVectors.TryDecode((byte[])reader[2], _embeddingOptions.Dimensions, stored))
                     continue; // corrupt or from another size: never scored
                 var score = Math.Clamp(System.Numerics.Tensors.TensorPrimitives.Dot<float>(query, stored), -1f, 1f);
+                if (_embeddingOptions.MinScore is { } floor && score < floor)
+                    continue; // not similar enough to count as an answer
                 var chunkId = reader.GetString(0);
                 if (best.Count < search.TopK)
                 {

@@ -155,7 +155,7 @@ through `VectorDataMemoryBackend`. Speed-ups if needed, in order: caching per co
   corrupt rows skipped and reported.
 - [x] **V3 Hybrid and modes:** RRF; FTS no longer gates semantic search; explicit modes in `MemoryRetriever` for every backend.
 - [x] **V4 Re-embedding:** batches, restart, the hash check and write in one transaction, cleanup, `GetStatusAsync`.
-- [ ] **V5 Conformance and quality:** the memory suite's checks for vector and hybrid search, plus the tests listed below; the
+- [x] **V5 Conformance and quality:** the memory suite's checks for vector and hybrid search, plus the tests listed below; the
   quality gate with the hashed stand-in embedder, and a real model where one is available (never required by the core suite).
 - [ ] **V6 Measurement:** time, allocations and memory at 1k, 10k and 50k vectors, with a multi-chunk set; the threshold in
   vectors and bytes, in the docs and in a warning.
@@ -176,5 +176,9 @@ Built in that order, each a testable checkpoint.
 
 - *Decided (owner, 2026-10-23):* search is **hybrid by default** when a generator is present, keyword-only on request (needs §5).
 - *Decided (owner, 2026-10-23):* the warning ceiling is **50,000 vectors** (about 300 MB at 1,536 dimensions), advisory.
+- *Decided while building (V5, owner away):* `SqliteEmbeddingOptions.MinScore`, a cosine floor below which vector hits are dropped,
+  as `VectorDataMemoryBackend` has. Without it the quality gate's abstention scenarios failed: vector search always returns its k
+  nearest chunks, so a question nothing answers got five unrelated hits. Model-dependent, so null by default; the tests use 0.05
+  with the hashed stand-in embedder. No real embedding model was available, so the gate ran with the stand-in only.
 - **Where the generator comes from** in the Host's memory module (frozen with tiers 2 and 3, plan section 20 M9): the same question
   the VectorData backend leaves to the caller.

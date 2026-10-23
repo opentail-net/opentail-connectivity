@@ -11,7 +11,9 @@ namespace OpenTail.Connectivity.Memory.Sqlite;
 /// <param name="ModelId">Names the embedding space exactly: the model, its revision, the dimensions and any change to how text is
 /// prepared before embedding. Vectors under one id are never compared with queries embedded under another.</param>
 /// <param name="Dimensions">Every generated vector must have exactly this many.</param>
-public sealed record SqliteEmbeddingOptions(string ModelId, int Dimensions)
+/// <param name="MinScore">Vector hits with a cosine similarity below this are dropped, so a question nothing in memory answers
+/// returns nothing rather than the nearest unrelated chunks. Depends on the model; null keeps every hit.</param>
+public sealed record SqliteEmbeddingOptions(string ModelId, int Dimensions, double? MinScore = null)
 {
     internal void Validate()
     {
