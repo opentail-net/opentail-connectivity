@@ -12,13 +12,14 @@ Each item names the repository it touches and links the page that explains it:
 - **[C]** this repository, `opentail-connectivity`.
 - **[H]** [`opentail-host`](https://github.com/opentail-net/opentail-host).
 - **[O]** [`opentail`](https://github.com/opentail-net/opentail), the developer product that uses this repository.
-- **[Owner]** a decision or a task for the product owner, not code.
+- **[Owner]** a decision or a task for the product owner, not code. Listed in full in [with-owner.md](with-owner.md); the plan keeps
+  a one-line pointer where the item belongs.
 
 **Nothing here is work in progress.** Every open item waits on something (2026-10-22):
 
 | Waiting on | What |
 |---|---|
-| The owner's decisions | The open questions in sections 12 to 18 and 21 (notifications, data exits, adaptive-limit delays, backlog staleness, work items, audit retention and targets, triggers' repository, licence and name); the S3-compatible server for CI (31) |
+| The owner's decisions ([with-owner.md](with-owner.md)) | The open questions in sections 12 to 18 and 21 (notifications, data exits, adaptive-limit delays, backlog staleness, work items, audit retention and targets, triggers' repository, licence and name); the S3-compatible server for CI (31) |
 | Customers | Section 5, which gates tiers 2 and 3 (section 7, frozen) and the Host memory module (M9) |
 | Real accounts and systems | Live-provider suites (section 29), a Meta test account for the Graph v25.0 fields (29), vendor facts (section 9), Entra ID roles (12), an external check (17), write-once storage (18) |
 | Something built first | Host sign-in (section 3), and with it delegation (12) and Slack; triggers T1 to T7 (21); the review-page items G1, G2, G6 (19) |
@@ -58,13 +59,11 @@ Live search and reading, nothing copied. [Roadmap: three tiers](roadmap.md#docum
 - [x] **[H]** Databricks: `OpenTail.Modules.Sql.Databricks`, an ADO.NET adapter over the SQL Statement Execution API through the
   Host's guarded HTTP client (OAuth service principal or token, `:name` parameters, LIMIT, query tags, cancel on timeout)
   ([guide](https://github.com/opentail-net/opentail-host/blob/main/docs/guides/databricks.md)). *Built against a stub 2026-10-23.*
-- [ ] **[Owner]** A Databricks Free Edition workspace, to verify the Databricks provider against the real API.
+- [ ] **[Owner]** A Databricks workspace: [with-owner.md](with-owner.md#accounts-and-test-systems)
 
 ## 5. Ask the first customers
 
-- [ ] **[Owner]** Where does tier 1 fall short? Which collections are searched most, and does keyword search find what people need?
-- [ ] **[Owner]** Decide from the answers whether tiers 2 and 3 are needed, and for which suite first. **Sections 6 and 7 wait on
-  this.** *Owner, 2026-10-18: tiers 2 and 3 stay frozen until customers answer; no index nobody asked for.*
+- [ ] **[Owner]** Customer questions on tier 1, and the tier 2 and 3 decision: [with-owner.md](with-owner.md#customers)
 
 ## 7. Tiers 2 and 3: indexing connectors (only if section 5 says so)
 
@@ -74,8 +73,7 @@ Live search and reading, nothing copied. [Roadmap: three tiers](roadmap.md#docum
 - [ ] **[C]** Google Drive, later slices: permissions and metadata-only mode (My Drive is built, with slice 1).
 
 **Summary cards** (tier 2 with summaries), if section 5 says names and paths are not enough:
-- [ ] **[Owner]** Decide the summary language, who owns the tag vocabulary, and where cards live
-  ([summary cards](design/summary-cards.md#open-questions)).
+- [ ] **[Owner]** Summary cards' open questions: [with-owner.md](with-owner.md#open-design-questions)
 - [ ] **[C]** Records, `IDocumentSummariser`, `ICardStore`, `JsonCardStore`, `SummaryCardExporter` ([summary cards](design/summary-cards.md#order-and-size)).
 - [ ] **[C]** Fetch gate and end-of-run hook in the pipeline; `source.contentTag` in the connectors.
 - [ ] **[H]** Summariser, search over cards with permission checks, curation screens.
@@ -124,7 +122,7 @@ needs one approval for `staging` and two for `production`.
 - [ ] **[H]** One release after profiles ship: refuse keys without a profile at startup. *Unblocked: profiles have shipped in a release.*
 - [ ] **[H]** When the first customer runs Entra ID: `RoleProfiles`, app roles mapped to profiles.
 - [ ] **[H]** With per-user sign-in (section 3): delegation, the profile intersected with the person's rights.
-- [ ] **[Owner]** Still open: where administration-grant notifications go.
+- [ ] **[Owner]** Where administration-grant notifications go: [with-owner.md](with-owner.md#open-design-questions)
 
 ## 13. Adaptive limits and intrusion detection
 
@@ -144,7 +142,7 @@ requires rotating the key; entity keys stored as salted hashes; daily summaries 
   Elevated, an outbound call carrying one Suspended and (enforced) refused. Soft signals: breadth and repeated high-impact
   attempts after outside content, `Limits.SoftSignals` (report only by default), Elevated only. Volume and time-of-day signals and
   learned baselines wait for the rollups to have history.*
-- [ ] **[Owner]** Still open: delays for interactive agents, who is notified, baselines per key or per profile.
+- [ ] **[Owner]** Adaptive limits' open questions: [with-owner.md](with-owner.md#open-design-questions)
 
 ## 14. Where data goes
 
@@ -154,7 +152,7 @@ check outbound calls against flow rules. Waits for sections 12 and 13.
 *Decided by the owner on 2026-10-18:* five fixed labels (`finance`, `personal`, `hr`, `customer`, `secret`) plus labels
 operators define; the label window reuses `TaintWindow`.
 
-- [ ] **[Owner]** Still open: which tools count as an exit, value-matching cost and privacy, regions.
+- [ ] **[Owner]** Data exits' open questions: [with-owner.md](with-owner.md#open-design-questions)
 
 ## 15. Execute with an undo window
 
@@ -165,8 +163,7 @@ not a new `ToolMode` value; `ToolMode` is ordered by its numbers and frozen at c
 *Decided by the owner on 2026-10-18:* default delay 10 minutes; anyone in the reviewer group can stop an action; stretching a
 delay to working hours is an opt-in per tool.
 
-- [ ] **[Owner]** Still open: how stale a backlog may be after an outage before it is held. *Built with the proposal (more than its
-  delay late); change it if you prefer another threshold.*
+- [ ] **[Owner]** Backlog staleness after an outage: [with-owner.md](with-owner.md#open-design-questions)
 
 ## 17. Work items and continuations
 
@@ -178,8 +175,7 @@ Builds on sections 12 to 16.
 *Decided by the owner on 2026-10-18:* not a harness (records and an opaque note, no transcripts, no model calls to do the work);
 the Host stores the note, carrying its session's taint and labels.
 
-- [ ] **[Owner]** Discuss the design; settle the open questions (note sizes, outside creation of work, `MayDelegateTo` and depth,
-  default ttl, which external check first).
+- [ ] **[Owner]** Work items' open questions: [with-owner.md](with-owner.md#open-design-questions)
 - [ ] **[H]** External waits: callback route and polling, against one real check.
 - [ ] **[H]** MCP Tasks extension (SEP-2663) for actions and waited-on items.
   [Design](https://github.com/opentail-net/opentail-host/blob/main/docs/design/mcp-tasks.md) written 2026-10-18. It needs the C#
@@ -199,8 +195,7 @@ auditor will ask (what happened, how it was decided, who decided, under which ru
 that answer it, mapped to SOC 2, ISO/IEC 27001, NIST SP 800-53 (AU), the EU AI Act, ISO/IEC 42001 and GDPR. Completes the
 tamper-evident audit trail of section 16. Written 2026-10-18 at the owner's request.
 
-- [ ] **[Owner]** Settle the open questions: default audit retention; streaming format; write-once target; AI reviewer input;
-  read-logging scope.
+- [ ] **[Owner]** Audit's open questions: [with-owner.md](with-owner.md#open-design-questions)
 - [ ] **[H]** D8 tamper protection: streaming to the customer's log store, write-once checkpoints (S3 Object Lock first), signed
   truncation entry. *Streaming built 2026-10-18 (`audit_entry` to webhook channels; built, unverified against a real log store).
   Waiting: write-once checkpoints need a real S3 bucket with Object Lock and a packaging choice; the truncation entry waits until
@@ -249,7 +244,7 @@ watch), typed conditions and one "then" (a Host call, a work item, a notificatio
 part of it. Plug and play (scheduler, event sources, store, sink, each with a conformance suite) and built to survive a power cut
 (durable firing log, idempotency keys, missed-fire and overlap policies). Proposed 2026-10-20 at the owner's request; nothing built.
 
-- [ ] **[Owner]** Read the design; decide repository, licence and name; the open questions in the design.
+- [ ] **[Owner]** Triggers' repository, licence, name and open questions: [with-owner.md](with-owner.md#choices)
 - [ ] **[H]** Work created from outside (the Host's open question): an identity allowed to create work items for named profiles.
 - [ ] T1 contracts; T2 durable firing log with the kill test; T3 scheduler; T4 Host sink; T5 webhooks and Host events; T6 watches;
   T7 rule management ([steps](design/triggers.md#steps)).
@@ -258,10 +253,7 @@ part of it. Plug and play (scheduler, event sources, store, sink, each with a co
   [optional-todo.md](optional-todo.md), each with when it would be worth doing.
 - [ ] **[H]** Optional `CallTimeout` for in-process Host modules, matching isolated ones.
 - [ ] **[C]** Later: triggers' scheduler enqueues jobs.
-- [ ] **[Owner]** Host work items on `IWorkQueue`: not moved (2026-10-22); work items are records that are read by id, listed and
-  claimed with filters, and a queue cannot do that. The reasoning and two alternatives (queue the Host's webhook deliveries and
-  external-wait polling now; a "delivery hint" queue when the Host goes multi-node) are in the Host's
-  [work design](https://github.com/opentail-net/opentail-host/blob/main/docs/design/work-and-continuations.md).
+- [ ] **[Owner]** Host work items on `IWorkQueue` (not moved): [with-owner.md](with-owner.md#choices)
 
 ## 29. External reviews, 2026-10-21 (to-fix documents)
 
@@ -269,13 +261,7 @@ Seven review documents, now in [done/](done/): the Markdown frontmatter finding,
 and fourth reviews, the follow-up review and the consolidated remediation plan. All fixed 2026-10-22 with regression tests,
 except where noted. Breaking changes are marked **B**; the Host adopts them the next time it takes new packages.
 
-- [ ] **[Owner]** Live-provider integration suites (Graph, Gmail, object storage): need dedicated test accounts and least-privilege
-  credentials from the owner. Until then, everything that talks to a provider stays labelled Tested.
-- [ ] **[Owner]** A Meta test account (a Facebook Page and an Instagram business account, read-only token), to check the fields
-  the Meta connector reads against Graph API v25.0, its default since 2026-10-23 (v19.0 expired 2026-05-21). Unchecked: the
-  post fields `likes.summary(true)`, `shares` and `comments.summary(true)` (Meta's docs prefer `/reactions` for like counts;
-  whether `likes` still answers in v25.0 was not found), and the Instagram media fields `like_count`, `comments_count`,
-  `media_type`, `permalink`. If a field is gone, the connector changes, not the version.
+- [ ] **[Owner]** Test accounts for the live-provider suites and for Meta's Graph v25.0 fields: [with-owner.md](with-owner.md#accounts-and-test-systems)
 
 ## 30. Redis/Valkey, Pinecone, MongoDB
 
@@ -295,7 +281,7 @@ review. Nothing built.
   `$regex`, `$push` in the first version), resource bounds, option checks at start-up, CI on `mongo:8` ([usage](mongodb.md)).
   *Built 2026-10-23; first built in the Host by mistake, moved to connectivity (owner).*
 - [ ] **[H]** A thin Host module over `OpenTail.Connectivity.MongoDb` (agent tools, policy, audit), once the package is published.
-- [ ] **[Owner]** Accounts for P5 (Pinecone) and M5 (Atlas). *Decided 2026-10-23: text in Pinecone for the first version, MongoDB one collection per query, Valkey in examples.*
+- [ ] **[Owner]** Accounts for Atlas (M5) and Pinecone (P5): [with-owner.md](with-owner.md#accounts-and-test-systems)
 
 ## 31. External reviews, 2026-10-23 (to-fix 1 to 5)
 
@@ -319,10 +305,7 @@ Classes (one test each, so new code is covered automatically):
   retry, recovery, review edits).
 - [ ] **[C]** Compatible means tested: a real-server or emulator workflow for any connector called compatible (S3 first). Waits on
   the owner's choice of server, below. Until then the S3 tests assert the request path against a stub.
-- [ ] **[Owner]** Choose the S3-compatible server for that CI workflow. MinIO stopped publishing community images in October 2025
-  and archived its repository in April 2026. Options: Chainguard's free MinIO image (current; Claude's suggestion), a pinned old
-  `quay.io/minio/minio` (works, no fixes), or another S3-compatible server (SeaweedFS, Garage, versitygw; licences not
-  checked). Once chosen: a test project and workflow like `mongodb.yml`, about a session.
+- [ ] **[Owner]** The S3-compatible server for CI: [with-owner.md](with-owner.md#choices)
 
 Order 1, wrong data acted on:
 
