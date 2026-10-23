@@ -51,6 +51,10 @@ Live search and reading, nothing copied. [Roadmap: three tiers](roadmap.md#docum
   ([Snowflake](https://github.com/opentail-net/opentail-host/blob/main/docs/design/snowflake.md), steps S1 to S5). *Owner,
   2026-10-23: no project needs a warehouse yet, and when one does it may be the customer's; build the capability anyway and prove
   it on an official test account. S1 and S2 built 2026-10-23 (Tested, not Verified); S5 needs a Snowflake trial account (owner).*
+- [x] **[H]** More Sql targets (owner, 2026-10-23, the quick wins from a top-10 list): Fabric and Synapse through `sqlserver`
+  ([guide](https://github.com/opentail-net/opentail-host/blob/main/docs/guides/fabric-synapse.md), docs only), `redshift` through
+  Npgsql, and `oracle` in its own package `OpenTail.Modules.Sql.Oracle` with a CI suite on Oracle Database Free. Providers are now
+  `SqlProvider` records; add-on packages declare their own. *Built 2026-10-23. Fabric, Synapse and Redshift wait on real accounts.*
 
 ## 5. Ask the first customers
 
