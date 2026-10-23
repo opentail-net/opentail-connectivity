@@ -1,7 +1,9 @@
 # Plan: Redis/Valkey, Pinecone, MongoDB
 
-**Status:** plan, revised twice on 2026-10-23 after two external reviews (ChatGPT). **R1 is built** (the queue-control contract);
-the Redis store, Pinecone and MongoDB are not. Facts marked *to verify* come from documentation or memory; check them before the
+**Status:** plan, revised twice on 2026-10-23 after two external reviews (ChatGPT). **Built 2026-10-23:** R1 to R4 (the
+queue-control contract and the Redis/Valkey store) and M1 to M4 (the MongoDB reader, as the package `OpenTail.Connectivity.MongoDb`;
+[usage](../mongodb.md)). **Not built:** Pinecone (parked by the owner), M5 (Atlas, owner's account), M6, and the Host module that
+turns the MongoDB reader into agent tools. Facts marked *to verify* come from documentation or memory; check them before the
 step that depends on them.
 
 **What the third review changed** (checked against the code; all held):
@@ -407,11 +409,18 @@ accepted for the first version and stated in the guide.
 
 ### Steps
 
-- [ ] **M1** Skeleton, configuration, credentials, the four tools with descriptors, the shared serialiser and its limits.
-- [ ] **M2** The operator policy: walker, context-specific allow-lists, refused set, collection allow-list, stage and depth bounds.
-- [ ] **M3** Server limits: `maxTimeMS`, row cap, `comment`, read preference; the response cap.
-- [ ] **M4** CI against `mongo:8`; guide (`docs/guides/mongodb.md`).
-- [ ] **M5** Atlas M0 run (owner's account), then Verified.
+*Built in Connectivity, not the Host (owner, 2026-10-23): "the four tools" are the four operations of `MongoReader`; their agent
+tool descriptors, policy and audit come with the Host module, which waits on the package being published.*
+
+- [x] **M1** Skeleton, configuration, credentials, the four tools with descriptors, the shared serialiser and its limits. *Built
+  as `MongoReader` (2026-10-23); descriptors with the Host module.*
+- [x] **M2** The operator policy: walker, context-specific allow-lists, refused set, collection allow-list, stage and depth bounds.
+  *Built (`MongoGuard`).*
+- [x] **M3** Server limits: `maxTimeMS`, row cap, `comment`, read preference; the response cap. *Built; the collections listing
+  is capped too (review fix).*
+- [x] **M4** CI against `mongo:8`; guide ([`docs/mongodb.md`](../mongodb.md)). *Built: `mongodb.yml`, first green run 2026-10-23
+  (51bc841). The server suite checks that every operation carries `maxTimeMS`, not yet that a slow pipeline is stopped.*
+- [ ] **M5** Atlas M0 run (owner's account), then Verified. *In [with-owner.md](../with-owner.md#accounts-and-test-systems).*
 - [ ] **M6** Later, if a use case needs them: `$facet` with per-branch limits; a restricted `$regex`; `$lookup` (then `$unionWith`,
   `$graphLookup` with a depth bound), each with
   namespace tests inside nested pipelines.
@@ -422,9 +431,9 @@ Size: M1 to M3 two to three sessions (M2 is most of it); M4 half a session; M5 d
 
 ## Order and what each waits on
 
-1. **R1** (done), then **R2 to R4**. Nothing needed from the owner.
+1. **R1 to R4**: done.
 2. **P1**, then P2 to P4 (the record state before the backend). P5 needs a Pinecone account. A Redis record state follows R2.
-3. **M1 to M4** need nothing from the owner; M5 needs an Atlas account.
+3. **M1 to M4**: done. M5 needs an Atlas account.
 
 ## Decisions (owner, 2026-10-23)
 

@@ -15,17 +15,17 @@ Each item names the repository it touches and links the page that explains it:
 - **[Owner]** a decision or a task for the product owner, not code. Listed in full in [with-owner.md](with-owner.md); the plan keeps
   a one-line pointer where the item belongs.
 
-**Nothing here is work in progress.** Every open item waits on something (2026-10-22):
+**Nothing here is work in progress.** Every open item waits on something (2026-10-23):
 
 | Waiting on | What |
 |---|---|
 | The owner's decisions ([with-owner.md](with-owner.md)) | The open questions in sections 12 to 18 and 21 (notifications, data exits, adaptive-limit delays, backlog staleness, work items, audit retention and targets, triggers' repository, licence and name); the S3-compatible server for CI (31) |
 | Customers | Section 5, which gates tiers 2 and 3 (section 7, frozen) and the Host memory module (M9) |
-| Real accounts and systems | Live-provider suites (section 29), a Meta test account for the Graph v25.0 fields (29), vendor facts (section 9), Entra ID roles (12), an external check (17), write-once storage (18) |
-| Something built first | Host sign-in (section 3), and with it delegation (12) and Slack; triggers T1 to T7 (21); the review-page items G1, G2, G6 (19) |
+| Real accounts and systems | Live-provider suites (section 29), a Meta test account for the Graph v25.0 fields (29), Atlas for M5 (30), vendor facts (section 9), Entra ID roles (12), an external check (17), write-once storage (18) |
+| Something built first | Host sign-in (section 3), and with it delegation (12) and Slack; triggers T1 to T7 (21); the review-page items G1, G2, G6 (19); the Host MongoDB module, once `OpenTail.Connectivity.MongoDb` is published (30) |
 | Assessment time | M7 and M8 (section 20): no new package goes into opentail until the owner has assessed them |
-| Ready to start | Refusing API keys without a profile (12); Redis/Valkey queue control, Pinecone, MongoDB (30) |
-| Optional or deferred | Notion, Zendesk and Freshdesk, Slack front door, the model-based redactor; queue ideas in optional-todo.md |
+| Ready to start | Refusing API keys without a profile (12) |
+| Optional or deferred | Notion, Zendesk and Freshdesk, Slack front door, the model-based redactor; queue ideas in optional-todo.md; the Pinecone backend (30, parked by the owner) |
 
 ## 3. Host sign-in (prerequisite for searching as the user)
 
