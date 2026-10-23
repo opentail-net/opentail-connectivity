@@ -132,7 +132,9 @@ public sealed class MongoReaderServerTests : IAsyncLifetime
         var settings = MongoClientSettings.FromUrl(url.ToMongoUrl());
         settings.ClusterConfigurator = cb => cb.Subscribe<CommandStartedEvent>(e =>
         {
-            if (e.CommandName is "find" or "aggregate" or "listCollections") sent.Enqueue(e.Command);
+            // The driver's command is a raw document it disposes after the event: keep a full copy.
+            if (e.CommandName is "find" or "aggregate" or "listCollections")
+                sent.Enqueue(MongoDB.Bson.Serialization.BsonSerializer.Deserialize<BsonDocument>(e.Command.ToBson()));
         });
         var reader = new MongoReader(new MongoClient(settings).GetDatabase("otail"), [_orders], new MongoReaderOptions(CommandTimeoutSeconds: 7));
         var ct = TestContext.Current.CancellationToken;

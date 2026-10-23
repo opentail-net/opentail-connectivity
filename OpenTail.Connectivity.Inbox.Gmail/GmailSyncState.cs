@@ -2,10 +2,21 @@ using System.Text.Json;
 
 namespace OpenTail.Connectivity.Inbox.Gmail;
 
+/// <param name="CoveredUntil">All mail up to this time is known read (null in state saved by earlier versions).</param>
+/// <param name="Backfill">A full listing an expired history id started, not finished yet.</param>
 public sealed record GmailSyncState(
     string UserEmail,
     string? HistoryId,
-    DateTimeOffset LastFetchAt);
+    DateTimeOffset LastFetchAt,
+    DateTimeOffset? CoveredUntil = null,
+    GmailBackfill? Backfill = null);
+
+/// <summary>Mail between <paramref name="After"/> and <paramref name="Before"/> (Unix seconds; no upper bound when null) still to be
+/// read. Listing is newest first, so each run reads the newest part and lowers <paramref name="Before"/>.</summary>
+public sealed record GmailBackfill(long After, long? Before)
+{
+    internal string Query => Before is { } before ? $"after:{After} before:{before}" : $"after:{After}";
+}
 
 public sealed class GmailSyncStateStore
 {
