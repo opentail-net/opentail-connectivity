@@ -174,10 +174,92 @@ public sealed class SqliteVectorStorageTests : IDisposable
         Assert.Equal(["r1-a"], Vectors().Select(r => r.Chunk));
     }
 
-    private static MemoryRecord Record(string id, string content, string? document = null, string? collection = null) => new(
+    // ---- V2: vector search
+
+    private static MemorySearch Vector(string query, int k = 5, MemoryFilter? filter = null) => new(query, MemorySearchKinds.Vector, k, filter ?? new MemoryFilter());
+
+    [Fact]
+    public async Task Vector_search_ranks_the_closest_chunk_first_and_reports_vector_as_the_match()
+    {
+        var backend = WithVectors();
+        await backend.UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "invoice payment overdue reminder")]);
+        await backend.UpsertAsync(Record("r2", "b"), [Chunk("r2", "r2-a", "holiday rota for the summer")]);
+
+        var hits = await backend.SearchAsync(Vector("overdue invoice payment"));
+
+        Assert.Equal("r1-a", hits[0].ChunkId);
+        Assert.Equal(MemorySearchKinds.Vector, hits[0].Kind);
+        Assert.True(hits[0].Score > (hits.Count > 1 ? hits[1].Score : -1));
+        Assert.Equal(MemorySearchKinds.Keyword | MemorySearchKinds.Vector, backend.Capabilities.Search);
+        Assert.Equal(Model.ModelId, backend.Capabilities.EmbeddingModelId);
+    }
+
+    [Fact]
+    public async Task Forbidden_chunks_never_enter_the_ranking_even_when_they_would_score_higher()
+    {
+        var backend = WithVectors();
+        // The restricted record matches the query exactly; the allowed one only partly. Top-1 must still be the allowed one.
+        await backend.UpsertAsync(Record("secret", "s", acl: new MemorySourceAcl(Captured: true, Visibility: "restricted", Principals: ["group:hr"])),
+            [Chunk("secret", "secret-a", "salary review for the board")]);
+        await backend.UpsertAsync(Record("open", "o"), [Chunk("open", "open-a", "salary bands are published yearly")]);
+
+        var hits = await backend.SearchAsync(Vector("salary review for the board", k: 1));
+
+        Assert.Equal("open", Assert.Single(hits).Record.Id);
+        var allowed = await backend.SearchAsync(Vector("salary review for the board", k: 1, filter: new MemoryFilter(Principals: ["group:hr"])));
+        Assert.Equal("secret", Assert.Single(allowed).Record.Id);
+    }
+
+    [Fact]
+    public async Task A_corrupt_stored_vector_is_skipped_and_the_search_still_returns_the_rest()
+    {
+        var backend = WithVectors();
+        await backend.UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "alpha beta gamma")]);
+        await backend.UpsertAsync(Record("r2", "b"), [Chunk("r2", "r2-a", "alpha beta delta")]);
+        Sql($"UPDATE chunk_vectors SET vector = zeroblob({Dims * 4}) WHERE chunk_id = 'r1-a'"); // right length, but all zero: decodes, scores 0
+        Sql("UPDATE chunk_vectors SET dimensions = 1, vector = x'0000C07F' WHERE chunk_id = 'r1-a'"); // NaN and the wrong size: corrupt
+
+        var hits = await backend.SearchAsync(Vector("alpha beta"));
+
+        Assert.Equal(["r2-a"], hits.Select(h => h.ChunkId));
+    }
+
+    [Fact]
+    public async Task Vectors_of_another_model_are_never_compared_with_the_query()
+    {
+        await WithVectors().UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "alpha words here")]);
+        var other = new SqliteMemoryBackend(_path, new HashedBagOfWordsEmbeddings(Dims), new SqliteEmbeddingOptions("test:other-model", Dims));
+
+        Assert.Empty(await other.SearchAsync(Vector("alpha words here")));
+        Assert.Single(await WithVectors().SearchAsync(Vector("alpha words here")));
+    }
+
+    [Fact]
+    public async Task A_keyword_only_backend_refuses_vector_search_rather_than_answering_with_keywords()
+    {
+        await KeywordOnly().UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "alpha")]);
+        await Assert.ThrowsAsync<NotSupportedException>(() => KeywordOnly().SearchAsync(Vector("alpha")));
+        Assert.Equal(MemorySearchKinds.Keyword, KeywordOnly().Capabilities.Search);
+    }
+
+    [Fact]
+    public async Task Top_k_keeps_only_the_best_k_of_many()
+    {
+        var backend = WithVectors();
+        for (var i = 0; i < 40; i++)
+            await backend.UpsertAsync(Record($"r{i}", "x"), [Chunk($"r{i}", $"r{i}-a", i == 17 ? "needle haystack special" : $"filler words number {i}")]);
+
+        var hits = await backend.SearchAsync(Vector("needle haystack special", k: 3));
+
+        Assert.Equal(3, hits.Count);
+        Assert.Equal("r17-a", hits[0].ChunkId);
+        Assert.True(hits.Zip(hits.Skip(1)).All(p => p.First.Score >= p.Second.Score));
+    }
+
+    private static MemoryRecord Record(string id, string content, string? document = null, string? collection = null, MemorySourceAcl? acl = null) => new(
         id,
         MemoryRecordKind.SourceDocument,
-        new MemorySource(MemorySourceType.UserNote, "test", DocumentId: document, Acl: MemorySourceAcl.OrganisationWide),
+        new MemorySource(MemorySourceType.UserNote, "test", DocumentId: document, Acl: acl ?? MemorySourceAcl.OrganisationWide),
         new MemoryPolicy(MemorySensitivity.Internal, MemoryTrustLevel.High, MemoryRetentionClass.Durable),
         content,
         DateTimeOffset.UtcNow,

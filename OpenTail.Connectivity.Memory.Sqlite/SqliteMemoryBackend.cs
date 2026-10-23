@@ -60,11 +60,14 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
         EnsureSchema();
     }
 
-    public MemoryBackendCapabilities Capabilities { get; } = new(
-        Search: MemorySearchKinds.Keyword,
+    public MemoryBackendCapabilities Capabilities => _capabilities ??= new(
+        Search: _embeddings is null ? MemorySearchKinds.Keyword : MemorySearchKinds.Keyword | MemorySearchKinds.Vector,
         FiltersBeforeRanking: true,
         TemporalValidity: true,
-        DeleteBySource: true);
+        DeleteBySource: true,
+        EmbeddingModelId: _embeddingOptions?.ModelId);
+
+    private MemoryBackendCapabilities? _capabilities;
 
     public async Task UpsertAsync(MemoryRecord record, IReadOnlyList<MemoryChunk> chunks, CancellationToken cancellationToken = default)
     {
@@ -227,6 +230,13 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
     public async Task<IReadOnlyList<BackendHit>> SearchAsync(MemorySearch search, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(search);
+        if (search.Kind == MemorySearchKinds.Vector)
+            return await VectorSearchAsync(search, cancellationToken).ConfigureAwait(false);
+        return await KeywordSearchAsync(search, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<BackendHit>> KeywordSearchAsync(MemorySearch search, CancellationToken cancellationToken)
+    {
         var match = FtsQuery(search.Query);
         if (match is null || search.TopK <= 0)
             return [];
@@ -235,6 +245,124 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
         var f = search.Filter;
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
+        var where = Governance(command, f, now);
+
+        command.CommandText = $"""
+            SELECT c.id, c.kind, c.text, r.record_json, bm25(chunks_fts) AS rank
+            FROM chunks_fts
+            JOIN chunks c ON c.rowid = chunks_fts.rowid
+            JOIN records r ON r.id = c.record_id
+            WHERE chunks_fts MATCH $match AND {where}
+            ORDER BY rank, c.id
+            LIMIT $limit
+            """;
+        command.Parameters.AddWithValue("$match", match);
+        command.Parameters.AddWithValue("$limit", search.TopK);
+
+        var hits = new List<BackendHit>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var record = JsonSerializer.Deserialize<MemoryRecord>(reader.GetString(3), Json)!;
+
+            // The SQL above implements every rule; this exact check catches any drift between the two.
+            if (MemoryGovernance.Deny(record, f, now) is not null)
+                continue;
+
+            // bm25 is lower for better matches (negative in FTS5); the score is its negation, so higher is better.
+            var kind = Enum.TryParse<MemoryChunkKind>(reader.GetString(1), out var k) ? k : MemoryChunkKind.Unknown;
+            hits.Add(new BackendHit(record, reader.GetString(0), kind, reader.GetString(2), -reader.GetDouble(4), MemorySearchKinds.Keyword));
+        }
+
+        return hits;
+    }
+
+    /// <summary>
+    /// Exact similarity over the vectors of the configured model, for chunks of records that pass the governance predicate only.
+    /// Rows are read one at a time and the best k kept in a heap; a corrupt stored vector is skipped (and counted by the maintenance
+    /// status), never scored. The query is embedded and checked like a stored vector, whatever the keyword parser would make of it.
+    /// </summary>
+    private async Task<IReadOnlyList<BackendHit>> VectorSearchAsync(MemorySearch search, CancellationToken cancellationToken)
+    {
+        if (_embeddings is null || _embeddingOptions is null)
+            throw new NotSupportedException("This SQLite memory backend has no embedding generator: keyword search only.");
+        if (search.TopK <= 0 || string.IsNullOrWhiteSpace(search.Query))
+            return [];
+
+        var embedded = await _embeddings.GenerateAsync([search.Query], cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (embedded.Count != 1)
+            throw new InvalidDataException($"The embedding generator returned {embedded.Count} embeddings for one query.");
+        var query = SqliteVectors.Normalize(embedded[0].Vector.Span, _embeddingOptions.Dimensions);
+
+        var now = _time.GetUtcNow();
+        var f = search.Filter;
+        var best = new PriorityQueue<string, float>(); // lowest score first, so the weakest of the best k is dropped
+        var scores = new Dictionary<string, float>(StringComparer.Ordinal);
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using (var command = connection.CreateCommand())
+        {
+            var where = Governance(command, f, now);
+            command.CommandText = $"""
+                SELECT cv.chunk_id, cv.dimensions, cv.vector
+                FROM chunk_vectors cv
+                JOIN chunks c ON c.id = cv.chunk_id AND c.record_id = cv.record_id
+                JOIN records r ON r.id = c.record_id
+                WHERE cv.model_id = $model AND {where}
+                """;
+            command.Parameters.AddWithValue("$model", _embeddingOptions.ModelId);
+            var stored = new float[_embeddingOptions.Dimensions];
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (reader.GetInt32(1) != _embeddingOptions.Dimensions
+                    || !SqliteVectors.TryDecode((byte[])reader[2], _embeddingOptions.Dimensions, stored))
+                    continue; // corrupt or from another size: never scored
+                var score = Math.Clamp(System.Numerics.Tensors.TensorPrimitives.Dot<float>(query, stored), -1f, 1f);
+                var chunkId = reader.GetString(0);
+                if (best.Count < search.TopK)
+                {
+                    best.Enqueue(chunkId, score);
+                    scores[chunkId] = score;
+                }
+                else if (best.TryPeek(out _, out var weakest) && score > weakest)
+                {
+                    scores.Remove(best.Dequeue());
+                    best.Enqueue(chunkId, score);
+                    scores[chunkId] = score;
+                }
+            }
+        }
+
+        if (scores.Count == 0)
+            return [];
+        var hits = new List<BackendHit>(scores.Count);
+        await using (var fetch = connection.CreateCommand())
+        {
+            fetch.CommandText = $"""
+                SELECT c.id, c.kind, c.text, r.record_json FROM chunks c JOIN records r ON r.id = c.record_id
+                WHERE c.id IN ({Bind(fetch, "hit", scores.Keys)})
+                """;
+            await using var reader = await fetch.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var record = JsonSerializer.Deserialize<MemoryRecord>(reader.GetString(3), Json)!;
+                if (MemoryGovernance.Deny(record, f, now) is not null)
+                    continue; // the SQL implements every rule; this exact check catches drift
+                var kind = Enum.TryParse<MemoryChunkKind>(reader.GetString(1), out var k) ? k : MemoryChunkKind.Unknown;
+                hits.Add(new BackendHit(record, reader.GetString(0), kind, reader.GetString(2), scores[reader.GetString(0)], MemorySearchKinds.Vector));
+            }
+        }
+
+        return [.. hits.OrderByDescending(h => h.Score).ThenBy(h => h.ChunkId, StringComparer.Ordinal)];
+    }
+
+    /// <summary>
+    /// Every <see cref="MemoryGovernance"/> rule as one SQL predicate over <c>r</c> (records), binding its parameters on
+    /// <paramref name="command"/>. Keyword and vector search both use it, so they cannot drift apart; a forbidden chunk never
+    /// reaches a ranking.
+    /// </summary>
+    private static string Governance(SqliteCommand command, MemoryFilter f, DateTimeOffset now)
+    {
         var where = new StringBuilder("""
             r.deleted_at IS NULL
             AND (r.expires_at IS NULL OR r.expires_at > $now)
@@ -308,34 +436,7 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
             command.Parameters.AddWithValue("$to", to.UtcTicks);
         }
 
-        command.CommandText = $"""
-            SELECT c.id, c.kind, c.text, r.record_json, bm25(chunks_fts) AS rank
-            FROM chunks_fts
-            JOIN chunks c ON c.rowid = chunks_fts.rowid
-            JOIN records r ON r.id = c.record_id
-            WHERE chunks_fts MATCH $match AND {where}
-            ORDER BY rank, c.id
-            LIMIT $limit
-            """;
-        command.Parameters.AddWithValue("$match", match);
-        command.Parameters.AddWithValue("$limit", search.TopK);
-
-        var hits = new List<BackendHit>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-        {
-            var record = JsonSerializer.Deserialize<MemoryRecord>(reader.GetString(3), Json)!;
-
-            // The SQL above implements every rule; this exact check catches any drift between the two.
-            if (MemoryGovernance.Deny(record, f, now) is not null)
-                continue;
-
-            // bm25 is lower for better matches (negative in FTS5); the score is its negation, so higher is better.
-            var kind = Enum.TryParse<MemoryChunkKind>(reader.GetString(1), out var k) ? k : MemoryChunkKind.Unknown;
-            hits.Add(new BackendHit(record, reader.GetString(0), kind, reader.GetString(2), -reader.GetDouble(4), MemorySearchKinds.Keyword));
-        }
-
-        return hits;
+        return where.ToString();
     }
 
     private void EnsureSchema()

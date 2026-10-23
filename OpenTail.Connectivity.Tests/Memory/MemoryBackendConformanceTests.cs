@@ -20,6 +20,9 @@ public sealed class MemoryBackendConformanceTests
     {
         ["in-memory"] = static () => new InMemoryMemoryBackend(),
         ["sqlite"] = static () => new SqliteMemoryBackend(Path.Combine(Path.GetTempPath(), $"ot-memory-{Guid.NewGuid():N}.db")),
+        ["sqlite-vectors"] = static () => SqliteWithVectors(),
+        // The same backend searched by vector only, so every governance check also runs through the vector path.
+        ["sqlite-vector-search"] = static () => new SearchOnly(SqliteWithVectors(), MemorySearchKinds.Vector),
         ["files"] = static () => new FilesMemoryBackend(Directory.CreateTempSubdirectory("ot-memory-files-").FullName),
         ["vectordata-inmemory"] = static () => VectorDataInMemory.New(),
     };
@@ -68,5 +71,18 @@ public sealed class MemoryBackendConformanceTests
                 return hit.Record.Policy.TrustLevel >= min || hit.Text.Contains("verified", StringComparison.OrdinalIgnoreCase);
             return true;
         }
+    }
+
+    private static SqliteMemoryBackend SqliteWithVectors() => new(Path.Combine(Path.GetTempPath(), $"ot-memory-{Guid.NewGuid():N}.db"),
+        new HashedBagOfWordsEmbeddings(256), new SqliteEmbeddingOptions("test:hashed-256", 256));
+
+    /// <summary>Advertises one search kind of the backend it wraps, so the suite exercises that path.</summary>
+    private sealed class SearchOnly(IMemoryBackend inner, MemorySearchKinds kind) : IMemoryBackend
+    {
+        public MemoryBackendCapabilities Capabilities => inner.Capabilities with { Search = kind };
+        public Task UpsertAsync(MemoryRecord record, IReadOnlyList<MemoryChunk> chunks, CancellationToken cancellationToken = default) => inner.UpsertAsync(record, chunks, cancellationToken);
+        public Task<MemoryRecord?> GetAsync(string recordId, CancellationToken cancellationToken = default) => inner.GetAsync(recordId, cancellationToken);
+        public Task<int> DeleteAsync(MemoryDeletion deletion, CancellationToken cancellationToken = default) => inner.DeleteAsync(deletion, cancellationToken);
+        public Task<IReadOnlyList<BackendHit>> SearchAsync(MemorySearch search, CancellationToken cancellationToken = default) => inner.SearchAsync(search, cancellationToken);
     }
 }
