@@ -31,6 +31,10 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
     private readonly string _connectionString;
     private readonly TimeProvider _time;
     private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddings;
+
+    internal IEmbeddingGenerator<string, Embedding<float>>? Embeddings => _embeddings;
+
+    internal SqliteEmbeddingOptions? EmbeddingOptions => _embeddingOptions;
     private readonly SqliteEmbeddingOptions? _embeddingOptions;
 
     /// <param name="path">The database file. It is created when missing; its folder must exist (a backend never creates
@@ -542,7 +546,7 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
         CREATE TABLE IF NOT EXISTS vector_state (model_id TEXT PRIMARY KEY, complete INTEGER NOT NULL, updated_at INTEGER NOT NULL);
         """;
 
-    private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
+    internal async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -574,7 +578,7 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
         return ids.Count;
     }
 
-    private static async Task ExecAsync(SqliteConnection connection, SqliteTransaction tx, string sql, Action<SqliteParameterCollection> bind, CancellationToken ct)
+    internal static async Task ExecAsync(SqliteConnection connection, SqliteTransaction tx, string sql, Action<SqliteParameterCollection> bind, CancellationToken ct)
     {
         await using var command = connection.CreateCommand();
         command.Transaction = tx;

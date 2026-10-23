@@ -314,6 +314,109 @@ public sealed class SqliteVectorStorageTests : IDisposable
         Assert.NotEmpty((await retriever.RetrieveAsync(new MemoryRetrievalRequest("alpha words", RetrievalMode: MemoryRetrievalMode.Keyword))).Hits);
     }
 
+    // ---- V4: re-embedding
+
+    [Fact]
+    public async Task Re_embedding_fills_vectors_written_without_a_generator_and_the_status_shows_it()
+    {
+        await KeywordOnly().UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "alpha"), Chunk("r1", "r1-b", "beta")]);
+        var maintenance = new SqliteMemoryVectorMaintenance(WithVectors());
+
+        var before = await maintenance.GetStatusAsync();
+        Assert.False(before.IsComplete);
+        Assert.Equal((2L, 0L, 2L), (before.TotalChunks, before.IndexedChunks, before.MissingOrStaleVectors));
+
+        var result = await maintenance.ReembedAsync(batchSize: 1);
+
+        Assert.Equal((2, 0, 0L), (result.Embedded, result.Discarded, result.Remaining));
+        var after = await maintenance.GetStatusAsync();
+        Assert.True(after.IsComplete);
+        Assert.Equal(2L * Dims * 4, after.VectorBytes);
+        Assert.Single(await WithVectors().SearchAsync(Vector("alpha", k: 1)));
+    }
+
+    [Fact]
+    public async Task An_interrupted_run_resumes_without_embedding_again_what_it_finished()
+    {
+        await KeywordOnly().UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "one"), Chunk("r1", "r1-b", "two"), Chunk("r1", "r1-c", "three")]);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new SqliteMemoryVectorMaintenance(WithVectors(new FailingGenerator(failOnCall: 2))).ReembedAsync(batchSize: 1));
+        Assert.Equal(1L, (await new SqliteMemoryVectorMaintenance(WithVectors()).GetStatusAsync()).IndexedChunks);
+
+        var counting = new CountingEmbeddings(new HashedBagOfWordsEmbeddings(Dims));
+        var result = await new SqliteMemoryVectorMaintenance(WithVectors(counting)).ReembedAsync(batchSize: 1);
+
+        Assert.Equal(2, result.Embedded);
+        Assert.Equal(2, counting.Calls); // the finished chunk was not sent again
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_chunk_changed_or_deleted_while_it_is_embedded_never_gets_that_vector(bool delete)
+    {
+        await KeywordOnly().UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "original text")]);
+        var meddling = new CallbackEmbeddings(new HashedBagOfWordsEmbeddings(Dims), () => delete
+            ? KeywordOnly().DeleteAsync(new MemoryDeletion(RecordId: "r1"))
+            : KeywordOnly().UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "edited meanwhile")]));
+
+        var result = await new SqliteMemoryVectorMaintenance(WithVectors(meddling)).ReembedAsync();
+
+        Assert.Equal((0, 1), (result.Embedded, result.Discarded));
+        Assert.Empty(Vectors());
+        if (!delete)
+        {
+            Assert.Equal(1, (await new SqliteMemoryVectorMaintenance(WithVectors()).ReembedAsync()).Embedded); // a later run catches up
+            Assert.Equal(SqliteVectors.ContentHash("edited meanwhile"), Assert.Single(Vectors()).Hash);
+        }
+    }
+
+    [Fact]
+    public async Task A_new_model_never_compares_old_vectors_and_the_old_ones_go_once_it_covers_every_chunk()
+    {
+        await WithVectors().UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "alpha words")]);
+        var next = new SqliteMemoryBackend(_path, new HashedBagOfWordsEmbeddings(Dims), new SqliteEmbeddingOptions("test:next-model", Dims));
+        var maintenance = new SqliteMemoryVectorMaintenance(next);
+
+        Assert.Empty(await next.SearchAsync(Vector("alpha words")));
+        Assert.Equal(1L, (await maintenance.GetStatusAsync()).OtherModelVectors);
+
+        await maintenance.ReembedAsync();
+
+        Assert.Equal(["test:next-model"], Vectors().Select(r => r.Model));
+        Assert.Single(await next.SearchAsync(Vector("alpha words")));
+    }
+
+    [Fact]
+    public async Task A_corrupt_vector_is_counted_in_the_status_and_redone_by_re_embedding()
+    {
+        await WithVectors().UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "alpha words")]);
+        Sql("UPDATE chunk_vectors SET dimensions = 1, vector = x'0000C07F'");
+        var maintenance = new SqliteMemoryVectorMaintenance(WithVectors());
+
+        Assert.Equal(1L, (await maintenance.GetStatusAsync()).CorruptVectors);
+        await maintenance.ReembedAsync();
+
+        var status = await maintenance.GetStatusAsync();
+        Assert.Equal((0L, true), (status.CorruptVectors, status.IsComplete));
+    }
+
+    private sealed class CallbackEmbeddings(IEmbeddingGenerator<string, Embedding<float>> inner, Func<Task> during) : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        public async Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(IEnumerable<string> values, EmbeddingGenerationOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            var result = await inner.GenerateAsync(values, options, cancellationToken);
+            await during();
+            return result;
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
     private sealed class LetterEmbeddings : IEmbeddingGenerator<string, Embedding<float>>
     {
         public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(IEnumerable<string> values, EmbeddingGenerationOptions? options = null,
