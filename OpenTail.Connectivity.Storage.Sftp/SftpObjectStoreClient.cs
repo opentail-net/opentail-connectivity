@@ -42,7 +42,9 @@ public sealed class SftpObjectStoreClient : IObjectStoreClient, IDisposable
 
     public string Scheme => "sftp";
 
-    public string Container => _settings.Host + _root;
+    /// <summary>The user, server and root: two users of one server can see different trees under the same path (a chroot each),
+    /// so the user is part of the identity, as is a port other than 22.</summary>
+    public string Container => $"{_settings.UserName}@{_settings.Host}{(_settings.Port == 22 ? "" : ":" + _settings.Port)}{_root}";
 
     public async Task<ObjectListingPage> ListAsync(string prefix, string? resumeToken, int pageSize, CancellationToken cancellationToken = default)
     {

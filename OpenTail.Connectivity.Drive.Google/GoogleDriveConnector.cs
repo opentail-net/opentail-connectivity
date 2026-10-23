@@ -92,6 +92,13 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
         await CheckRootFolderAsync(cancellationToken).ConfigureAwait(false);
         var state = cursor is null ? null : JsonSerializer.Deserialize<DriveCursor>(cursor);
         var throttled = TimeSpan.Zero;
+        var account = await AccountAsync(cancellationToken).ConfigureAwait(false);
+        if (state is not null && account is not null && !string.Equals(state.Account, account, StringComparison.OrdinalIgnoreCase))
+        {
+            // Another user's change token and folder map, or a cursor from before accounts were recorded: never reused.
+            yield return new SourceChange.Reset("the sync state belongs to another account; listing the drive again");
+            state = null;
+        }
         if (state is not null && !string.Equals(state.Options, OptionsFingerprint, StringComparison.Ordinal))
         {
             // The file rules or export formats changed: unchanged files may now be in, out or exported differently.
@@ -450,7 +457,21 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
     private string ListFilter() => _target is GoogleDriveTarget.MyDrive ? "trashed = false and 'me' in owners" : "trashed = false";
 
     private SourceChange.Checkpoint Checkpoint(DriveCursor cursor, Dictionary<string, FolderEntry> folders)
-        => new(JsonSerializer.Serialize(cursor with { Options = OptionsFingerprint, Folders = folders }));
+        => new(JsonSerializer.Serialize(cursor with { Options = OptionsFingerprint, Folders = folders, Account = _account }));
+
+    private string? _account;
+
+    /// <summary>My Drive's signed-in user (null for a shared drive, whose id already names it). Checked against the target's
+    /// <see cref="GoogleDriveTarget.MyDrive.Account"/> when one is given.</summary>
+    private async Task<string?> AccountAsync(CancellationToken ct)
+    {
+        if (_target is not GoogleDriveTarget.MyDrive myDrive) return null;
+        var container = await ContainerAsync(ct).ConfigureAwait(false);
+        _account = container["mydrive:".Length..];
+        if (!string.IsNullOrWhiteSpace(myDrive.Account) && !string.Equals(myDrive.Account.Trim(), _account, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"The token signs in as {_account}, not {myDrive.Account.Trim()}.");
+        return _account;
+    }
 
     // "paths": patterns match paths since folder scoping; older cursors (name-only, no folder map) list the drive once more.
     internal string OptionsFingerprint => FileFilter.Hash(
@@ -559,7 +580,7 @@ public sealed class GoogleDriveConnector : IIncrementalSourceConnector
 
     /// <param name="Folders">Folder id to parent and name, for building paths.</param>
     private sealed record DriveCursor(string Phase, string? StartToken = null, string? ListPageToken = null, string? PageToken = null,
-        string? Options = null, Dictionary<string, FolderEntry>? Folders = null);
+        string? Options = null, Dictionary<string, FolderEntry>? Folders = null, string? Account = null);
 
     /// <summary>A folder's parent id and name; both null for My Drive's root. Short property names keep the cursor small.</summary>
     private sealed record FolderEntry(

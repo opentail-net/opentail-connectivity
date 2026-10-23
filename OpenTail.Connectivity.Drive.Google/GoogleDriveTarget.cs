@@ -16,9 +16,12 @@ public abstract record GoogleDriveTarget
     }
 
     /// <summary>The signed-in (or impersonated) user's My Drive: files they own. Files only shared with them are left out.</summary>
-    public sealed record MyDrive : GoogleDriveTarget
+    /// <param name="Account">The user's email address. Set it when several users' drives share a tenant: it keeps their sync state
+    /// apart, and a run refuses a token that signs in as someone else. Without it, the state still records whose it is, and
+    /// another user's state is never reused (it lists the drive again).</param>
+    public sealed record MyDrive(string? Account = null) : GoogleDriveTarget
     {
-        internal override string Key => "user";
+        internal override string Key => string.IsNullOrWhiteSpace(Account) ? "user" : "user:" + Account.Trim().ToLowerInvariant();
     }
 }
 

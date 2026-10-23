@@ -217,7 +217,7 @@ This adapter has recorded-response unit tests only; it has not been verified aga
 ## Social
 
 Options common to all (`SocialConnectorOptions`): `MaxItems` (100), `Since`, `Keywords`, `Hashtags`, `RequestDelayMs` (250),
-`MetaApiVersion` ("v19.0") and `MaxCacheItems`. Constructors differ:
+`MetaApiVersion` ("v25.0"; Meta retires a version about two years after release) and `MaxCacheItems`. Constructors differ:
 
 - `TwitterConnector(bearerToken, query, options, http)`: X API v2 recent search.
 - `RedditConnector(subreddit, options, http)`: no credentials.

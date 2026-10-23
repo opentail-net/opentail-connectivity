@@ -74,7 +74,7 @@ public sealed class MetaConnector : ISourceConnector, IDisposable
     private static string BuildGraphBase(string apiVersion)
     {
         var normalized = string.IsNullOrWhiteSpace(apiVersion)
-            ? "v19.0"
+            ? MetaGraph.DefaultVersion
             : apiVersion.Trim();
         if (!normalized.StartsWith('v'))
             normalized = "v" + normalized;

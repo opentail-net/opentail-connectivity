@@ -31,7 +31,11 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
     private readonly object _snapshotLock = new();
     private ListingSnapshot? _snapshot;
 
-    public BoxObjectStoreClient(string accessToken, string rootFolderId, HttpClient? http = null, int maxSnapshotItems = DefaultMaxSnapshotItems)
+    /// <param name="accountNamespace">A stable, non-secret name for the account, normally its Box user id
+    /// (<see cref="GetAccountIdAsync"/>). Required for the root folder: its id is 0 in every account, so without it two accounts
+    /// would share item ids and sync state. Other folder ids are unique across Box.</param>
+    public BoxObjectStoreClient(string accessToken, string rootFolderId, HttpClient? http = null, int maxSnapshotItems = DefaultMaxSnapshotItems,
+        string? accountNamespace = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(accessToken);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxSnapshotItems, 1);
@@ -41,7 +45,32 @@ public sealed class BoxObjectStoreClient : IObjectStoreClient, IDisposable
         _http = http ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
         _ownsHttp = http is null;
         _maxSnapshotItems = maxSnapshotItems;
-        Container = rootFolderId;
+        if (rootFolderId == RootFolderId && string.IsNullOrWhiteSpace(accountNamespace))
+            throw new ArgumentException("Box's root folder id is 0 in every account: pass the account's id (GetAccountIdAsync) as accountNamespace.",
+                nameof(accountNamespace));
+        Container = string.IsNullOrWhiteSpace(accountNamespace) ? rootFolderId : accountNamespace.Trim('/') + "/" + rootFolderId;
+    }
+
+    private const string RootFolderId = "0";
+
+    /// <summary>The signed-in user's Box id: stable, not secret, and the namespace for the root folder.</summary>
+    public static async Task<string> GetAccountIdAsync(string accessToken, HttpClient? http = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(accessToken);
+        var client = http ?? new HttpClient();
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(ApiRoot, "users/me?fields=id"));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            await EnsureSuccessAsync(response, cancellationToken).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+            return GetString(document.RootElement, "id") is { Length: > 0 } id ? id : throw new InvalidDataException("Box returned no user id.");
+        }
+        finally
+        {
+            if (http is null) client.Dispose();
+        }
     }
 
     public string Scheme => "box";

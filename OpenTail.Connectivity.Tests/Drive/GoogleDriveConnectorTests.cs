@@ -392,6 +392,37 @@ public sealed class GoogleDriveConnectorTests
         Assert.Equal(allowed, api.Requests.Any(r => r.Contains("alt=media")));
     }
 
+    [Fact]
+    public async Task My_drive_state_written_for_another_account_is_never_reused()
+    {
+        var api = new StubApi(req =>
+        {
+            var u = Url(req);
+            if (u.Contains("changes/startPageToken")) return Json("""{"startPageToken":"S1"}""");
+            if (u.Contains("/changes?")) return Json("""{"changes":[],"newStartPageToken":"S1"}""");
+            if (u.Contains("/files?")) return Json("""{"files":[]}""");
+            return null;
+        });
+        var cursor = (await Connector(api, new GoogleDriveTarget.MyDrive()).GetChangesAsync(null).ToListAsync())
+            .OfType<SourceChange.Checkpoint>().Last().Cursor;
+        Assert.Contains("ann@corp.example", cursor);
+
+        var own = await Connector(api, new GoogleDriveTarget.MyDrive()).GetChangesAsync(cursor).ToListAsync();
+        var foreign = await Connector(api, new GoogleDriveTarget.MyDrive()).GetChangesAsync(cursor.Replace("ann@corp.example", "bob@corp.example")).ToListAsync();
+
+        Assert.DoesNotContain(own, c => c is SourceChange.Reset);
+        Assert.IsType<SourceChange.Reset>(foreign[0]);
+    }
+
+    [Fact]
+    public async Task A_my_drive_named_for_one_user_refuses_a_token_for_another()
+    {
+        var api = new StubApi(_ => null);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            Connector(api, new GoogleDriveTarget.MyDrive("bob@corp.example")).GetChangesAsync(null).ToListAsync().AsTask());
+        Assert.Contains("ann@corp.example", error.Message);
+    }
+
     // ---- helpers
 
     private static GoogleDriveConnector Shared(StubApi api) => Connector(api, new GoogleDriveTarget.SharedDrive("sd1"));
