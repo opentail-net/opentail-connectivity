@@ -1,6 +1,6 @@
 # Design: vector search in the SQLite memory backend
 
-**Status:** being built (owner: "go ahead and build it", 2026-10-23); revised twice on 2026-10-23 after external reviews (ChatGPT), whose points were checked against the code and
+**Status:** built 2026-10-23 (V1 to V6; owner: "go ahead and build it"); revised twice on 2026-10-23 after external reviews (ChatGPT), whose points were checked against the code and
 adopted except where noted. The second review: "good enough to build" once four details were settled; they are in below. Nothing
 is built. Owner: "let's write its own plan".
 
@@ -138,7 +138,23 @@ Not counting chunk text, indexes and the process. 50,000 records of five chunks 
 **vectors and their bytes**, not records: the count drives how many dot products a search does, the bytes allow for models of
 other sizes. It is **advisory** (status and a logged warning); searches are never refused at the threshold until V6 has real
 measurements. Owner, 2026-10-23: warn at **50,000 vectors** (about 300 MB at 1,536 dimensions), and report records, vectors and bytes. Beyond that, Postgres with pgvector
-through `VectorDataMemoryBackend`. Speed-ups if needed, in order: caching per collection, float16, then an index (sqlite-vec at
+through `VectorDataMemoryBackend`. **Measured (V6, 2026-10-23)**, Windows laptop, Debug build, 1,536 dimensions, five chunks a record, random vectors; median of 7 searches
+for the top 10 (`SqliteVectorBenchmarkTests`, run with `OTAIL_MEMORY_BENCH=1`):
+
+| Vectors | Records | Vector data | File | Vector search | Hybrid search | Allocated per search | Writing them |
+|---|---|---|---|---|---|---|---|
+| 1,000 | 200 | 6 MB | 8 MB | 42 ms | 45 ms | 6 MB | 3 s |
+| 10,000 | 2,000 | 59 MB | 82 MB | 392 ms | 407 ms | 61 MB | 35 s |
+| 50,000 | 10,000 | 293 MB | 409 MB | 1.8 s | 1.9 s | 303 MB | 163 s |
+
+Search time is linear, about 40 ms per thousand vectors, almost all of it reading vectors from SQLite; the dot products are cheap.
+Each search allocates about as much as the vector data, because Microsoft.Data.Sqlite copies every BLOB it returns (reading into a
+reused buffer was tried and made it worse: the driver copies anyway). So the ceiling is right where the owner put it: at 50,000
+vectors a search takes about two seconds. `SqliteVectorIndexStatus.OverAdvisoryLimit` and `Advisories` report it; nothing is
+refused. The first speed-up, an in-memory cache of the configured model's vectors (no reading, no copying), would remove most of
+both costs, and is the first item in the optional to-do.
+
+Speed-ups if needed, in order: caching per collection, float16, then an index (sqlite-vec at
 1.0, or HNSW) that still filters before ranking, all in [optional-todo.md](../optional-todo.md).
 
 ## Not doing
@@ -157,7 +173,7 @@ through `VectorDataMemoryBackend`. Speed-ups if needed, in order: caching per co
 - [x] **V4 Re-embedding:** batches, restart, the hash check and write in one transaction, cleanup, `GetStatusAsync`.
 - [x] **V5 Conformance and quality:** the memory suite's checks for vector and hybrid search, plus the tests listed below; the
   quality gate with the hashed stand-in embedder, and a real model where one is available (never required by the core suite).
-- [ ] **V6 Measurement:** time, allocations and memory at 1k, 10k and 50k vectors, with a multi-chunk set; the threshold in
+- [x] **V6 Measurement:** time, allocations and memory at 1k, 10k and 50k vectors, with a multi-chunk set; the threshold in
   vectors and bytes, in the docs and in a warning.
 
 Tests to add, beyond the suite: a record survives a failed embedding during replacement; replacing a record replaces its vectors,

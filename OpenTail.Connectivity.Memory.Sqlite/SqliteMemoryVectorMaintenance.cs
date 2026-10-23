@@ -20,7 +20,27 @@ public sealed record SqliteVectorIndexStatus(
     long CorruptVectors,
     long VectorCount,
     long VectorBytes,
-    long OtherModelVectors);
+    long OtherModelVectors)
+{
+    /// <summary>Past this many vectors exact search gets slow; the owner's advisory ceiling (2026-10-23). Not enforced.</summary>
+    public const long AdvisoryVectorCount = 50_000;
+
+    /// <summary>The same ceiling in bytes, at 1,536 float32 dimensions, for models of other sizes.</summary>
+    public const long AdvisoryVectorBytes = AdvisoryVectorCount * 1_536 * 4;
+
+    /// <summary>Past the advisory ceiling in count or bytes: searches still run, but consider Postgres with pgvector.</summary>
+    public bool OverAdvisoryLimit => VectorCount > AdvisoryVectorCount || VectorBytes > AdvisoryVectorBytes;
+
+    /// <summary>What needs a person's attention, in words; empty when nothing does.</summary>
+    public IReadOnlyList<string> Advisories =>
+    [
+        .. OverAdvisoryLimit
+            ? [$"{VectorCount:N0} vectors ({VectorBytes / 1_048_576.0:N0} MB) is past the advisory {AdvisoryVectorCount:N0}; exact search slows down. For more, use Postgres with pgvector."]
+            : Array.Empty<string>(),
+        .. MissingOrStaleVectors > 0 ? [$"{MissingOrStaleVectors:N0} chunks have no current vector for {ConfiguredModelId}: semantic results are partial until re-embedding finishes."] : Array.Empty<string>(),
+        .. CorruptVectors > 0 ? [$"{CorruptVectors:N0} stored vectors cannot be read; re-embedding redoes them."] : Array.Empty<string>(),
+    ];
+}
 
 /// <param name="Embedded">Vectors written in this run.</param>
 /// <param name="Discarded">Results thrown away because the chunk changed or went while it was being embedded.</param>

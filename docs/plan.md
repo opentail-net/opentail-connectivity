@@ -224,9 +224,9 @@ treated as groundwork, like section 6; M9 is new copied data and stays frozen.
 - [ ] **[H]** M9: the Host `memory` module (tools, resources, pushed index, recall hints, process path) and its adapters. *Frozen with tiers 2 and 3.*
 - [ ] **[O]** Check opentail's own use of `SlackMemoryIngestionNormalizer` against Slack's terms ([roadmap](roadmap.md#two-ways-to-use-business-data)).
 
-- [ ] **[C]** Vector and hybrid search in the SQLite memory backend: exact similarity after the governance filter, no extension,
-  per chunk, local-first up to tens of thousands of vectors ([SQLite vectors](design/sqlite-vectors.md), steps V1 to V6). *Proposal, revised after review,
-  2026-10-23.*
+- [x] **[C]** Vector and hybrid search in the SQLite memory backend: exact similarity after the governance filter, no extension,
+  per chunk, local-first up to tens of thousands of vectors ([SQLite vectors](design/sqlite-vectors.md), steps V1 to V6). *Built 2026-10-23 (6dbed20 to V6);
+  measured: about 40 ms per thousand vectors, 2 s at the 50,000 advisory.*
 
 ## 21. Triggers (the *when*)
 

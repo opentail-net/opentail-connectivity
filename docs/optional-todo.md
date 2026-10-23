@@ -29,6 +29,9 @@ From the [queue research](design/queue-research-2026-10-22.md).
 
 ## Memory
 
+- **An in-memory cache of SQLite vectors** for the configured model, kept in step with upserts and deletes: measured, a search over
+  50,000 vectors takes about 2 s, nearly all reading and copying BLOBs; a cache removes most of it. *When:* a store nears the
+  50,000-vector advisory and searches feel slow.
 - **An index for SQLite vectors** (sqlite-vec once it reaches 1.0, or an HNSW library), still filtering before ranking; float16
   storage and per-collection caching first. *When:* a local deployment outgrows exact search (see
   [SQLite vectors](design/sqlite-vectors.md#scale-honestly)).
