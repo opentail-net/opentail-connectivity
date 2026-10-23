@@ -274,12 +274,14 @@ except where noted. Breaking changes are marked **B**; the Host adopts them the 
 
 ## 30. Redis/Valkey, Pinecone, MongoDB
 
-[Plan](design/redis-pinecone-mongodb.md), written 2026-10-23 at the owner's request. Nothing built.
+[Plan](design/redis-pinecone-mongodb.md), written 2026-10-23 at the owner's request and revised the same day after an external
+review. Nothing built.
 
-- [ ] **[C]** R1 to R4: Redis/Valkey as the shared queue-control store (`IQueueControl` conformance suite first, then
-  `RedisQueueControl` with Lua scripts and hash-tagged keys; CI against Redis and Valkey).
-- [ ] **[C]** P1 to P3: Pinecone as a memory backend of its own (Microsoft's connector filters by equality only, so governance could
-  not run before ranking); spike on Pinecone Local's filter operators first.
-- [ ] **[H]** M1 to M4: MongoDB module (`collections`, `find`, `aggregate`, `count`; stage allow-list, no `$out`/`$merge`/server
-  JavaScript, `maxTimeMS`, `comment` = action id), CI against `mongo:8`.
-- [ ] **[Owner]** Accounts for P4 (Pinecone Starter) and M5 (Atlas M0); the plan's open questions.
+- [ ] **[C]** R1: the `IQueueControl` contract (store-clock durations, `RenewSlotAsync` returns bool and never revives an expired
+  slot, cancellations expire everywhere) with a conformance suite; **fixes a renewal bug in the in-memory and SQLite stores**.
+- [ ] **[C]** R2 to R4: `RedisQueueControl` (Lua scripts, versioned compare-and-set circuits, TTLs, prefix), CI against Redis and
+  Valkey, outage test.
+- [ ] **[C]** P1 to P3: Pinecone memory backend storing what the VectorData backend stores, with the full governance mapping
+  before ranking; Pinecone Local spike first.
+- [ ] **[H]** M1 to M4: MongoDB module, one collection per query, operator allow-list by context, resource bounds, CI on `mongo:8`.
+- [ ] **[Owner]** Pinecone privacy trade-off (text in Pinecone for the first version?), MongoDB joins later, accounts for P4 and M5.
