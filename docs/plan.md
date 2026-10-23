@@ -18,9 +18,9 @@ Each item names the repository it touches and links the page that explains it:
 
 | Waiting on | What |
 |---|---|
-| The owner's decisions | The open questions in sections 12 to 18 and 21 (notifications, data exits, adaptive-limit delays, backlog staleness, work items, audit retention and targets, triggers' repository, licence and name) |
+| The owner's decisions | The open questions in sections 12 to 18 and 21 (notifications, data exits, adaptive-limit delays, backlog staleness, work items, audit retention and targets, triggers' repository, licence and name); the S3-compatible server for CI (31) |
 | Customers | Section 5, which gates tiers 2 and 3 (section 7, frozen) and the Host memory module (M9) |
-| Real accounts and systems | Live-provider suites (section 29), vendor facts (section 9), Entra ID roles (12), an external check (17), write-once storage (18) |
+| Real accounts and systems | Live-provider suites (section 29), a Meta test account for the Graph v25.0 fields (29), vendor facts (section 9), Entra ID roles (12), an external check (17), write-once storage (18) |
 | Something built first | Host sign-in (section 3), and with it delegation (12) and Slack; triggers T1 to T7 (21); the review-page items G1, G2, G6 (19) |
 | Assessment time | M7 and M8 (section 20): no new package goes into opentail until the owner has assessed them |
 | Ready to start | Refusing API keys without a profile (12); Redis/Valkey queue control, Pinecone, MongoDB (30) |
@@ -269,9 +269,13 @@ Seven review documents, now in [done/](done/): the Markdown frontmatter finding,
 and fourth reviews, the follow-up review and the consolidated remediation plan. All fixed 2026-10-22 with regression tests,
 except where noted. Breaking changes are marked **B**; the Host adopts them the next time it takes new packages.
 
-- [ ] **[Owner]** Live-provider integration suites (Graph, Gmail, object storage, and Meta: the post fields `likes.summary`,
-  `shares`, `comments.summary` are unchecked against Graph v25.0): need dedicated test accounts and least-privilege
+- [ ] **[Owner]** Live-provider integration suites (Graph, Gmail, object storage): need dedicated test accounts and least-privilege
   credentials from the owner. Until then, everything that talks to a provider stays labelled Tested.
+- [ ] **[Owner]** A Meta test account (a Facebook Page and an Instagram business account, read-only token), to check the fields
+  the Meta connector reads against Graph API v25.0, its default since 2026-10-23 (v19.0 expired 2026-05-21). Unchecked: the
+  post fields `likes.summary(true)`, `shares` and `comments.summary(true)` (Meta's docs prefer `/reactions` for like counts;
+  whether `likes` still answers in v25.0 was not found), and the Instagram media fields `like_count`, `comments_count`,
+  `media_type`, `permalink`. If a field is gone, the connector changes, not the version.
 
 ## 30. Redis/Valkey, Pinecone, MongoDB
 
@@ -312,10 +316,12 @@ Classes (one test each, so new code is covered automatically):
   never ends like a full run.
 - [x] **[H]** Guards on every path: each guard (suspension, policy, flow) is swept over every path that runs an action (execute,
   retry, recovery, review edits).
-- [ ] **[C]** Compatible means tested: a real-server or emulator workflow for any connector called compatible (S3 first).
-  **[Owner]** which server: MinIO stopped publishing community images in October 2025 and archived its repository in April
-  2026. Options: Chainguard's free MinIO image, a pinned old `quay.io/minio/minio` (no fixes), or another S3-compatible server
-  (SeaweedFS, Garage, versitygw; licences to check). Until then the S3 tests assert the request path against a stub.
+- [ ] **[C]** Compatible means tested: a real-server or emulator workflow for any connector called compatible (S3 first). Waits on
+  the owner's choice of server, below. Until then the S3 tests assert the request path against a stub.
+- [ ] **[Owner]** Choose the S3-compatible server for that CI workflow. MinIO stopped publishing community images in October 2025
+  and archived its repository in April 2026. Options: Chainguard's free MinIO image (current; Claude's suggestion), a pinned old
+  `quay.io/minio/minio` (works, no fixes), or another S3-compatible server (SeaweedFS, Garage, versitygw; licences not
+  checked). Once chosen: a test project and workflow like `mongodb.yml`, about a session.
 
 Order 1, wrong data acted on:
 
