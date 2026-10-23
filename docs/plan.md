@@ -282,7 +282,7 @@ review. Nothing built.
   slots; cancellations outlived their retention when read).*
 - [ ] **[C]** R2 to R4: `RedisQueueControl` (Lua scripts, versioned compare-and-set circuits, TTLs, prefix), CI against Redis and
   Valkey, outage test.
-- [ ] **[C]** P1 to P4: Pinecone memory backend storing what the VectorData backend stores, with the full governance mapping
+- [ ] **[C]** *Parked 2026-10-23 (owner: look again soon, do not retire).* P1 to P4: Pinecone memory backend storing what the VectorData backend stores, with the full governance mapping
   before ranking, a durable record state and settling (records with pending changes excluded inside the query) so deletes and
   ACL changes never come back during Pinecone's write lag, the
   embedding contract (model id, cosine, `MinScore`) and a namespace per tenant; Pinecone Local spike first.

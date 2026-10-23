@@ -417,6 +417,9 @@ Size: M1 to M3 two to three sessions (M2 is most of it); M4 half a session; M5 d
 
 ## Decisions (owner, 2026-10-23)
 
+- **Build Redis (R2 to R4) and MongoDB (M1 to M4) now. Pinecone is parked, not retired:** the owner will look at it again soon;
+  the design above stays as the starting point.
+
 - **Pinecone:** chunk text and record JSON are stored in Pinecone in the first version.
 - **MongoDB:** the first version is one collection per query.
 - **Valkey** in the examples; Redis and Valkey both in CI.
