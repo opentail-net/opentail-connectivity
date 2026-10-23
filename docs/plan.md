@@ -23,8 +23,7 @@ Each item names the repository it touches and links the page that explains it:
 | Real accounts and systems | Live-provider suites (section 29), vendor facts (section 9), Entra ID roles (12), an external check (17), write-once storage (18) |
 | Something built first | Host sign-in (section 3), and with it delegation (12) and Slack; triggers T1 to T7 (21); the review-page items G1, G2, G6 (19) |
 | Assessment time | M7 and M8 (section 20): no new package goes into opentail until the owner has assessed them |
-| Ready to start | Refusing API keys without a profile (12) |
-| Ready to start | Redis/Valkey queue control, Pinecone, MongoDB (section 30) |
+| Ready to start | Refusing API keys without a profile (12); Redis/Valkey queue control, Pinecone, MongoDB (30) |
 | Optional or deferred | Notion, Zendesk and Freshdesk, Slack front door, the model-based redactor; queue ideas in optional-todo.md |
 
 ## 3. Host sign-in (prerequisite for searching as the user)
