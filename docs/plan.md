@@ -48,9 +48,9 @@ Live search and reading, nothing copied. [Roadmap: three tiers](roadmap.md#docum
   [roadmap](roadmap.md#two-ways-to-use-business-data) (nothing stored, cached or indexed).
 
 - [ ] **[H]** Snowflake as a read-only Sql target with cost guards (warehouse checks, per-call limits, a daily budget per identity)
-  ([Snowflake](https://github.com/opentail-net/opentail-host/blob/main/docs/design/snowflake.md), steps S1 to S5). *Proposal,
-  2026-10-23. Parked: owner, 2026-10-23: the project does not need a warehouse, and when one is needed it is not always on our
-  side (it may be the customer's, so the cost guards the customer's admin sets matter more than ours).*
+  ([Snowflake](https://github.com/opentail-net/opentail-host/blob/main/docs/design/snowflake.md), steps S1 to S5). *Owner,
+  2026-10-23: no project needs a warehouse yet, and when one does it may be the customer's; build the capability anyway and prove
+  it on an official test account. S1 and S2 built 2026-10-23 (Tested, not Verified); S5 needs a Snowflake trial account (owner).*
 
 ## 5. Ask the first customers
 
