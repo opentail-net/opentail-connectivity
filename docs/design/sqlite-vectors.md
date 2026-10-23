@@ -1,7 +1,11 @@
 # Design: vector search in the SQLite memory backend
 
-**Status:** proposal, revised 2026-10-23 after an external review (ChatGPT), whose points were checked against the code and
-adopted except where noted. Nothing is built. Owner: "let's write its own plan".
+**Status:** proposal, revised twice on 2026-10-23 after external reviews (ChatGPT), whose points were checked against the code and
+adopted except where noted. The second review: "good enough to build" once four details were settled; they are in below. Nothing
+is built. Owner: "let's write its own plan".
+
+**The invariant everything below serves:** every semantic result uses a vector generated from the exact current chunk text, by the
+same embedding model as the query, for a record that has passed the full governance filter.
 
 ## Why
 
@@ -42,13 +46,16 @@ CREATE INDEX ix_chunk_vectors_model_record ON chunk_vectors (model_id, record_id
 
 ### 2. Vector format and validation
 
+- **The model is configured, not inferred:** `SqliteEmbeddingOptions(string ModelId, int Dimensions)` beside the generator. A blank
+  model id or dimensions below 1 are refused at construction; every generated vector is checked against `Dimensions`, so the first
+  vector seen never decides what a model's size is.
 - **Float32, little-endian, always**, written and read with `BinaryPrimitives` and `BitConverter.SingleToInt32Bits`, never the
   machine's byte order.
-- **Rejected at write and at query:** wrong dimensions, any non-finite value, a zero (or near-zero) norm; a generator that returns a
-  different number of embeddings than it was given texts.
+- **A bad generated vector fails the operation:** wrong dimensions, any non-finite value, a zero (or near-zero) norm, or a generator
+  that returns a different number of embeddings than it was given texts makes the upsert (or the query) fail, changing nothing.
 - **L2-normalised** at write and for the query, so cosine similarity is the dot product (`TensorPrimitives.Dot`), clamped to
-  [−1, 1] against rounding. A stored BLOB of the wrong length or with non-finite values is treated as corrupt: skipped and reported,
-  never scored.
+  [−1, 1] against rounding. **A corrupt stored vector is skipped, not fatal:** a BLOB of the wrong length or with non-finite values
+  is never scored, the search carries on with the rest, and the row is counted in the status (§6) so it can be repaired.
 - Packages for `OpenTail.Connectivity.Memory.Sqlite`: `Microsoft.Extensions.AI.Abstractions` (already pinned centrally) and
   `System.Numerics.Tensors` (a .NET 10 pin to add).
 
@@ -62,6 +69,11 @@ Embedding may call a slow local model or a remote service, so it never runs insi
 3. **Commit.** A failed embedding call leaves the previous version of the record intact and searchable, as the VectorData backend
    already guarantees (`VectorDataUpsertDeleteTests`). Deletion by id, source or collection removes the vectors in the same
    transaction as the records.
+
+**Without a generator, stale vectors are removed, never kept** (review 2). A keyword-only instance can still update a database that
+has vectors. Every upsert computes each new chunk's content hash with the same canonical algorithm the embedder input uses. Without
+a generator no vector is created, and an existing vector row survives only if its stored hash matches the new chunk's; stale ones,
+and those of chunks that no longer exist, are deleted in the same transaction, for every model. Re-embedding fills the gaps later.
 
 ### 4. Search
 
@@ -94,11 +106,16 @@ there is). This applies to every backend, and is tested on all of them.
   search uses only vectors of that model. Vectors of an older model are never compared with new query vectors; their records are
   found by the keyword half of hybrid search until re-embedded.
 - **Re-embedding** (`SqliteMemoryVectorMaintenance`, in the SQLite package, not on `IMemoryBackend`): finds chunks with no vector for
-  the current model, or one whose `content_hash` no longer matches; embeds them in batches; and before writing each vector checks
-  that the chunk still has the hash that was embedded, discarding the result if the text changed meanwhile (the upsert supplies the
-  right one). Restarting skips everything already done.
-- **State:** a small table records the current model, whether re-embedding is complete, and how many chunks remain, for diagnostics.
-  Opening the database with a different configured model never compares old vectors; it reports the model change and the work left.
+  the current model, or one whose `content_hash` no longer matches, and embeds them in batches. Restarting skips everything done.
+  Each batch: generate outside any transaction; validate and encode; then **in one transaction** read each chunk's current hash and
+  write the vector only if it still matches (a changed or deleted chunk's result is discarded); commit. The check and the write
+  share the transaction, so text cannot change between them, and no transaction is held open during inference.
+- **Status, visible to callers:** `SqliteMemoryVectorMaintenance.GetStatusAsync()` returns
+  `SqliteVectorIndexStatus(ConfiguredModelId, IsComplete, TotalChunks, IndexedChunks, MissingOrStaleVectors, CorruptVectors,
+  VectorCount, VectorBytes)`. `IMemoryBackend` returns hits, not warnings, so this is how an application learns that semantic
+  results are partial: an explicit semantic search during re-embedding can miss chunks not yet embedded (hybrid recovers some through
+  keywords, not all). Opening the database with a different configured model never compares old vectors; the status shows the
+  change and the work left.
 - **Cleanup:** vectors of other models are deleted once the current model covers every chunk (or on request).
 
 ### 7. Schema migration
@@ -118,7 +135,9 @@ Exact search reads every allowed vector, and there is one per chunk. Raw vector 
 | 250,000 | about 1.5 GB |
 
 Not counting chunk text, indexes and the process. 50,000 records of five chunks each are 250,000 vectors. So the warning counts
-**vectors and their bytes**, not records. *The owner agreed to a 50,000 ceiling when the plan counted records; at five chunks a
+**vectors and their bytes**, not records: the count drives how many dot products a search does, the bytes allow for models of
+other sizes. It is **advisory** (status and a logged warning); searches are never refused at the threshold until V6 has real
+measurements. *The owner agreed to a 50,000 ceiling when the plan counted records; at five chunks a
 record that is 250,000 vectors (about 1.5 GB), too much for exact search. Proposed instead: warn at 50,000 vectors (about 300 MB
 at 1,536 dimensions), and report records, vectors and bytes. To confirm with the owner.* Beyond that, Postgres with pgvector
 through `VectorDataMemoryBackend`. Speed-ups if needed, in order: caching per collection, float16, then an index (sqlite-vec at
@@ -132,23 +151,25 @@ through `VectorDataMemoryBackend`. Speed-ups if needed, in order: caching per co
 
 ## Steps
 
-- [ ] **V1 Storage:** per-chunk table, model and content hashes, explicit binary format and validation, packages, atomic upsert
-  with embeddings first, deletions; the 1-to-2 migration.
+- [ ] **V1 Storage:** per-chunk table, model and content hashes, `SqliteEmbeddingOptions`, explicit binary format and validation,
+  packages, atomic upsert with embeddings first, deletions, stale-vector removal without a generator; the 1-to-2 migration.
 - [ ] **V2 Vector search:** the shared governance predicate (extracted from keyword search), exact dot product, bounded top-k,
   corrupt rows skipped and reported.
 - [ ] **V3 Hybrid and modes:** RRF; FTS no longer gates semantic search; explicit modes in `MemoryRetriever` for every backend.
-- [ ] **V4 Re-embedding:** state table, batches, restart, stale-content protection, cleanup, diagnostics.
+- [ ] **V4 Re-embedding:** batches, restart, the hash check and write in one transaction, cleanup, `GetStatusAsync`.
 - [ ] **V5 Conformance and quality:** the memory suite's checks for vector and hybrid search, plus the tests listed below; the
   quality gate with the hashed stand-in embedder, and a real model where one is available (never required by the core suite).
 - [ ] **V6 Measurement:** time, allocations and memory at 1k, 10k and 50k vectors, with a multi-chunk set; the threshold in
   vectors and bytes, in the docs and in a warning.
 
 Tests to add, beyond the suite: a record survives a failed embedding during replacement; replacing a record replaces its vectors,
-and removed chunks and deleted records leave no vector rows; wrong dimensions, zero vectors, non-finite values and malformed
-BLOBs are rejected; vector search returns allowed results even when forbidden ones would score higher; keyword mode generates no
+and removed chunks and deleted records leave no vector rows; vector search returns allowed results even when forbidden ones would score higher; keyword mode generates no
 embeddings, semantic mode does not depend on FTS parsing; hybrid uses RRF and the requested mode is honoured; re-embedding resumes,
 ignores stale vectors for changed chunks, and never compares two models; a version-1 database migrates without losing records or
-FTS search.
+FTS search, and afterwards deletes and replaces chunks correctly (the migration never silently rebuilds the store); a keyword-only
+instance that edits a chunk leaves no stale vector behind; a chunk changed or deleted while its embedding is generated never gets
+that embedding searchable; a generated vector of the wrong size, non-finite or zero fails the operation, while a corrupt stored row is
+skipped, counted in the status, and the search still returns the other results; the configured dimensions are enforced.
 
 Size (revised; the first estimate was optimistic): V1 about a session; V2 and V3 about a session; V4 to V6 about a session.
 Built in that order, each a testable checkpoint.
