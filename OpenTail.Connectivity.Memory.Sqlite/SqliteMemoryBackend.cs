@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.AI;
 
 namespace OpenTail.Connectivity.Memory.Sqlite;
 
@@ -12,10 +13,14 @@ namespace OpenTail.Connectivity.Memory.Sqlite;
 /// in SQL before ranking, so top-k is taken from what the caller may see; <see cref="MemoryGovernance.Deny"/> then runs on each
 /// hit as an exact final check. The record itself is stored as JSON and is the truth; the other columns and the FTS index are
 /// derived from it and can be rebuilt.
+/// <para>With an embedding generator, each chunk also gets a vector (design: docs/design/sqlite-vectors.md). Embeddings are generated
+/// before the write transaction, so a failing or slow generator never changes a stored record. A vector is kept only while its
+/// chunk's text is the text it was made from: every upsert, with a generator or without, removes vectors whose chunk changed or went.</para>
 /// </summary>
 public sealed partial class SqliteMemoryBackend : IMemoryBackend
 {
-    private const int SchemaVersion = 1;
+    // 2 added chunk_vectors and vector_state; version 1 files are migrated in place, keeping records, chunks and the FTS index.
+    private const int SchemaVersion = 2;
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -25,11 +30,26 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
 
     private readonly string _connectionString;
     private readonly TimeProvider _time;
+    private readonly IEmbeddingGenerator<string, Embedding<float>>? _embeddings;
+    private readonly SqliteEmbeddingOptions? _embeddingOptions;
 
     /// <param name="path">The database file. It is created when missing; its folder must exist (a backend never creates
     /// where it stores: a wrong path must fail, not start an empty store).</param>
     public SqliteMemoryBackend(string path, TimeProvider? time = null)
+        : this(path, embeddings: null, embeddingOptions: null, time)
     {
+    }
+
+    /// <param name="embeddings">The caller's embedding generator; with it, chunks get vectors. Null for keyword only.</param>
+    /// <param name="embeddingOptions">The model behind <paramref name="embeddings"/>; required with it.</param>
+    public SqliteMemoryBackend(string path, IEmbeddingGenerator<string, Embedding<float>>? embeddings, SqliteEmbeddingOptions? embeddingOptions,
+        TimeProvider? time = null)
+    {
+        if ((embeddings is null) != (embeddingOptions is null))
+            throw new ArgumentException("An embedding generator and its SqliteEmbeddingOptions go together.", nameof(embeddingOptions));
+        embeddingOptions?.Validate();
+        _embeddings = embeddings;
+        _embeddingOptions = embeddingOptions;
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var folder = Path.GetDirectoryName(Path.GetFullPath(path));
         if (folder is not null && !Directory.Exists(folder))
@@ -53,10 +73,17 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
         if (chunks.Any(c => !string.Equals(c.ParentRecordId, record.Id, StringComparison.Ordinal)))
             throw new ArgumentException("Every chunk must belong to the record.", nameof(chunks));
 
+        IReadOnlyList<(string Id, MemoryChunkKind Kind, string Text)> rows = chunks.Count > 0
+            ? [.. chunks.Select(c => (c.Id, c.Kind, c.Content))]
+            : [(record.Id, MemoryChunkKind.Unknown, record.Content)];
+        var hashes = rows.Select(r => SqliteVectors.ContentHash(r.Text)).ToArray();
+        // Outside the transaction: the generator may be slow or fail, and either must leave the stored record as it was.
+        var vectors = await EmbedAsync(rows.Select(r => r.Text).ToList(), cancellationToken).ConfigureAwait(false);
+
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var tx = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-        await DeleteRowsAsync(connection, tx, "id = $id", p => p.AddWithValue("$id", record.Id), cancellationToken).ConfigureAwait(false);
+        await DeleteRowsAsync(connection, tx, "id = $id", p => p.AddWithValue("$id", record.Id), cancellationToken, keepVectors: true).ConfigureAwait(false);
 
         var policy = record.Policy;
         var source = record.Source;
@@ -99,9 +126,6 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
             await ExecAsync(connection, tx, "INSERT INTO record_claims (record_id, claim) VALUES ($id, $c)",
                 p => { p.AddWithValue("$id", record.Id); p.AddWithValue("$c", claim); }, cancellationToken).ConfigureAwait(false);
 
-        IEnumerable<(string Id, MemoryChunkKind Kind, string Text)> rows = chunks.Count > 0
-            ? chunks.Select(c => (c.Id, c.Kind, c.Content))
-            : [(record.Id, MemoryChunkKind.Unknown, record.Content)];
         foreach (var (id, kind, text) in rows)
         {
             await ExecAsync(connection, tx, "INSERT INTO chunks (id, record_id, kind, text) VALUES ($id, $rid, $kind, $text)", p =>
@@ -113,7 +137,62 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
             }, cancellationToken).ConfigureAwait(false);
         }
 
+        await ReplaceVectorsAsync(connection, tx, record.Id, rows, hashes, vectors, cancellationToken).ConfigureAwait(false);
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Generates and checks one vector per text, or returns null without a generator. Throws on any bad vector.</summary>
+    private async Task<byte[][]?> EmbedAsync(IReadOnlyList<string> texts, CancellationToken ct)
+    {
+        if (_embeddings is null || _embeddingOptions is null)
+            return null;
+        var generated = await _embeddings.GenerateAsync(texts, cancellationToken: ct).ConfigureAwait(false);
+        if (generated.Count != texts.Count)
+            throw new InvalidDataException($"The embedding generator returned {generated.Count} embeddings for {texts.Count} texts.");
+        return [.. generated.Select(e => SqliteVectors.Encode(SqliteVectors.Normalize(e.Vector.Span, _embeddingOptions.Dimensions)))];
+    }
+
+    /// <summary>
+    /// Inside the upsert's transaction: vectors of chunks that went, or whose text changed, are deleted for every model; then, with a
+    /// generator, this model's vectors are written. Without one, vectors whose chunk text is unchanged stay.
+    /// </summary>
+    private async Task ReplaceVectorsAsync(SqliteConnection connection, SqliteTransaction tx, string recordId,
+        IReadOnlyList<(string Id, MemoryChunkKind Kind, string Text)> rows, string[] hashes, byte[][]? vectors, CancellationToken ct)
+    {
+        await using (var stale = connection.CreateCommand())
+        {
+            stale.Transaction = tx;
+            var keep = new List<string>();
+            for (var i = 0; i < rows.Count; i++)
+            {
+                stale.Parameters.AddWithValue($"$c{i}", rows[i].Id);
+                stale.Parameters.AddWithValue($"$h{i}", hashes[i]);
+                keep.Add($"(chunk_id = $c{i} AND content_hash = $h{i})");
+            }
+
+            stale.Parameters.AddWithValue("$rid", recordId);
+            stale.CommandText = $"DELETE FROM chunk_vectors WHERE record_id = $rid AND NOT ({string.Join(" OR ", keep)})";
+            await stale.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        if (vectors is null || _embeddingOptions is null)
+            return;
+        for (var i = 0; i < rows.Count; i++)
+        {
+            var (chunkId, hash, vector) = (rows[i].Id, hashes[i], vectors[i]);
+            await ExecAsync(connection, tx, """
+                INSERT OR REPLACE INTO chunk_vectors (chunk_id, record_id, model_id, dimensions, content_hash, vector)
+                VALUES ($chunk, $rid, $model, $dims, $hash, $vector)
+                """, p =>
+            {
+                p.AddWithValue("$chunk", chunkId);
+                p.AddWithValue("$rid", recordId);
+                p.AddWithValue("$model", _embeddingOptions.ModelId);
+                p.AddWithValue("$dims", _embeddingOptions.Dimensions);
+                p.AddWithValue("$hash", hash);
+                p.AddWithValue("$vector", vector);
+            }, ct).ConfigureAwait(false);
+        }
     }
 
     public async Task<MemoryRecord?> GetAsync(string recordId, CancellationToken cancellationToken = default)
@@ -307,15 +386,42 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
         command.CommandText = "SELECT version FROM schema_info LIMIT 1";
         if (command.ExecuteScalar() is long existing)
         {
-            if (existing != SchemaVersion)
+            if (existing == 1)
+            {
+                // In place, in one transaction: records, chunks and the FTS index are untouched; vectors start empty.
+                using var tx = connection.BeginTransaction();
+                command.Transaction = tx;
+                command.CommandText = VectorTables + "UPDATE schema_info SET version = 2;";
+                command.ExecuteNonQuery();
+                tx.Commit();
+                command.Transaction = null;
+            }
+            else if (existing != SchemaVersion)
+            {
                 throw new InvalidOperationException($"The memory database has schema {existing}; this version reads {SchemaVersion}. Rebuild it from the records.");
+            }
         }
         else
         {
-            command.CommandText = $"INSERT INTO schema_info (version) VALUES ({SchemaVersion})";
+            command.CommandText = VectorTables + $"INSERT INTO schema_info (version) VALUES ({SchemaVersion});";
             command.ExecuteNonQuery();
         }
     }
+
+    private const string VectorTables = """
+        CREATE TABLE IF NOT EXISTS chunk_vectors (
+            chunk_id TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            dimensions INTEGER NOT NULL CHECK (dimensions > 0),
+            content_hash TEXT NOT NULL,
+            vector BLOB NOT NULL,
+            PRIMARY KEY (chunk_id, model_id),
+            CHECK (length(vector) = dimensions * 4));
+        CREATE INDEX IF NOT EXISTS ix_chunk_vectors_model_record ON chunk_vectors (model_id, record_id);
+        CREATE INDEX IF NOT EXISTS ix_chunk_vectors_record ON chunk_vectors (record_id);
+        CREATE TABLE IF NOT EXISTS vector_state (model_id TEXT PRIMARY KEY, complete INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        """;
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
@@ -324,7 +430,9 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
         return connection;
     }
 
-    private static async Task<int> DeleteRowsAsync(SqliteConnection connection, SqliteTransaction tx, string where, Action<SqliteParameterCollection> bind, CancellationToken ct)
+    /// <param name="keepVectors">For an upsert: its vectors are reconciled afterwards against the new chunks, not dropped here.</param>
+    private static async Task<int> DeleteRowsAsync(SqliteConnection connection, SqliteTransaction tx, string where, Action<SqliteParameterCollection> bind,
+        CancellationToken ct, bool keepVectors = false)
     {
         var ids = new List<string>();
         await using (var select = connection.CreateCommand())
@@ -339,7 +447,7 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
 
         foreach (var id in ids)
         {
-            foreach (var table in new[] { "chunks", "record_principals", "record_claims" })
+            foreach (var table in keepVectors ? ["chunks", "record_principals", "record_claims"] : new[] { "chunks", "record_principals", "record_claims", "chunk_vectors" })
                 await ExecAsync(connection, tx, $"DELETE FROM {table} WHERE record_id = $id", p => p.AddWithValue("$id", id), ct).ConfigureAwait(false);
             await ExecAsync(connection, tx, "DELETE FROM records WHERE id = $id", p => p.AddWithValue("$id", id), ct).ConfigureAwait(false);
         }

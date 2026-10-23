@@ -6,6 +6,9 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" />
+    <PackageReference Include="System.Numerics.Tensors" />
+    <InternalsVisibleTo Include="OpenTail.Connectivity.Tests" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\OpenTail.Connectivity.Memory\OpenTail.Connectivity.Memory.csproj" />

@@ -149,7 +149,7 @@ through `VectorDataMemoryBackend`. Speed-ups if needed, in order: caching per co
 
 ## Steps
 
-- [ ] **V1 Storage:** per-chunk table, model and content hashes, `SqliteEmbeddingOptions`, explicit binary format and validation,
+- [x] **V1 Storage:** per-chunk table, model and content hashes, `SqliteEmbeddingOptions`, explicit binary format and validation,
   packages, atomic upsert with embeddings first, deletions, stale-vector removal without a generator; the 1-to-2 migration.
 - [ ] **V2 Vector search:** the shared governance predicate (extracted from keyword search), exact dot product, bounded top-k,
   corrupt rows skipped and reported.
