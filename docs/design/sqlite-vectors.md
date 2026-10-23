@@ -153,7 +153,7 @@ through `VectorDataMemoryBackend`. Speed-ups if needed, in order: caching per co
   packages, atomic upsert with embeddings first, deletions, stale-vector removal without a generator; the 1-to-2 migration.
 - [x] **V2 Vector search:** the shared governance predicate (extracted from keyword search), exact dot product, bounded top-k,
   corrupt rows skipped and reported.
-- [ ] **V3 Hybrid and modes:** RRF; FTS no longer gates semantic search; explicit modes in `MemoryRetriever` for every backend.
+- [x] **V3 Hybrid and modes:** RRF; FTS no longer gates semantic search; explicit modes in `MemoryRetriever` for every backend.
 - [ ] **V4 Re-embedding:** batches, restart, the hash check and write in one transaction, cleanup, `GetStatusAsync`.
 - [ ] **V5 Conformance and quality:** the memory suite's checks for vector and hybrid search, plus the tests listed below; the
   quality gate with the hashed stand-in embedder, and a real model where one is available (never required by the core suite).

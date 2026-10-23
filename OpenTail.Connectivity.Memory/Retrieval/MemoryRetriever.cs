@@ -59,10 +59,11 @@ public sealed class MemoryRetriever
         // backend must not drop it; the check below still applies.
         var backendFilter = request.IncludeSummaries ? filter with { MaxSensitivity = null } : filter;
         var limit = Math.Max(20, request.TopK * 4);
+        var requested = RequestedSearch(request.RetrievalMode);
         var candidates = new Dictionary<(string Record, string Chunk), Candidate>();
         foreach (var subquery in analysis.Subqueries)
         {
-            var hits = await SearchAsync(subquery.Query, limit, backendFilter, cancellationToken).ConfigureAwait(false);
+            var hits = await SearchAsync(subquery.Query, limit, backendFilter, requested, cancellationToken).ConfigureAwait(false);
             for (var rank = 0; rank < hits.Count; rank++)
             {
                 var hit = hits[rank];
@@ -150,9 +151,33 @@ public sealed class MemoryRetriever
         return null;
     }
 
-    private async Task<IReadOnlyList<BackendHit>> SearchAsync(string query, int limit, MemoryFilter filter, CancellationToken cancellationToken)
+    /// <summary>
+    /// The search kind a caller asked for explicitly, checked against what the backend can do: an unsupported request fails rather
+    /// than quietly becoming another kind of search. <see cref="MemoryRetrievalMode.Auto"/> and the higher-level modes return null
+    /// and keep the capability-based choice.
+    /// </summary>
+    private MemorySearchKinds? RequestedSearch(MemoryRetrievalMode mode)
     {
         var kinds = _backend.Capabilities.Search;
+        var (kind, supported) = mode switch
+        {
+            MemoryRetrievalMode.Keyword => (MemorySearchKinds.Keyword, kinds.HasFlag(MemorySearchKinds.Keyword)),
+            MemoryRetrievalMode.Semantic => (MemorySearchKinds.Vector, kinds.HasFlag(MemorySearchKinds.Vector)),
+            MemoryRetrievalMode.Hybrid => (MemorySearchKinds.Hybrid,
+                kinds.HasFlag(MemorySearchKinds.Hybrid) || (kinds.HasFlag(MemorySearchKinds.Keyword) && kinds.HasFlag(MemorySearchKinds.Vector))),
+            _ => (MemorySearchKinds.None, true),
+        };
+        if (kind == MemorySearchKinds.None)
+            return null;
+        return supported ? kind : throw new NotSupportedException($"The memory backend cannot do {mode} retrieval (it offers {kinds}).");
+    }
+
+    private async Task<IReadOnlyList<BackendHit>> SearchAsync(string query, int limit, MemoryFilter filter, MemorySearchKinds? requested,
+        CancellationToken cancellationToken)
+    {
+        var kinds = _backend.Capabilities.Search;
+        if (requested is MemorySearchKinds.Keyword or MemorySearchKinds.Vector)
+            return await _backend.SearchAsync(new MemorySearch(query, requested.Value, limit, filter), cancellationToken).ConfigureAwait(false);
         if (kinds.HasFlag(MemorySearchKinds.Hybrid))
             return await _backend.SearchAsync(new MemorySearch(query, MemorySearchKinds.Hybrid, limit, filter), cancellationToken).ConfigureAwait(false);
 

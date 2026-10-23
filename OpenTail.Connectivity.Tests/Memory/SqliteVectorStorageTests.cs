@@ -190,7 +190,7 @@ public sealed class SqliteVectorStorageTests : IDisposable
         Assert.Equal("r1-a", hits[0].ChunkId);
         Assert.Equal(MemorySearchKinds.Vector, hits[0].Kind);
         Assert.True(hits[0].Score > (hits.Count > 1 ? hits[1].Score : -1));
-        Assert.Equal(MemorySearchKinds.Keyword | MemorySearchKinds.Vector, backend.Capabilities.Search);
+        Assert.Equal(MemorySearchKinds.Keyword | MemorySearchKinds.Vector | MemorySearchKinds.Hybrid, backend.Capabilities.Search);
         Assert.Equal(Model.ModelId, backend.Capabilities.EmbeddingModelId);
     }
 
@@ -254,6 +254,101 @@ public sealed class SqliteVectorStorageTests : IDisposable
         Assert.Equal(3, hits.Count);
         Assert.Equal("r17-a", hits[0].ChunkId);
         Assert.True(hits.Zip(hits.Skip(1)).All(p => p.First.Score >= p.Second.Score));
+    }
+
+    // ---- V3: hybrid and modes
+
+    [Fact]
+    public async Task Hybrid_fuses_keyword_and_vector_rankings_by_rank()
+    {
+        var backend = WithVectors();
+        await backend.UpsertAsync(Record("both", "x"), [Chunk("both", "both-a", "quarterly revenue report figures")]);
+        await backend.UpsertAsync(Record("other", "y"), [Chunk("other", "other-a", "staff canteen menu")]);
+
+        var hybrid = await backend.SearchAsync(new MemorySearch("quarterly revenue", MemorySearchKinds.Hybrid, 5, new MemoryFilter()));
+        var keyword = await backend.SearchAsync(new MemorySearch("quarterly revenue", MemorySearchKinds.Keyword, 5, new MemoryFilter()));
+        var vector = await backend.SearchAsync(Vector("quarterly revenue"));
+
+        Assert.Equal("both-a", hybrid[0].ChunkId);
+        Assert.Equal(ReciprocalRankFusion.Fuse([keyword, vector], 5).Select(h => h.ChunkId), hybrid.Select(h => h.ChunkId));
+    }
+
+    [Fact]
+    public async Task Semantic_search_does_not_depend_on_the_keyword_parser()
+    {
+        // A generator that embeds any text, and a query the keyword parser cannot use (one-letter words).
+        var backend = new SqliteMemoryBackend(_path, new LetterEmbeddings(), Model);
+        await backend.UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "x")]);
+
+        Assert.Empty(await backend.SearchAsync(new MemorySearch("x", MemorySearchKinds.Keyword, 5, new MemoryFilter())));
+        Assert.Single(await backend.SearchAsync(Vector("x")));
+        Assert.Single(await backend.SearchAsync(new MemorySearch("x", MemorySearchKinds.Hybrid, 5, new MemoryFilter())));
+    }
+
+    [Fact]
+    public async Task The_retriever_honours_an_explicit_mode_and_keyword_mode_embeds_nothing()
+    {
+        var counting = new CountingEmbeddings(new HashedBagOfWordsEmbeddings(Dims));
+        var backend = new SqliteMemoryBackend(_path, counting, Model);
+        await backend.UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "supplier onboarding checklist")]);
+        var retriever = new MemoryRetriever(backend);
+        var before = counting.Calls;
+
+        var keyword = await retriever.RetrieveAsync(new MemoryRetrievalRequest("supplier onboarding", RetrievalMode: MemoryRetrievalMode.Keyword));
+        Assert.Equal(before, counting.Calls); // keyword mode never embeds
+
+        var semantic = await retriever.RetrieveAsync(new MemoryRetrievalRequest("supplier onboarding", RetrievalMode: MemoryRetrievalMode.Semantic));
+        Assert.NotEmpty(semantic.Hits);
+
+        Assert.NotEmpty((await retriever.RetrieveAsync(new MemoryRetrievalRequest("supplier onboarding"))).Hits); // Auto: hybrid
+    }
+
+    [Fact]
+    public async Task An_explicit_mode_the_backend_cannot_do_fails_clearly()
+    {
+        await KeywordOnly().UpsertAsync(Record("r1", "a"), [Chunk("r1", "r1-a", "alpha words")]);
+        var retriever = new MemoryRetriever(KeywordOnly());
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => retriever.RetrieveAsync(new MemoryRetrievalRequest("alpha", RetrievalMode: MemoryRetrievalMode.Semantic)));
+        await Assert.ThrowsAsync<NotSupportedException>(() => retriever.RetrieveAsync(new MemoryRetrievalRequest("alpha", RetrievalMode: MemoryRetrievalMode.Hybrid)));
+        Assert.NotEmpty((await retriever.RetrieveAsync(new MemoryRetrievalRequest("alpha words", RetrievalMode: MemoryRetrievalMode.Keyword))).Hits);
+    }
+
+    private sealed class LetterEmbeddings : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(IEnumerable<string> values, EmbeddingGenerationOptions? options = null,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(new GeneratedEmbeddings<Embedding<float>>(values.Select(v =>
+            {
+                var vector = new float[Dims];
+                foreach (var c in v) vector[c % Dims] += 1f;
+                vector[0] += 0.001f; // never all zero
+                return new Embedding<float>(vector);
+            })));
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class CountingEmbeddings(IEmbeddingGenerator<string, Embedding<float>> inner) : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        public int Calls;
+
+        public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(IEnumerable<string> values, EmbeddingGenerationOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref Calls);
+            return inner.GenerateAsync(values, options, cancellationToken);
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
     }
 
     private static MemoryRecord Record(string id, string content, string? document = null, string? collection = null, MemorySourceAcl? acl = null) => new(

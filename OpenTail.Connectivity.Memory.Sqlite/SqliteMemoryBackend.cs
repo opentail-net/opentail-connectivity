@@ -61,7 +61,7 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
     }
 
     public MemoryBackendCapabilities Capabilities => _capabilities ??= new(
-        Search: _embeddings is null ? MemorySearchKinds.Keyword : MemorySearchKinds.Keyword | MemorySearchKinds.Vector,
+        Search: _embeddings is null ? MemorySearchKinds.Keyword : MemorySearchKinds.Keyword | MemorySearchKinds.Vector | MemorySearchKinds.Hybrid,
         FiltersBeforeRanking: true,
         TemporalValidity: true,
         DeleteBySource: true,
@@ -230,9 +230,27 @@ public sealed partial class SqliteMemoryBackend : IMemoryBackend
     public async Task<IReadOnlyList<BackendHit>> SearchAsync(MemorySearch search, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(search);
-        if (search.Kind == MemorySearchKinds.Vector)
+        var kind = search.Kind;
+        if (kind.HasFlag(MemorySearchKinds.Hybrid) || (kind.HasFlag(MemorySearchKinds.Keyword) && kind.HasFlag(MemorySearchKinds.Vector)))
+            return await HybridSearchAsync(search, cancellationToken).ConfigureAwait(false);
+        if (kind.HasFlag(MemorySearchKinds.Vector))
             return await VectorSearchAsync(search, cancellationToken).ConfigureAwait(false);
         return await KeywordSearchAsync(search, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Keyword and vector rankings, each under the governance predicate, fused by reciprocal rank (k = 60): raw BM25 and cosine
+    /// scores are never added. A query the keyword parser cannot use still gets the vector half.
+    /// </summary>
+    private async Task<IReadOnlyList<BackendHit>> HybridSearchAsync(MemorySearch search, CancellationToken cancellationToken)
+    {
+        if (_embeddings is null)
+            throw new NotSupportedException("This SQLite memory backend has no embedding generator: keyword search only.");
+        if (search.TopK <= 0 || string.IsNullOrWhiteSpace(search.Query))
+            return [];
+        var keyword = await KeywordSearchAsync(search with { Kind = MemorySearchKinds.Keyword }, cancellationToken).ConfigureAwait(false);
+        var vector = await VectorSearchAsync(search with { Kind = MemorySearchKinds.Vector }, cancellationToken).ConfigureAwait(false);
+        return ReciprocalRankFusion.Fuse([keyword, vector], search.TopK);
     }
 
     private async Task<IReadOnlyList<BackendHit>> KeywordSearchAsync(MemorySearch search, CancellationToken cancellationToken)
