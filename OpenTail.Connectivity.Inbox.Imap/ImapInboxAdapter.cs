@@ -69,7 +69,8 @@ public sealed class ImapInboxAdapter : IInboxAdapter, IInboxSyncCommit
                 cancellationToken.ThrowIfCancellationRequested();
                 var full = await folder.GetMessageAsync(summary.UniqueId, cancellationToken);
                 yield return MapToRecord(full, options.Folder,
-                    ImapMessageLookup.StableId(_settings, folder.FullName, folder.UidValidity, summary.UniqueId.Id));
+                    ImapMessageLookup.StableId(_settings, folder.FullName, folder.UidValidity, summary.UniqueId.Id),
+                    summary.Attachments);
 
                 if (summary.UniqueId.Id > highestSeenUid)
                     highestSeenUid = summary.UniqueId.Id;
@@ -125,7 +126,7 @@ public sealed class ImapInboxAdapter : IInboxAdapter, IInboxSyncCommit
         return SearchQuery.DeliveredAfter(DateTime.UtcNow.Subtract(DefaultInitialLookback));
     }
 
-    private InboxEmailRecord MapToRecord(MimeMessage msg, string folder, string stableId)
+    private InboxEmailRecord MapToRecord(MimeMessage msg, string folder, string stableId, IEnumerable<BodyPartBasic>? structure)
     {
         var body = msg.TextBody ?? StripHtml(msg.HtmlBody) ?? string.Empty;
         var parts = msg.Attachments.OfType<MimePart>().ToList();
@@ -135,14 +136,7 @@ public sealed class ImapInboxAdapter : IInboxAdapter, IInboxSyncCommit
             .Where(n => n is not null)
             .ToList();
 
-        var attachmentMeta = parts
-            .Where(a => !string.IsNullOrWhiteSpace(a.FileName))
-            .Select(a => new AttachmentMetadata(
-                Name: a.FileName!,
-                AttachmentId: a.ContentId ?? a.FileName,
-                ContentType: a.ContentType?.MimeType ?? "application/octet-stream",
-                SizeBytes: a.Content?.Stream?.Length ?? 0))
-            .ToList();
+        var attachmentMeta = AttachmentsFromStructure(structure);
 
         return new InboxEmailRecord(
             MessageId: msg.MessageId ?? stableId,
@@ -158,8 +152,43 @@ public sealed class ImapInboxAdapter : IInboxAdapter, IInboxSyncCommit
             TenantContext: _tenantContext,
             Headers: ExtractHeaders(msg),
             Attachments: attachmentMeta,
-            ThreadId: msg.References?.Count > 0 ? msg.References[0] : msg.InReplyTo);
+            ThreadId: msg.References?.Count > 0 ? msg.References[0] : msg.InReplyTo,
+            ProviderMessageId: stableId);
     }
+
+    /// <summary>
+    /// Attachment metadata from the server's BODYSTRUCTURE, so the reference is IMAP's own part specifier ("2", "2.1"), which the
+    /// fetcher passes straight back to the server; two files with the same name get different references. The size is the
+    /// decoded size estimated from the transfer encoding (the server reports encoded octets); the fetcher counts real bytes.
+    /// </summary>
+    internal static List<AttachmentMetadata> AttachmentsFromStructure(IEnumerable<BodyPartBasic>? structure)
+    {
+        var meta = new List<AttachmentMetadata>();
+        foreach (var part in structure ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(part.PartSpecifier) || AttachmentName(part) is not { } name) continue;
+            meta.Add(new AttachmentMetadata(
+                Name: name,
+                AttachmentId: part.PartSpecifier,
+                ContentType: part.ContentType?.MimeType ?? "application/octet-stream",
+                SizeBytes: DecodedSize(part)));
+        }
+        return meta;
+    }
+
+    /// <summary>The file name; a forwarded message without one is named after its subject, as <c>.eml</c>.</summary>
+    internal static string? AttachmentName(BodyPartBasic part)
+    {
+        if (!string.IsNullOrWhiteSpace(part.FileName)) return part.FileName;
+        if (part is BodyPartMessage message)
+            return (string.IsNullOrWhiteSpace(message.Envelope?.Subject) ? "message" : message.Envelope.Subject.Trim()) + ".eml";
+        return null;
+    }
+
+    internal static long DecodedSize(BodyPartBasic part) =>
+        string.Equals(part.ContentTransferEncoding, "base64", StringComparison.OrdinalIgnoreCase)
+            ? (long)part.Octets * 3 / 4
+            : (long)part.Octets;
 
     private static Dictionary<string, string> ExtractHeaders(MimeMessage msg)
     {

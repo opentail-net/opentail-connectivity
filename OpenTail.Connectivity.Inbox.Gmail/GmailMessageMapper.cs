@@ -43,7 +43,8 @@ public static class GmailMessageMapper
             TenantContext: tenantContext,
             Headers: extraHeaders,
             Attachments: attachmentMeta,
-            ThreadId: msg.ThreadId);
+            ThreadId: msg.ThreadId,
+            ProviderMessageId: msg.Id);
     }
 
     private static Dictionary<string, string> IndexHeaders(IList<MessagePartHeader>? headers)
@@ -115,16 +116,20 @@ public static class GmailMessageMapper
         return meta;
     }
 
+    /// <summary>
+    /// Every part with a file name. The reference is the part's <c>partId</c> ("1", "1.2"), not <c>body.attachmentId</c>: Google does
+    /// not document that id as stable across reads, and small parts carry their data inline with no attachment id at all. The
+    /// fetcher re-reads the message and finds the part by its partId.
+    /// </summary>
     private static void CollectAttachmentMeta(MessagePart? part, List<AttachmentMetadata> meta)
     {
         if (part is null) return;
         var filename = part.Filename;
-        var attachmentId = part.Body?.AttachmentId;
-        if (!string.IsNullOrWhiteSpace(filename) && attachmentId is not null)
+        if (!string.IsNullOrWhiteSpace(filename) && !string.IsNullOrWhiteSpace(part.PartId))
         {
             meta.Add(new AttachmentMetadata(
                 Name: filename,
-                AttachmentId: attachmentId,
+                AttachmentId: part.PartId,
                 ContentType: part.MimeType ?? "application/octet-stream",
                 SizeBytes: part.Body?.Size ?? 0));
         }

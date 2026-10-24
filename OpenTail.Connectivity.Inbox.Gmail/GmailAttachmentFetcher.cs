@@ -1,68 +1,104 @@
 namespace OpenTail.Connectivity.Inbox.Gmail;
 
+/// <summary>
+/// Fetches one attachment by the Gmail API message id and the part's <c>partId</c>. The message is read again to find the part,
+/// so the short-lived <c>body.attachmentId</c> is always current; parts that carry their data inline need no second call.
+/// </summary>
 public sealed class GmailAttachmentFetcher : IAttachmentFetcher
 {
-    private readonly GmailSettings _settings;
     private readonly GmailCredentialProvider _credentialProvider;
 
     public GmailAttachmentFetcher(GmailSettings settings, GmailCredentialProvider? credentialProvider = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        _settings = settings;
         _credentialProvider = credentialProvider ?? new GmailCredentialProvider(settings);
     }
 
-    public async Task<AttachmentContent?> FetchAsync(
-        string messageId, string attachmentId, CancellationToken ct = default)
+    internal Func<GmailService>? ServiceForTests { get; init; }
+
+    public async Task<AttachmentFetchResult> FetchAsync(AttachmentRef reference, AttachmentFetchLimits limits, CancellationToken ct = default)
     {
-        var credential = await BuildCredentialAsync(ct);
-        var service = new GmailService(new Google.Apis.Services.BaseClientService.Initializer
+        ArgumentNullException.ThrowIfNull(reference);
+        ArgumentNullException.ThrowIfNull(limits);
+
+        using var service = ServiceForTests?.Invoke() ?? new GmailService(new BaseClientService.Initializer
         {
-            HttpClientInitializer = credential,
+            HttpClientInitializer = await _credentialProvider.GetCredentialAsync(ct),
             ApplicationName = "OpenTail-Connectivity"
         });
 
-        var result = await service.Users.Messages.Attachments
-            .Get("me", messageId, attachmentId)
-            .ExecuteAsync(ct);
+        Message message;
+        try
+        {
+            var get = service.Users.Messages.Get("me", reference.ProviderMessageId);
+            get.Format = UsersResource.MessagesResource.GetRequest.FormatEnum.Full;
+            message = await get.ExecuteAsync(ct);
+        }
+        catch (Google.GoogleApiException ex) when (ex.HttpStatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.BadRequest)
+        {
+            // Gmail answers 400 for an id that is not a message id at all.
+            return AttachmentFetchResult.Missing("The message is no longer in the mailbox.");
+        }
 
-        if (result?.Data is null)
-            return null;
+        if (FindPart(message?.Payload, reference.AttachmentId) is not { } part || string.IsNullOrWhiteSpace(part.Filename))
+            return AttachmentFetchResult.Missing("The message has no such attachment.");
+        if (part.Body?.Size is int declared && declared > limits.MaxBytes)
+            return AttachmentFetchResult.TooLarge(limits.MaxBytes);
 
-        // Gmail uses URL-safe base64 encoding
-        var base64 = result.Data.Replace('-', '+').Replace('_', '/');
-        var padding = (4 - base64.Length % 4) % 4;
-        base64 += new string('=', padding);
+        var data = part.Body?.Data;
+        if (data is null && part.Body?.AttachmentId is { } attachmentId)
+        {
+            try
+            {
+                data = (await service.Users.Messages.Attachments.Get("me", reference.ProviderMessageId, attachmentId).ExecuteAsync(ct))?.Data;
+            }
+            catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return AttachmentFetchResult.Missing("The attachment is no longer in the mailbox.");
+            }
+        }
 
         byte[] bytes;
-        try { bytes = Convert.FromBase64String(base64); }
-        catch (FormatException) { return null; }
+        if (data is null)
+        {
+            if (part.Body?.Size is null or 0) bytes = [];
+            else return AttachmentFetchResult.Failed("Gmail returned no content for the attachment.");
+        }
+        else
+        {
+            // Base64 is 4 characters for 3 bytes; refuse before decoding what cannot fit.
+            if ((long)data.Length / 4 * 3 > limits.MaxBytes + 2)
+                return AttachmentFetchResult.TooLarge(limits.MaxBytes);
+            if (DecodeBase64Url(data) is not { } decoded)
+                return AttachmentFetchResult.Failed("Gmail returned content that is not valid base64.");
+            if (decoded.Length > limits.MaxBytes)
+                return AttachmentFetchResult.TooLarge(limits.MaxBytes);
+            bytes = decoded;
+        }
 
-        // Retrieve the filename by fetching the message's attachment metadata
-        var msg = await service.Users.Messages.Get("me", messageId).ExecuteAsync(ct);
-        var name = FindAttachmentName(msg?.Payload, attachmentId) ?? attachmentId;
-
-        return new AttachmentContent(
-            Name: name,
-            ContentType: "application/octet-stream",
-            Bytes: bytes);
+        return AttachmentFetchResult.Fetched(new AttachmentContent(
+            Name: part.Filename,
+            ContentType: string.IsNullOrWhiteSpace(part.MimeType) ? "application/octet-stream" : part.MimeType,
+            Bytes: bytes));
     }
 
-    private static string? FindAttachmentName(
-        Google.Apis.Gmail.v1.Data.MessagePart? part, string attachmentId)
+    internal static MessagePart? FindPart(MessagePart? part, string partId)
     {
         if (part is null) return null;
-        if (part.Body?.AttachmentId == attachmentId && !string.IsNullOrWhiteSpace(part.Filename))
-            return part.Filename;
+        if (part.PartId == partId) return part;
         if (part.Parts is null) return null;
         foreach (var child in part.Parts)
         {
-            var name = FindAttachmentName(child, attachmentId);
-            if (name is not null) return name;
+            if (FindPart(child, partId) is { } found) return found;
         }
         return null;
     }
 
-    private Task<Google.Apis.Auth.OAuth2.ICredential> BuildCredentialAsync(CancellationToken ct)
-        => _credentialProvider.GetCredentialAsync(ct);
+    internal static byte[]? DecodeBase64Url(string data)
+    {
+        var base64 = data.Replace('-', '+').Replace('_', '/');
+        base64 += new string('=', (4 - base64.Length % 4) % 4);
+        try { return Convert.FromBase64String(base64); }
+        catch (FormatException) { return null; }
+    }
 }

@@ -107,7 +107,8 @@ public sealed class GraphInboxAdapter : IInboxAdapter, IInboxSyncCommit
             {
                 req.Headers.Add("Prefer", $"odata.maxpagesize={pageSize}");
                 req.QueryParameters.Select = ["id", "internetMessageId", "subject", "from", "toRecipients",
-                    "ccRecipients", "receivedDateTime", "body", "attachments", "internetMessageHeaders"];
+                    "ccRecipients", "receivedDateTime", "body", "internetMessageHeaders"];
+                req.QueryParameters.Expand = [GraphMessageMapper.AttachmentsExpand];
                 // The messages delta query accepts a receivedDateTime filter; the delta link then keeps it.
                 if (options.Since is { } since)
                     req.QueryParameters.Filter = $"receivedDateTime ge {since.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}";

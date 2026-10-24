@@ -4,6 +4,12 @@ public static class GraphMessageMapper
 {
     private static readonly System.Text.RegularExpressions.Regex StripHtmlRegex = new("<[^>]+>", System.Text.RegularExpressions.RegexOptions.Compiled);
 
+    /// <summary>
+    /// <c>attachments</c> is a relationship of message, not a property, so <c>$select</c> does not return it; it needs <c>$expand</c>.
+    /// The nested <c>$select</c> keeps <c>contentBytes</c> out of listings.
+    /// </summary>
+    internal const string AttachmentsExpand = "attachments($select=id,name,contentType,size,isInline)";
+
     public static InboxEmailRecord Map(Message msg, string tenantContext, string folder = "INBOX")
     {
         var messageId = msg.InternetMessageId ?? msg.Id ?? Guid.NewGuid().ToString();
@@ -29,7 +35,7 @@ public static class GraphMessageMapper
             .Select(a => new AttachmentMetadata(
                 Name: a.Name!,
                 AttachmentId: a.Id,
-                ContentType: (a is FileAttachment fa ? fa.ContentType : null) ?? "application/octet-stream",
+                ContentType: a.ContentType ?? "application/octet-stream",
                 SizeBytes: a.Size ?? 0))
             .ToList();
 
@@ -60,7 +66,8 @@ public static class GraphMessageMapper
             TenantContext: tenantContext,
             Headers: headers,
             Attachments: attachmentMeta,
-            ThreadId: msg.ConversationId);
+            ThreadId: msg.ConversationId,
+            ProviderMessageId: msg.Id);
     }
 
     private static string FormatRecipient(Recipient? r) =>

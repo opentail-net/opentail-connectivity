@@ -60,6 +60,25 @@ internal static class ImapMessageLookup
         return id.StartsWith(expected, StringComparison.Ordinal) && uint.TryParse(id.AsSpan(expected.Length), out var uid) && uid > 0 ? uid : null;
     }
 
+    /// <summary>
+    /// Splits a <see cref="StableId"/> of this account into folder, UIDVALIDITY and UID; false for any other id. Folder names can
+    /// contain '/', so the two numbers are read from the end.
+    /// </summary>
+    internal static bool TryParseStableId(string id, ImapSettings account, out string folder, out uint uidValidity, out uint uid)
+    {
+        folder = string.Empty; uidValidity = 0; uid = 0;
+        var accountPrefix = $"{StableIdPrefix}{account.Username}@{account.Host}/";
+        if (!id.StartsWith(accountPrefix, StringComparison.Ordinal)) return false;
+        var rest = id.AsSpan(accountPrefix.Length);
+        var lastSlash = rest.LastIndexOf('/');
+        if (lastSlash <= 0 || !uint.TryParse(rest[(lastSlash + 1)..], out uid) || uid == 0) return false;
+        rest = rest[..lastSlash];
+        var validitySlash = rest.LastIndexOf('/');
+        if (validitySlash <= 0 || !uint.TryParse(rest[(validitySlash + 1)..], out uidValidity)) return false;
+        folder = rest[..validitySlash].ToString();
+        return true;
+    }
+
     private static string StableIdBase(ImapSettings account, string folder, uint uidValidity)
         => $"{StableIdPrefix}{account.Username}@{account.Host}/{folder}/{uidValidity}/";
 

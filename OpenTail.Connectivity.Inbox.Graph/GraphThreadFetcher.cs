@@ -28,7 +28,8 @@ public sealed class GraphThreadFetcher : IEmailThreadFetcher
                 req.QueryParameters.Top = maxMessages;
                 req.QueryParameters.Select = ["id", "internetMessageId", "subject", "from",
                     "toRecipients", "ccRecipients", "receivedDateTime", "body",
-                    "attachments", "internetMessageHeaders", "conversationId"];
+                    "internetMessageHeaders", "conversationId"];
+                req.QueryParameters.Expand = [GraphMessageMapper.AttachmentsExpand];
                 req.QueryParameters.Orderby = ["receivedDateTime asc"];
             }, ct);
 
