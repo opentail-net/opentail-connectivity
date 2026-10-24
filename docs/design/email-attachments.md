@@ -1,6 +1,6 @@
 # Design: reading email attachments through the Host
 
-**Status:** not built. Written 2026-10-23 from a first draft (`docs/email-attachments-processing-plan.md`, now replaced by this
+**Status:** slices 1–3 built in `opentail-connectivity` (2026-10-24, not released); slice 4 (Host) and 5 (live checks) not built. Written 2026-10-23 from a first draft (`docs/email-attachments-processing-plan.md`, now replaced by this
 file), after reading the code it touches in `opentail-connectivity`, `opentail-host` and `Transformations.Text`. Every claim about
 existing code below was checked against the code on 2026-10-23; vendor facts are split into checked and to-verify at the end.
 Revised the same day for `Transformations.Text` **2.0.5.1** (published on nuget.org, source read): processing now uses its
@@ -111,10 +111,11 @@ All three use the `CancellationToken` and dispose their clients. Byte counting h
 was fine, because declared sizes can be absent or wrong.
 
 The mappers change to fill the new references: Gmail `partId`, now also for parts that have a filename but carry their data
-inline (today those are left out because they have no `Body.AttachmentId`); IMAP part specifiers and the decoded size. MimeKit gives the
-specifier when listing from a `MimeMessage` through `MimeIterator.PathSpecifier`; that it is the same numbering as
-`BODYSTRUCTURE` is **to verify** with a test on nested multiparts. Graph only needs its attachment metadata to actually arrive
-(see vendor facts).
+inline (today those are left out because they have no `Body.AttachmentId`); IMAP part specifiers and the decoded size. **As
+built:** IMAP metadata comes from the `BODYSTRUCTURE` the adapter already fetches (`IMessageSummary.Attachments`), so the
+specifier is the server's own numbering and no MimeKit numbering has to match it; the decoded size is estimated from the
+transfer encoding (base64 × 3/4) and the fetcher counts the real bytes. Graph listings use
+`$expand=attachments($select=id,name,contentType,size,isInline)` instead of `$select=attachments` (see vendor facts).
 
 ### 3. Processing
 
@@ -187,6 +188,10 @@ Then, for `ErrorKind == None`, the verdict:
   extortion, macro lures; always Medium, category `Fraud`). Hiding these from the agent would hide exactly what it should warn
   the user about. The text is returned, and `fraudSignals` lists the scenario codes so the agent can say "this invoice asks you
   to pay a new bank account". Genuine notices look the same as scams; the agent reports a signal, not a verdict.
+
+The hold is decided from the findings in the text that would be returned (each segment's findings), plus a `ReviewRequired`
+verdict not explained by fraud alone. The verdict alone is not enough: a ZIP with one withheld entry is `PartsWithheld` even when
+another entry, which would be returned, has a model-aimed Medium finding (found while implementing, 2026-10-24).
 
 `RiskScore` (0–100, the library's heuristic over all findings) is passed through for display and ranking, not used for decisions.
 
@@ -408,15 +413,16 @@ Checked 2026-10-23:
 
 To verify (each one changes a detail, not the design):
 
-- Whether Graph fills `attachments` from `$select` on the message list and delta queries, or needs `$expand=attachments` (with a
-  nested `$select` to leave out `contentBytes`). Check against a recorded response or a test tenant in slice 1. If neither works
-  cheaply, the mapper can list attachments with the separate endpoint only for messages with `hasAttachments`.
+- **Checked 2026-10-24:** `attachments` is a relationship of `message`, not a property
+  ([message resource](https://learn.microsoft.com/en-us/graph/api/resources/message?view=graph-rest-1.0)), so `$select` does not
+  return it, and the messages delta query supports `$select`, `$top` and `$expand`
+  ([message: delta](https://learn.microsoft.com/en-us/graph/api/message-delta?view=graph-rest-1.0)). Built with `$expand`.
+  Still to verify on a tenant: that the nested `$select` inside `$expand` is honoured on delta (it keeps `contentBytes` out).
 - Whether Gmail's `attachmentId` changes between `messages.get` calls. A third-party guide says to treat it as short-lived
   ([Nylas](https://cli.nylas.com/guides/gmail-attachment-id-stability)); Google's reference does not say. The design already
   re-reads it, so this only matters for the test fixtures.
 - Graph message ids change when a message moves folder, unless immutable ids are requested. A message moved between `email.read`
   and `email.read_attachment` gives `Missing`, which is acceptable.
-- MimeKit's `MimeIterator.PathSpecifier` uses the same numbering as IMAP `BODYSTRUCTURE` part specifiers for nested multiparts.
 
 ## Not in this design
 

@@ -528,6 +528,14 @@ public sealed class ConnectivityPipeline
             return Outcome.Rejected;
         }
 
+        if (!extraction.Success && extraction.NotText)
+        {
+            run.Skipped++;
+            run.Issues.Add(new ValidationIssue(ValidationSeverity.Warning, "NOT_TEXT",
+                "The file has no text to read (binary, or an image without OCR): " + extraction.ErrorMessage, item.Id));
+            return Outcome.Skipped;
+        }
+
         if (!extraction.Success)
         {
             run.Failed++;

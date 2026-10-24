@@ -340,16 +340,20 @@ Order 4 and 5:
 
 ## 32. Email attachments through the Host
 
-Design: [design/email-attachments.md](design/email-attachments.md) (2026-10-23, replaces the first draft
-`email-attachments-processing-plan.md`). Not built. Outgoing attachments are out of scope and need their own design.
+Design: [design/email-attachments.md](design/email-attachments.md) (2026-10-23, revised 2026-10-24 for Transformations.Text
+2.0.5.2). Built in connectivity 2026-10-24, not released: references (`ProviderMessageId`, Gmail `partId`, IMAP part
+specifiers from BODYSTRUCTURE, Graph `$expand`), the new `IAttachmentFetcher` for all three providers, `AttachmentProcessor`,
+the 2.0.5.2 upgrade (MailKit/MimeKit 4.18.2) and the sync-pipeline options (hidden text dropped, binary/no-OCR skipped).
+Outgoing attachments are out of scope and need their own design.
 
-- [ ] **[C]** References: `ProviderMessageId` on `InboxEmailRecord`; Gmail `partId`, IMAP part specifiers and decoded size; verify
-  Graph attachment metadata arrives with `$select` (else `$expand`).
-- [ ] **[C]** Fetching: new `IAttachmentFetcher` with limits and statuses; IMAP fetches one part from the right folder.
-- [ ] **[C]** Processing: `Transformations.Text` 2.0.3 → 2.0.5.2; `AttachmentProcessor` on `GetModelInput` + `ForAiIngestion()` (status and verdict mapping, fraud signals returned not held, shared OCR engine, concurrency).
-- [ ] **[H]** `email.read` returns attachment objects; `email.read_attachment` (`ReadsUntrusted`); options; deferred fetcher.
-- [ ] **[C]** Live checks per provider on disposable mailboxes.
+- [ ] **[H]** `email.read` returns attachment objects; `email.read_attachment` (`ReadsUntrusted`); options; deferred fetcher;
+  the shared OCR engine (`ConnectivityOcr.Create`) passed to the processor and to `TransformationsTextExtractor`. Needs a
+  connectivity release first.
+- [ ] **[C]** Live checks per provider on disposable mailboxes, including that Graph honours the nested `$select` in
+  `$expand=attachments(...)` on delta.
 - [ ] **[C]** Check callers of `GraphEmailSender` Delete/MarkRead/Move: do they pass the RFC id? (found while reading)
-- [ ] **[C]** Sync pipeline options after the 2.0.5.2 upgrade, decided 2026-10-24: OCR on with the shared engine; `HiddenText = Drop`; `Binary`/`NeedsOcr` as skipped, not failed; library `MaxOcrImages`.
 - [ ] **[Owner]** Where the tessdata folder comes from per deployment (installer or user-configured). See the design's "Upgrade impact".
+- [ ] **[Transformations]** Detection gap found 2026-10-24: letter-spaced instructions with three spaces between words
+  (`i g n o r e   p r e v i o u s ...`) are not flagged; with two spaces they are (Medium). Probably the collapse of 3+ spaces
+  runs before the letter-spacing rule.
 - [ ] **[Transformations]** Library (not blocking): protected detection by exception type; async/stream `GetModelInput`; `GetModelInput` on `IDocumentTextExtractor`.
