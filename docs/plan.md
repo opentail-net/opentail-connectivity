@@ -346,8 +346,10 @@ Design: [design/email-attachments.md](design/email-attachments.md) (2026-10-23, 
 - [ ] **[C]** References: `ProviderMessageId` on `InboxEmailRecord`; Gmail `partId`, IMAP part specifiers and decoded size; verify
   Graph attachment metadata arrives with `$select` (else `$expand`).
 - [ ] **[C]** Fetching: new `IAttachmentFetcher` with limits and statuses; IMAP fetches one part from the right folder.
-- [ ] **[C]** Processing: `Transformations.Text` 2.0.3 → 2.0.4.6; `AttachmentProcessor` (status mapping, time limit, concurrency).
+- [ ] **[C]** Processing: `Transformations.Text` 2.0.3 → 2.0.5.2; `AttachmentProcessor` on `GetModelInput` + `ForAiIngestion()` (status and verdict mapping, fraud signals returned not held, shared OCR engine, concurrency).
 - [ ] **[H]** `email.read` returns attachment objects; `email.read_attachment` (`ReadsUntrusted`); options; deferred fetcher.
 - [ ] **[C]** Live checks per provider on disposable mailboxes.
 - [ ] **[C]** Check callers of `GraphEmailSender` Delete/MarkRead/Move: do they pass the RFC id? (found while reading)
-- [ ] **[Transformations]** Library: cancellation, `MaxInputBytes`, OOXML expansion bound, a `Binary` error kind.
+- [ ] **[C]** Sync pipeline options after the 2.0.5.2 upgrade, decided 2026-10-24: OCR on with the shared engine; `HiddenText = Drop`; `Binary`/`NeedsOcr` as skipped, not failed; library `MaxOcrImages`.
+- [ ] **[Owner]** Where the tessdata folder comes from per deployment (installer or user-configured). See the design's "Upgrade impact".
+- [ ] **[Transformations]** Library (not blocking): protected detection by exception type; async/stream `GetModelInput`; `GetModelInput` on `IDocumentTextExtractor`.
